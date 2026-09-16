@@ -26,6 +26,10 @@ build/
 .env.production.local
 .tokens.json
 server/.tokens.json
+.blackbaud_tokens.json
+server/.blackbaud_tokens.json
+.venv/
+server/mcp/
 
 # Editor directories and files
 .vscode/*

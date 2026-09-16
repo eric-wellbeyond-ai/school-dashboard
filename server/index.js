@@ -7,6 +7,12 @@ import { fileURLToPath } from 'url';
 import { google } from 'googleapis';
 import { parseEmailPayloads } from './services/parserService.js';
 import { getDashboardData, saveDashboardData } from './services/storageService.js';
+import {
+  getBlackbaudSession,
+  saveBlackbaudSession,
+  verifyAndDiscoverProfiles,
+  syncBlackbaudData
+} from './services/blackbaudService.js';
 
 dotenv.config();
 
@@ -249,6 +255,112 @@ app.post('/api/auth/disconnect', async (req, res) => {
     oauth2Client.setCredentials({});
   }
   res.json({ success: true, message: 'Disconnected Google account' });
+});
+
+// ----------------------------------------------------
+// Blackbaud Portal (myschoolapp.com) Endpoints
+// ----------------------------------------------------
+
+/**
+ * Route: GET /api/blackbaud/status
+ * Returns connection status and discovered student IDs
+ */
+app.get('/api/blackbaud/status', async (req, res) => {
+  try {
+    const session = await getBlackbaudSession();
+    const isConnected = Boolean(session && session.cookie);
+    res.json({
+      connected: isConnected,
+      subdomain: session?.subdomain || 'westlakelutheran',
+      students: session?.students || [],
+      verifiedAt: session?.verifiedAt || null
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Route: POST /api/blackbaud/connect
+ * Connects and stores session cookie for westlakelutheran.myschoolapp.com
+ */
+app.post('/api/blackbaud/connect', async (req, res) => {
+  try {
+    const { cookie, benStudentId, jadeStudentId } = req.body;
+    if (!cookie) {
+      return res.status(400).json({ error: 'Session cookie or token is required' });
+    }
+
+    try {
+      const discovered = await verifyAndDiscoverProfiles(cookie);
+      if (benStudentId) discovered.benStudentId = benStudentId;
+      if (jadeStudentId) discovered.jadeStudentId = jadeStudentId;
+      await saveBlackbaudSession(discovered);
+      res.json({ success: true, message: 'Connected to Blackbaud Portal successfully', data: discovered });
+    } catch (verifyErr) {
+      // Fallback: save session and manual student IDs
+      const sessionObj = {
+        cookie: cookie.trim(),
+        subdomain: 'westlakelutheran',
+        benStudentId: benStudentId || null,
+        jadeStudentId: jadeStudentId || null,
+        students: [
+          { student: 'Ben', id: benStudentId },
+          { student: 'Jade', id: jadeStudentId }
+        ].filter(s => Boolean(s.id)),
+        verifiedAt: new Date().toISOString()
+      };
+      await saveBlackbaudSession(sessionObj);
+      res.json({ success: true, message: 'Saved Blackbaud session', data: sessionObj, note: verifyErr.message });
+    }
+  } catch (err) {
+    console.error('Blackbaud connection failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Route: POST /api/blackbaud/disconnect
+ */
+app.post('/api/blackbaud/disconnect', async (req, res) => {
+  try {
+    await saveBlackbaudSession(null);
+    res.json({ success: true, message: 'Disconnected Blackbaud Portal' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Route: GET /api/blackbaud/sync
+ * Syncs grades, missing assignments, and portal assignments
+ */
+app.get('/api/blackbaud/sync', async (req, res) => {
+  try {
+    const result = await syncBlackbaudData();
+    
+    // Save grades and missing assignments, and merge new portal assignments into dashboard tasks
+    const stored = await getDashboardData();
+    const existing = stored.tasks || [];
+    const seenIds = new Set(existing.map(t => t.id));
+    
+    const newItems = (result.assignments || []).filter(a => !seenIds.has(a.id));
+    const mergedTasks = newItems.length > 0 ? [...newItems, ...existing] : existing;
+
+    await saveDashboardData({
+      tasks: mergedTasks,
+      grades: result.grades || stored.grades,
+      missingAssignments: result.missingAssignments || stored.missingAssignments
+    });
+
+    res.json({
+      ...result,
+      tasks: mergedTasks
+    });
+  } catch (err) {
+    console.error('Blackbaud sync error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ----------------------------------------------------

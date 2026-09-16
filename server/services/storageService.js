@@ -144,6 +144,8 @@ export async function saveDashboardData(data) {
     tasks: data.tasks !== undefined ? data.tasks : current.tasks || [],
     events: data.events !== undefined ? data.events : current.events || [],
     deletedEventKeys: data.deletedEventKeys !== undefined ? data.deletedEventKeys : current.deletedEventKeys || [],
+    grades: data.grades !== undefined ? data.grades : current.grades || { Ben: [], Jade: [] },
+    missingAssignments: data.missingAssignments !== undefined ? data.missingAssignments : current.missingAssignments || [],
     lastSyncedAt: data.lastSyncedAt !== undefined ? data.lastSyncedAt : current.lastSyncedAt || null,
     lastSyncStats: data.lastSyncStats !== undefined ? data.lastSyncStats : current.lastSyncStats || null,
     updatedAt: new Date().toISOString()

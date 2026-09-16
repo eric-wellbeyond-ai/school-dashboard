@@ -100,6 +100,7 @@ export function identifySource(email) {
     textToScan.includes('@westlakelutheran.org') ||
     textToScan.includes('wla ') ||
     textToScan.includes('blackbaud') ||
+    textToScan.includes('westlakelutheran.myschoolapp.com') ||
     textToScan.includes('myea.blackbaudschool.com') ||
     textToScan.includes('myschoolapp');
 

@@ -27,7 +27,10 @@ import {
   Send,
   ChevronDown,
   RotateCcw,
-  CheckCheck
+  CheckCheck,
+  Award,
+  AlertTriangle,
+  Key
 } from 'lucide-react';
 
 export default function App() {
@@ -60,6 +63,36 @@ export default function App() {
   });
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authBanner, setAuthBanner] = useState(null);
+
+  // Blackbaud Portal (myschoolapp.com) state
+  const [blackbaudStatus, setBlackbaudStatus] = useState({
+    connected: false,
+    subdomain: 'westlakelutheran',
+    students: [],
+    verifiedAt: null
+  });
+  const [blackbaudGrades, setBlackbaudGrades] = useState(() => {
+    try {
+      const saved = localStorage.getItem('school_dashboard_blackbaud_grades');
+      return saved ? JSON.parse(saved) : { Ben: [], Jade: [] };
+    } catch {
+      return { Ben: [], Jade: [] };
+    }
+  });
+  const [blackbaudMissing, setBlackbaudMissing] = useState(() => {
+    try {
+      const saved = localStorage.getItem('school_dashboard_blackbaud_missing');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [showBlackbaudModal, setShowBlackbaudModal] = useState(false);
+  const [blackbaudCookieInput, setBlackbaudCookieInput] = useState('');
+  const [blackbaudBenId, setBlackbaudBenId] = useState('');
+  const [blackbaudJadeId, setBlackbaudJadeId] = useState('');
+  const [isConnectingBlackbaud, setIsConnectingBlackbaud] = useState(false);
+  const [isSyncingBlackbaud, setIsSyncingBlackbaud] = useState(false);
   // Task collaboration & comment modal state
   const [selectedTaskForModal, setSelectedTaskForModal] = useState(null);
   const [commentAuthor, setCommentAuthor] = useState(() => {
@@ -222,6 +255,18 @@ export default function App() {
             localStorage.setItem('school_dashboard_deleted_events', JSON.stringify(data.deletedEventKeys));
           } catch {}
         }
+        if (data.grades) {
+          setBlackbaudGrades(data.grades);
+          try {
+            localStorage.setItem('school_dashboard_blackbaud_grades', JSON.stringify(data.grades));
+          } catch {}
+        }
+        if (data.missingAssignments && Array.isArray(data.missingAssignments)) {
+          setBlackbaudMissing(data.missingAssignments);
+          try {
+            localStorage.setItem('school_dashboard_blackbaud_missing', JSON.stringify(data.missingAssignments));
+          } catch {}
+        }
         if (data.lastSyncedAt) {
           const timeStr = new Date(data.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           setLastSynced(timeStr);
@@ -237,6 +282,7 @@ export default function App() {
 
   useEffect(() => {
     fetchAuthStatus();
+    fetchBlackbaudStatus();
     loadDashboardState();
 
     // Check OAuth return params
@@ -258,6 +304,131 @@ export default function App() {
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
+
+  const fetchBlackbaudStatus = async () => {
+    try {
+      const res = await fetch('/api/blackbaud/status');
+      if (res.ok) {
+        const data = await res.json();
+        setBlackbaudStatus(data);
+      }
+    } catch (err) {
+      console.warn('Blackbaud status check unavailable:', err.message);
+    }
+  };
+
+  const handleConnectBlackbaud = async (e) => {
+    if (e) e.preventDefault();
+    if (!blackbaudCookieInput.trim()) return;
+    setIsConnectingBlackbaud(true);
+    try {
+      const res = await fetch('/api/blackbaud/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cookie: blackbaudCookieInput.trim(),
+          benStudentId: blackbaudBenId.trim() || undefined,
+          jadeStudentId: blackbaudJadeId.trim() || undefined
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setBlackbaudStatus({
+          connected: true,
+          subdomain: 'westlakelutheran',
+          students: data.data?.students || [],
+          verifiedAt: new Date().toISOString()
+        });
+        setShowBlackbaudModal(false);
+        setBlackbaudCookieInput('');
+        setAuthBanner({
+          type: 'success',
+          message: 'Blackbaud Portal linked! Fetching live course grades & assignments...'
+        });
+        await handleSyncBlackbaud();
+      } else {
+        setAuthBanner({
+          type: 'error',
+          message: data.error || data.note || 'Failed to connect Blackbaud. Please verify session cookie.'
+        });
+      }
+    } catch (err) {
+      console.error('Error connecting Blackbaud:', err);
+      setAuthBanner({
+        type: 'error',
+        message: 'Connection failed: ' + err.message
+      });
+    } finally {
+      setIsConnectingBlackbaud(false);
+    }
+  };
+
+  const handleDisconnectBlackbaud = async () => {
+    try {
+      await fetch('/api/blackbaud/disconnect', { method: 'POST' });
+      setBlackbaudStatus({ connected: false, students: [] });
+      setBlackbaudGrades({ Ben: [], Jade: [] });
+      setBlackbaudMissing([]);
+      try {
+        localStorage.removeItem('school_dashboard_blackbaud_grades');
+        localStorage.removeItem('school_dashboard_blackbaud_missing');
+      } catch {}
+      setAuthBanner({
+        type: 'info',
+        message: 'Disconnected Westlake Blackbaud Portal.'
+      });
+      setShowBlackbaudModal(false);
+    } catch (err) {
+      console.error('Error disconnecting Blackbaud:', err);
+    }
+  };
+
+  const handleSyncBlackbaud = async () => {
+    setIsSyncingBlackbaud(true);
+    try {
+      const res = await fetch('/api/blackbaud/sync');
+      const data = await res.json();
+      if (data.grades) {
+        setBlackbaudGrades(data.grades);
+        try {
+          localStorage.setItem('school_dashboard_blackbaud_grades', JSON.stringify(data.grades));
+        } catch {}
+      }
+      if (data.missingAssignments && Array.isArray(data.missingAssignments)) {
+        setBlackbaudMissing(data.missingAssignments);
+        try {
+          localStorage.setItem('school_dashboard_blackbaud_missing', JSON.stringify(data.missingAssignments));
+        } catch {}
+      }
+      if (Array.isArray(data.tasks)) {
+        setTasks(data.tasks);
+        try {
+          localStorage.setItem('school_dashboard_tasks', JSON.stringify(data.tasks));
+        } catch {}
+      }
+      if (data.connected) {
+        setBlackbaudStatus(prev => ({
+          ...prev,
+          connected: true,
+          verifiedAt: data.lastSyncedAt || new Date().toISOString()
+        }));
+        setAuthBanner({
+          type: 'success',
+          message: 'Synchronized live grades and portal assignments from Westlake Blackbaud!'
+        });
+      } else {
+        setShowBlackbaudModal(true);
+      }
+    } catch (err) {
+      console.error('Failed to sync Blackbaud:', err);
+      setAuthBanner({
+        type: 'error',
+        message: 'Failed to sync with Blackbaud Portal. Verify your session cookie.'
+      });
+    } finally {
+      setIsSyncingBlackbaud(false);
+    }
+  };
 
   const handleConnectGoogle = () => {
     if (authStatus.configured) {
@@ -541,7 +712,7 @@ export default function App() {
             <div className="space-y-2">
               {/* Blackbaud Parent Portal */}
               <a
-                href="https://myea.blackbaudschool.com"
+                href="https://westlakelutheran.myschoolapp.com"
                 target="_blank"
                 rel="noopener noreferrer"
                 id="link-blackbaud"
@@ -552,8 +723,15 @@ export default function App() {
                     <GraduationCap className="w-4 h-4" />
                   </div>
                   <div>
-                    <div className="text-sm font-medium text-slate-200 group-hover:text-white">Blackbaud</div>
-                    <div className="text-[11px] text-slate-400">Parent Portal</div>
+                    <div className="text-sm font-medium text-slate-200 group-hover:text-white flex items-center gap-1.5">
+                      Blackbaud
+                      {blackbaudStatus.connected && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-sm shadow-emerald-500/50" title="Connected"></span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      {blackbaudStatus.connected ? 'Connected • Live Grades' : 'Parent Portal'}
+                    </div>
                   </div>
                 </div>
                 <ExternalLink className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
@@ -657,24 +835,42 @@ export default function App() {
         </div>
 
         {/* Sync / Connectivity Status in Sidebar Footer */}
-        <div className="mt-8 pt-4 border-t border-slate-800/80">
-          <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
-            <span className="flex items-center gap-1.5">
-              <span className={`w-2 h-2 rounded-full ${authStatus.authenticated ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
-              {authStatus.authenticated ? 'Gmail API Active' : 'Gmail Disconnected'}
-            </span>
-            <span className="font-mono text-[11px] text-slate-500">v1.0.0</span>
+        <div className="mt-8 pt-4 border-t border-slate-800/80 space-y-3">
+          {/* Gmail Status */}
+          <div>
+            <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
+              <span className="flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${authStatus.authenticated ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+                {authStatus.authenticated ? 'Gmail Active' : 'Gmail Offline'}
+              </span>
+              <span className="font-mono text-[10px] text-slate-500">Inbox</span>
+            </div>
+            <button
+              onClick={handleConnectGoogle}
+              className="w-full py-1.5 px-2.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-[11px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Shield className="w-3.5 h-3.5 text-indigo-400" />
+              <span>{authStatus.authenticated ? 'Gmail Connected' : 'Connect Google Inbox'}</span>
+            </button>
           </div>
-          <p className="text-[11px] text-slate-500 leading-relaxed mb-3">
-            Auto-extracts assignments & game schedules from Westlake Lutheran and sportsYou.
-          </p>
-          <button
-            onClick={handleConnectGoogle}
-            className="w-full py-1.5 px-2.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-[11px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <Shield className="w-3.5 h-3.5 text-indigo-400" />
-            <span>{authStatus.authenticated ? 'Gmail Connected' : 'Connect Google Inbox'}</span>
-          </button>
+
+          {/* Blackbaud Portal Status */}
+          <div className="pt-2 border-t border-slate-900/80">
+            <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
+              <span className="flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${blackbaudStatus.connected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+                {blackbaudStatus.connected ? 'Blackbaud Synced' : 'Blackbaud Offline'}
+              </span>
+              <span className="text-[10px] text-amber-400/80 font-mono">myschoolapp</span>
+            </div>
+            <button
+              onClick={() => setShowBlackbaudModal(true)}
+              className="w-full py-1.5 px-2.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-indigo-500/40 text-slate-300 hover:text-white text-[11px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <GraduationCap className="w-3.5 h-3.5 text-amber-400" />
+              <span>{blackbaudStatus.connected ? 'Blackbaud Settings' : 'Connect Blackbaud'}</span>
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -784,6 +980,22 @@ export default function App() {
                     <span className="font-semibold text-white">Full 14-Day Rescan</span>
                     <span className="text-slate-400 text-[11px]">Re-analyzes all inbox emails over the last 14 days</span>
                   </button>
+                  <div className="px-2.5 py-1 text-slate-400 font-semibold border-t border-b border-slate-800 my-1">
+                    School Portal Sync
+                  </div>
+                  <button
+                    onClick={() => {
+                      setSyncDropdownOpen(false);
+                      handleSyncBlackbaud();
+                    }}
+                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-200 transition-colors flex flex-col cursor-pointer"
+                  >
+                    <span className="font-semibold text-amber-300 flex items-center gap-1.5">
+                      <GraduationCap className="w-3.5 h-3.5" />
+                      Sync Blackbaud Portal
+                    </span>
+                    <span className="text-slate-400 text-[11px]">Pulls live grades, report cards & portal tasks</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -884,6 +1096,271 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {/* ---------------------------------------------------- */}
+          {/* Blackbaud Academic Performance & Course Grades       */}
+          {/* ---------------------------------------------------- */}
+          <section className="bg-slate-950/70 rounded-2xl border border-slate-800/80 p-5 shadow-lg">
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800/80">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500/20 to-blue-500/20 border border-amber-500/30 text-amber-400 flex items-center justify-center shadow-inner">
+                  <GraduationCap className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-base font-bold text-white tracking-tight">Academic Course Grades</h2>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono border border-slate-700/60">
+                      Fall Term 2026
+                    </span>
+                    {blackbaudStatus.connected ? (
+                      <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800/80">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                        Blackbaud Live
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-amber-950/70 text-amber-300 border border-amber-800/70">
+                        Portal Offline
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Westlake Lutheran Academy Portal (<span className="font-mono text-slate-300">westlakelutheran.myschoolapp.com</span>)
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex items-center gap-2">
+                {blackbaudStatus.connected ? (
+                  <>
+                    <button
+                      onClick={handleSyncBlackbaud}
+                      disabled={isSyncingBlackbaud}
+                      className="px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
+                      title="Sync grades and assignment center"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingBlackbaud ? 'animate-spin' : ''}`} />
+                      <span>{isSyncingBlackbaud ? 'Syncing...' : 'Sync Grades'}</span>
+                    </button>
+                    <button
+                      onClick={() => setShowBlackbaudModal(true)}
+                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition-colors cursor-pointer"
+                    >
+                      Portal Settings
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => setShowBlackbaudModal(true)}
+                    className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-900/20 flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <Key className="w-3.5 h-3.5" />
+                    <span>Connect Blackbaud</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Missing Assignments Banner (if any) */}
+            {blackbaudMissing.length > 0 && (
+              <div className="mt-4 p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/40 flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-xs font-bold text-amber-300">
+                    {blackbaudMissing.length} Missing Assignment{blackbaudMissing.length > 1 ? 's' : ''} Detected in Blackbaud
+                  </h4>
+                  <div className="mt-2 space-y-1.5">
+                    {blackbaudMissing.map((m, idx) => (
+                      <div key={idx} className="flex items-center justify-between text-xs text-slate-300 bg-slate-900/60 p-2 rounded-lg border border-amber-900/40">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-semibold text-white truncate">{m.AssignmentTitle || m.title || 'Missing Work'}</span>
+                          <span className="text-slate-500">&bull;</span>
+                          <span className="text-amber-300/90 text-[11px] truncate">{m.ClassName || m.course || m.student}</span>
+                        </div>
+                        <span className="text-[11px] text-slate-400 font-mono shrink-0 ml-2">
+                          Due: {m.DateDue || m.dueDate || 'Overdue'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Grades View */}
+            <div className="mt-4">
+              {(!blackbaudGrades.Ben || blackbaudGrades.Ben.length === 0) && (!blackbaudGrades.Jade || blackbaudGrades.Jade.length === 0) ? (
+                /* Unconnected / Empty State Card */
+                <div className="p-6 rounded-xl bg-slate-900/40 border border-dashed border-slate-800 text-center flex flex-col items-center justify-center">
+                  <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mb-3">
+                    <BookOpen className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-sm font-bold text-white mb-1">
+                    {blackbaudStatus.connected ? 'No Course Grades Synced Yet' : 'Live Gradebook & Academic Overview'}
+                  </h3>
+                  <p className="text-xs text-slate-400 max-w-lg mb-4 leading-relaxed">
+                    {blackbaudStatus.connected
+                      ? 'Blackbaud session is configured. Click "Sync Grades" to query active classes and report card percentages from the portal.'
+                      : 'Connect your Westlake Lutheran Academy Blackbaud Portal account to monitor current course letter grades, cumulative percentages, teacher gradebooks, and missing assignments for Ben (High School) and Jade (Middle School).'}
+                  </p>
+                  {blackbaudStatus.connected ? (
+                    <button
+                      onClick={handleSyncBlackbaud}
+                      disabled={isSyncingBlackbaud}
+                      className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingBlackbaud ? 'animate-spin' : ''}`} />
+                      <span>{isSyncingBlackbaud ? 'Fetching...' : 'Sync Now'}</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setShowBlackbaudModal(true)}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 flex items-center gap-2 transition-all cursor-pointer"
+                    >
+                      <GraduationCap className="w-4 h-4" />
+                      <span>Connect Westlake Blackbaud Portal</span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                /* Course Cards Grid */
+                <div className="space-y-6">
+                  {/* Ben's Course Grades */}
+                  {(selectedStudent === 'All' || selectedStudent === 'Ben') && (
+                    <div>
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-blue-500/20 border border-blue-400/30 text-blue-300 flex items-center justify-center text-xs font-bold">
+                            B
+                          </div>
+                          <span className="text-xs font-bold text-white uppercase tracking-wider">
+                            Ben &bull; High School
+                          </span>
+                          <span className="text-[11px] text-slate-400 font-normal">
+                            ({(blackbaudGrades.Ben || []).length} Classes)
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                        {(blackbaudGrades.Ben || []).map((c, idx) => {
+                          const letter = c.letterGrade || '';
+                          const isA = letter.startsWith('A');
+                          const isB = letter.startsWith('B');
+                          const isC = letter.startsWith('C');
+                          return (
+                            <div
+                              key={idx}
+                              className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800/90 hover:border-slate-700/90 transition-all flex flex-col justify-between gap-2 shadow-sm"
+                            >
+                              <div>
+                                <div className="flex items-start justify-between gap-2">
+                                  <h4 className="text-xs font-bold text-white truncate" title={c.course}>
+                                    {c.course}
+                                  </h4>
+                                  {c.letterGrade && (
+                                    <span
+                                      className={`px-2 py-0.5 rounded-md text-xs font-bold border shrink-0 ${
+                                        isA
+                                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                          : isB
+                                          ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'
+                                          : isC
+                                          ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                          : 'bg-slate-800 text-slate-300 border-slate-700'
+                                      }`}
+                                    >
+                                      {c.letterGrade}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[11px] text-slate-400 mt-1 truncate">
+                                  {c.teacher || 'Teacher TBA'} {c.room ? `• Rm ${c.room}` : ''}
+                                </p>
+                              </div>
+                              {c.percentage && (
+                                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+                                  <span className="text-slate-500">Cumulative:</span>
+                                  <span className="font-mono font-bold text-slate-200">{c.percentage}</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Jade's Course Grades */}
+                  {(selectedStudent === 'All' || selectedStudent === 'Jade') && (
+                    <div className={selectedStudent === 'All' ? 'pt-4 border-t border-slate-800/80' : ''}>
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-purple-500/20 border border-purple-400/30 text-purple-300 flex items-center justify-center text-xs font-bold">
+                            J
+                          </div>
+                          <span className="text-xs font-bold text-white uppercase tracking-wider">
+                            Jade &bull; Middle School
+                          </span>
+                          <span className="text-[11px] text-slate-400 font-normal">
+                            ({(blackbaudGrades.Jade || []).length} Classes)
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                        {(blackbaudGrades.Jade || []).map((c, idx) => {
+                          const letter = c.letterGrade || '';
+                          const isA = letter.startsWith('A');
+                          const isB = letter.startsWith('B');
+                          const isC = letter.startsWith('C');
+                          return (
+                            <div
+                              key={idx}
+                              className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800/90 hover:border-slate-700/90 transition-all flex flex-col justify-between gap-2 shadow-sm"
+                            >
+                              <div>
+                                <div className="flex items-start justify-between gap-2">
+                                  <h4 className="text-xs font-bold text-white truncate" title={c.course}>
+                                    {c.course}
+                                  </h4>
+                                  {c.letterGrade && (
+                                    <span
+                                      className={`px-2 py-0.5 rounded-md text-xs font-bold border shrink-0 ${
+                                        isA
+                                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                          : isB
+                                          ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                          : isC
+                                          ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                                          : 'bg-slate-800 text-slate-300 border-slate-700'
+                                      }`}
+                                    >
+                                      {c.letterGrade}
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[11px] text-slate-400 mt-1 truncate">
+                                  {c.teacher || 'Teacher TBA'} {c.room ? `• Rm ${c.room}` : ''}
+                                </p>
+                              </div>
+                              {c.percentage && (
+                                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+                                  <span className="text-slate-500">Cumulative:</span>
+                                  <span className="font-mono font-bold text-slate-200">{c.percentage}</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
 
           {/* Grid Layout: Assignments Checklist (Left) & Events Schedule (Right) */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -1468,6 +1945,143 @@ export default function App() {
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------------------------------------------- */}
+      {/* Blackbaud Portal Connection Modal                    */}
+      {/* ---------------------------------------------------- */}
+      {showBlackbaudModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            {/* Header */}
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-500/20 to-blue-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30">
+                  <GraduationCap className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Westlake Blackbaud Portal</h3>
+                  <p className="text-xs text-slate-400 font-mono">westlakelutheran.myschoolapp.com</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowBlackbaudModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer text-lg leading-none"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Explanatory Steps */}
+            <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2 text-xs">
+              <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                How to retrieve your session token:
+              </span>
+              <ol className="list-decimal list-inside space-y-1 text-slate-400 text-[11px] leading-relaxed">
+                <li>
+                  Open <a href="https://westlakelutheran.myschoolapp.com" target="_blank" rel="noopener noreferrer" className="text-indigo-400 underline font-medium">westlakelutheran.myschoolapp.com</a> and sign in.
+                </li>
+                <li>
+                  Press <kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-slate-300 font-mono text-[10px]">F12</kbd> (or <kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-slate-300 font-mono text-[10px]">Cmd+Opt+I</kbd>) &gt; Application / Storage &gt; Cookies.
+                </li>
+                <li>
+                  Copy the cookie string or the <code className="bg-slate-800 px-1 py-0.5 rounded text-amber-300 font-mono">t</code> token value and paste it below.
+                </li>
+              </ol>
+            </div>
+
+            {/* Connect Form */}
+            <form onSubmit={handleConnectBlackbaud} className="space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-200 mb-1">
+                  Session Cookie or Token <span className="text-rose-400">*</span>
+                </label>
+                <textarea
+                  required
+                  rows={3}
+                  value={blackbaudCookieInput}
+                  onChange={(e) => setBlackbaudCookieInput(e.target.value)}
+                  placeholder="Paste cookie string (e.g., t=...; ASP.NET_SessionId=... or just token value)"
+                  className="w-full px-3 py-2 bg-slate-950 rounded-xl border border-slate-700 text-slate-100 placeholder-slate-500 font-mono text-[11px] focus:outline-none focus:border-indigo-500 resize-none"
+                />
+              </div>
+
+              {/* Student IDs (Optional) */}
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="block font-medium text-slate-300 mb-1 text-[11px]">
+                    Ben's Student ID <span className="text-slate-500">(Optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={blackbaudBenId}
+                    onChange={(e) => setBlackbaudBenId(e.target.value)}
+                    placeholder="Auto-detected"
+                    className="w-full px-3 py-1.5 bg-slate-950 rounded-lg border border-slate-700 text-slate-200 placeholder-slate-500 font-mono text-xs focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-300 mb-1 text-[11px]">
+                    Jade's Student ID <span className="text-slate-500">(Optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={blackbaudJadeId}
+                    onChange={(e) => setBlackbaudJadeId(e.target.value)}
+                    placeholder="Auto-detected"
+                    className="w-full px-3 py-1.5 bg-slate-950 rounded-lg border border-slate-700 text-slate-200 placeholder-slate-500 font-mono text-xs focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              </div>
+
+              {/* Status information if already connected */}
+              {blackbaudStatus.connected && (
+                <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 flex items-center justify-between text-xs text-emerald-300">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>Currently connected to Westlake Lutheran Portal</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleDisconnectBlackbaud}
+                    className="text-xs text-red-400 hover:text-red-300 underline cursor-pointer"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowBlackbaudModal(false)}
+                  className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  disabled={isConnectingBlackbaud || !blackbaudCookieInput.trim()}
+                  className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-all shadow-md shadow-indigo-600/20 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {isConnectingBlackbaud ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Connecting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Key className="w-3.5 h-3.5" />
+                      <span>Connect & Fetch Grades</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

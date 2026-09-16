@@ -13,7 +13,7 @@ A full-stack Node.js and React dashboard application designed for families at We
 - **Unified Parent Dashboard (React + Tailwind CSS)**:
   - **Top Bar**: With interactive "Sync Inbox" button and last sync indicators.
   - **Direct Launch Portals**: One-click launcher sidebar for:
-    - Blackbaud Parent Portal (`https://myea.blackbaudschool.com`)
+    - Blackbaud Parent Portal (`https://westlakelutheran.myschoolapp.com`)
     - ClassLink SSO
     - sportsYou Athletics Portal
   - **Student View Toggles**: Instantly filter between **All Students**, **Ben**, and **Jade**.
