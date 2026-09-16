@@ -337,22 +337,30 @@ export function extractEventsFromEmail(email, source) {
 
 /**
  * Main parser module function
- * Accepts an array of email payloads (or single email) and extracts
- * student-specific tasks (Ben, Jade) and events from Westlake Lutheran Academy or sportsYou.
  */
-export function parseEmailPayloads(payloads) {
+export function parseEmailPayloads(payloads, options = {}) {
   if (!payloads) {
-    return { tasks: [], events: [], stats: { totalProcessed: 0, matchedEmails: 0 } };
+    return { tasks: [], events: [], emails: [], stats: { totalProcessed: 0, matchedEmails: 0 } };
   }
+
+  const daysBack = options.daysBack || 14;
+  const cutoffTime = Date.now() - (daysBack * 24 * 60 * 60 * 1000);
 
   const rawList = Array.isArray(payloads) ? payloads : [payloads];
   const allTasks = [];
   const allEvents = [];
+  const matchedEmails = [];
   let matchedCount = 0;
 
   for (const item of rawList) {
     const email = normalizeEmail(item);
     if (!email) continue;
+
+    // Filter by timeframe cutoff
+    const emailTime = new Date(email.date).getTime();
+    if (!isNaN(emailTime) && emailTime < cutoffTime) {
+      continue;
+    }
 
     const source = identifySource(email);
     // Only process emails originating from Westlake Lutheran Academy or sportsYou
@@ -365,6 +373,17 @@ export function parseEmailPayloads(payloads) {
 
     allTasks.push(...tasks);
     allEvents.push(...events);
+
+    matchedEmails.push({
+      id: email.id,
+      from: email.from,
+      subject: email.subject,
+      snippet: email.snippet,
+      date: email.date,
+      source: source,
+      tasksCount: tasks.length,
+      eventsCount: events.length
+    });
   }
 
   // Deduplicate tasks by title and student
@@ -390,11 +409,15 @@ export function parseEmailPayloads(payloads) {
   }
 
   return {
+    timeframe: `Last ${daysBack} days`,
     tasks: uniqueTasks,
     events: uniqueEvents,
+    emails: matchedEmails,
     stats: {
       totalProcessed: rawList.length,
-      matchedEmails: matchedCount
+      matchedEmails: matchedCount,
+      tasksFound: uniqueTasks.length,
+      eventsFound: uniqueEvents.length
     }
   };
 }
@@ -482,6 +505,132 @@ Westlake Lutheran Academy Parent Alert:
 Middle School Science Field Trip to the Hill Country Science Center:
 - Ben: Signed field trip permission slip and $15 lab fee due Friday (due Friday, Sep 19)
 - Event: Science Center Field Trip on Tuesday, Sep 23 from 9:00 AM - 2:00 PM at Hill Country Science Center
+      `
+    },
+    {
+      id: 'msg_wla_005',
+      from: 'mrs.davis@westlakelutheran.org',
+      subject: 'Westlake 4th Grade: Science Terrarium Project & Reading Goals',
+      date: new Date(Date.now() - 1000 * 60 * 60 * 72).toISOString(),
+      snippet: 'Classroom update for Jade: bring recycled bottles for science terrarium lab.',
+      body: `
+Westlake 4th Grade Newsletter from Mrs. Davis:
+
+Jade:
+- Bring clean recycled 2-liter plastic bottle for photosynthesis plant terrarium lab (due Wednesday, Sep 17)
+- Complete weekly reading log 20 minutes daily (due Friday, Sep 19)
+- Texas History state symbols worksheet packet (due Thursday, Sep 18)
+      `
+    },
+    {
+      id: 'msg_sportsyou_006',
+      from: 'alerts@sportsyou.com',
+      subject: 'sportsYou: Ben - Westlake Soccer Tournament Game Details',
+      date: new Date(Date.now() - 1000 * 60 * 60 * 96).toISOString(),
+      snippet: 'Tournament match schedule and roster update for Ben and Westlake soccer.',
+      body: `
+sportsYou Update from Coach Henderson:
+
+Westlake Lutheran Academy Soccer:
+
+Ben:
+- Practice: Tuesday from 3:45 PM - 5:15 PM at Westlake Athletic Field
+- Weekend Tournament Match: Saturday, Sep 20 at 10:00 AM at St. John's Athletic Complex
+- Bring soccer shin guards and water bottle
+      `
+    },
+    {
+      id: 'msg_wla_007',
+      from: 'pastor@westlakelutheran.org',
+      subject: 'Westlake Lutheran Academy: Chapel Schedule & Community Food Drive',
+      date: new Date(Date.now() - 1000 * 60 * 60 * 120).toISOString(),
+      snippet: 'All-school chapel announcement and service project for Ben and Jade.',
+      body: `
+Westlake Lutheran Academy Ministry Update:
+
+Upcoming Chapel & Community Outreach:
+- All-School Chapel Service: Wednesday at 8:30 AM in WLA Sanctuary
+- Ben: Recite Bible verse memorization Proverbs 3:5-6 in Bible class (due Wednesday, Sep 17)
+- Jade: Bring canned food items for Lutheran World Relief food drive (due Friday, Sep 19)
+- Ben: Bring canned food items for Lutheran World Relief food drive (due Friday, Sep 19)
+      `
+    },
+    {
+      id: 'msg_wla_008',
+      from: 'teachers@westlakelutheran.org',
+      subject: 'Westlake 7th Grade History: Texas Pioneers Research Topic',
+      date: new Date(Date.now() - 1000 * 60 * 60 * 168).toISOString(),
+      snippet: 'History project milestones for Ben and 7th grade social studies.',
+      body: `
+Westlake Middle School Social Studies:
+
+Ben:
+- Select biography topic for Texas Pioneers history research presentation (due Thursday, Sep 18)
+- Complete Chapter 2 Texas Geography and Rivers worksheet (due Tuesday, Sep 16)
+      `
+    },
+    {
+      id: 'msg_sportsyou_009',
+      from: 'notifications@sportsyou.com',
+      subject: 'sportsYou: Jade - Youth Volleyball Skills Clinic Passing Drills',
+      date: new Date(Date.now() - 1000 * 60 * 60 * 200).toISOString(),
+      snippet: 'Clinic details and location for Jade and youth volleyball team on sportsYou.',
+      body: `
+sportsYou Clinic Update:
+
+Westlake Lutheran Academy Youth Volleyball:
+
+Jade:
+- Clinic Practice: Wednesday from 4:00 PM - 5:15 PM at WLA Auxiliary Gym
+- Pack kneepads and uniform shorts
+      `
+    },
+    {
+      id: 'msg_wla_010',
+      from: 'science@westlakelutheran.org',
+      subject: 'Westlake Lutheran Academy: Middle School Science Fair Project Kickoff',
+      date: new Date(Date.now() - 1000 * 60 * 60 * 240).toISOString(),
+      snippet: 'Science Fair instructions and requirements for Ben.',
+      body: `
+Westlake Science Department:
+
+Ben:
+- Science Fair Project Hypothesis and Materials List (due Monday, Sep 22)
+- Get parent signature on Science Fair topic proposal form (due Friday, Sep 19)
+      `
+    },
+    {
+      id: 'msg_sportsyou_011',
+      from: 'athletics@sportsyou.com',
+      subject: 'sportsYou: Westlake Fall Sports Uniform Distribution',
+      date: new Date(Date.now() - 1000 * 60 * 60 * 288).toISOString(),
+      snippet: 'Uniform sizing and distribution for Ben (Soccer) and Jade (Volleyball).',
+      body: `
+sportsYou Athletics Department Alert:
+
+Fall Season Equipment & Uniforms:
+- Ben: Pick up varsity soccer game kit #10 from Coach Henderson (due Wednesday, Sep 17)
+- Jade: Pick up youth volleyball team jersey at Auxiliary Gym (due Wednesday, Sep 17)
+      `
+    },
+    {
+      id: 'msg_wla_012',
+      from: 'office@westlakelutheran.org',
+      subject: 'Westlake Lutheran Academy: Beginning of Term Academic Checklist',
+      date: new Date(Date.now() - 1000 * 60 * 60 * 336).toISOString(),
+      snippet: 'Important parent forms and supplies checklist for Ben and Jade (2 weeks ago).',
+      body: `
+Westlake Lutheran Academy Administration:
+
+Welcome to the New School Year!
+
+Ben:
+- Turn in signed student handbook honor code form (due Friday, Sep 19)
+- TI-84 Plus calculator required for Pre-Algebra problem set (due Friday, Sep 19)
+
+Jade:
+- Turn in emergency contact medical release form to homeroom teacher (due Friday, Sep 19)
+- Label art supply box and bring crayons to class (due Wednesday, Sep 17)
       `
     }
   ];

@@ -18,12 +18,14 @@ node_modules/
 dist/
 build/
 
-# Environment variables
+# Environment variables & tokens
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+.tokens.json
+server/.tokens.json
 
 # Editor directories and files
 .vscode/*
