@@ -5,7 +5,8 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { google } from 'googleapis';
-import { parseEmailPayloads, getSampleEmails } from './services/parserService.js';
+import { parseEmailPayloads } from './services/parserService.js';
+import { getDashboardData, saveDashboardData } from './services/storageService.js';
 
 dotenv.config();
 
@@ -171,38 +172,75 @@ app.post('/api/auth/disconnect', (req, res) => {
 });
 
 // ----------------------------------------------------
+// Dashboard State Persistence Endpoints
+// ----------------------------------------------------
+
+/**
+ * Route: GET /api/dashboard/state
+ * Returns stored tasks, events, and last synced timestamp
+ */
+app.get('/api/dashboard/state', async (req, res) => {
+  try {
+    const data = await getDashboardData();
+    res.json(data);
+  } catch (err) {
+    console.error('Failed to load dashboard state:', err);
+    res.status(500).json({ error: 'Failed to load state' });
+  }
+});
+
+/**
+ * Route: POST /api/dashboard/state
+ * Saves updated tasks, comments, and completions
+ */
+app.post('/api/dashboard/state', async (req, res) => {
+  try {
+    const { tasks, events, deletedEventKeys } = req.body;
+    const updated = await saveDashboardData({ tasks, events, deletedEventKeys });
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    console.error('Failed to save dashboard state:', err);
+    res.status(500).json({ error: 'Failed to save state' });
+  }
+});
+
+// ----------------------------------------------------
 // Dashboard Sync Endpoint
 // ----------------------------------------------------
 
 /**
  * Route: /api/dashboard/sync
- * Calls the parserService to extract student tasks (Ben, Jade) and events
- * originating from Westlake Lutheran Academy or sportsYou.
- * Supports ?days=14 (default: last 2 weeks).
+ * Pulls school emails from previous pull (up to 2 weeks maximum)
+ * Supports ?mode=incremental|full
  */
 app.get('/api/dashboard/sync', async (req, res) => {
   try {
-    const days = parseInt(req.query.days || '14', 10);
-    const mode = req.query.mode || 'auto'; // 'auto' | 'live' | 'demo'
     const client = getOAuth2Client();
 
-    // If demo mode is explicitly requested, or if not authenticated
-    if (mode === 'demo' || !userTokens || !client) {
-      const sampleEmails = getSampleEmails();
-      const parsedData = parseEmailPayloads(sampleEmails, { daysBack: days });
-
-      return res.json({
-        success: true,
-        source: 'demo_archive',
-        isLiveGmail: false,
-        timeframe: `Last ${days} days`,
-        message: `Extracted school communications from the last ${days} days for Ben and Jade (Westlake Lutheran Academy & sportsYou)`,
-        syncedAt: new Date().toISOString(),
-        tasks: parsedData.tasks,
-        events: parsedData.events,
-        emails: parsedData.emails,
-        stats: parsedData.stats
+    // If not authenticated, return clear unauthenticated status
+    if (!userTokens || !client) {
+      return res.status(401).json({
+        success: false,
+        authenticated: false,
+        source: 'unauthenticated',
+        message: 'Google account is not connected. Click "Connect Gmail" to link your inbox and extract school assignments.',
+        tasks: [],
+        events: [],
+        emails: [],
+        stats: { totalProcessed: 0, matchedEmails: 0, tasksFound: 0, eventsFound: 0 }
       });
+    }
+
+    const storedData = await getDashboardData();
+    const mode = req.query.mode || 'incremental'; // 'incremental' | 'full'
+    const maxDays = parseInt(req.query.days || '14', 10);
+    const twoWeeksAgoSeconds = Math.floor((Date.now() - maxDays * 24 * 60 * 60 * 1000) / 1000);
+
+    // Incremental lookback: pull back to previous pull (with 1 hour buffer), capped at max 2 weeks
+    let afterSeconds = twoWeeksAgoSeconds;
+    if (mode !== 'full' && storedData.lastSyncedAt) {
+      const prevSyncSeconds = Math.floor(new Date(storedData.lastSyncedAt).getTime() / 1000);
+      afterSeconds = Math.max(prevSyncSeconds - 3600, twoWeeksAgoSeconds);
     }
 
     // Live Gmail API sync
@@ -210,55 +248,163 @@ app.get('/api/dashboard/sync', async (req, res) => {
       client.setCredentials(userTokens);
       const gmail = google.gmail({ version: 'v1', auth: client });
 
-      const secondsCutoff = Math.floor((Date.now() - days * 24 * 60 * 60 * 1000) / 1000);
-      const query = `(from:(westlake OR sportsyou) OR "Westlake Lutheran" OR sportsYou OR subject:(Westlake OR sportsYou OR Ben OR Jade)) after:${secondsCutoff}`;
+      const query = `after:${afterSeconds} (westlake OR sportsyou OR "Westlake Lutheran" OR "sportsYou" OR "Blackbaud" OR Ben OR Jade)`;
+      console.log(`[Gmail Sync] Mode: ${mode} | Syncing after: ${afterSeconds} (${new Date(afterSeconds * 1000).toISOString()})`);
 
       const listRes = await gmail.users.messages.list({
         userId: 'me',
         q: query,
-        maxResults: 50
+        maxResults: 40
       });
 
       const messages = listRes.data.messages || [];
-      const fetchedEmails = [];
+      console.log(`[Gmail Sync] Found ${messages.length} matching candidate messages.`);
 
-      for (const msg of messages.slice(0, 30)) {
-        const detail = await gmail.users.messages.get({
-          userId: 'me',
-          id: msg.id,
-          format: 'full'
+      if (messages.length === 0) {
+        const nowIso = new Date().toISOString();
+        await saveDashboardData({ lastSyncedAt: nowIso });
+        return res.json({
+          success: true,
+          source: 'gmail_api',
+          isLiveGmail: true,
+          timeframe: mode === 'full' ? `Last ${maxDays} days` : 'Since previous pull',
+          message: `Inbox is up to date. No new school communications found since last sync.`,
+          syncedAt: nowIso,
+          tasks: storedData.tasks || [],
+          events: storedData.events || [],
+          emails: [],
+          stats: { totalProcessed: 0, matchedEmails: 0, tasksFound: (storedData.tasks || []).length, eventsFound: (storedData.events || []).length }
         });
-        fetchedEmails.push(detail.data);
       }
 
-      const parsed = parseEmailPayloads(fetchedEmails, { daysBack: days });
+      // Fetch message contents with brief pause to stay well within per-minute quota
+      const fetchedEmails = [];
+      for (const msg of messages.slice(0, 25)) {
+        try {
+          const detail = await gmail.users.messages.get({
+            userId: 'me',
+            id: msg.id,
+            format: 'full'
+          });
+          fetchedEmails.push(detail.data);
+          await new Promise(resolve => setTimeout(resolve, 40));
+        } catch (msgErr) {
+          console.warn(`[Gmail Sync] Error fetching email ${msg.id}:`, msgErr.message);
+        }
+      }
+
+      const parsed = parseEmailPayloads(fetchedEmails, { daysBack: maxDays });
+
+      // Merge newly parsed tasks with existing stored tasks (preserving user checkmarks and comments)
+      const existingTasks = storedData.tasks || [];
+      const completedMap = new Map(existingTasks.map(t => [t.title.toLowerCase(), t.completed]));
+      const commentsMap = new Map(existingTasks.map(t => [t.title.toLowerCase(), t.comments || []]));
+
+      const newTasksByTitle = new Map();
+      parsed.tasks.forEach(t => {
+        const key = t.title.toLowerCase();
+        newTasksByTitle.set(key, {
+          ...t,
+          completed: completedMap.has(key) ? completedMap.get(key) : false,
+          comments: commentsMap.has(key) && commentsMap.get(key).length > 0 ? commentsMap.get(key) : (t.comments || [])
+        });
+      });
+
+      const mergedTasks = [];
+      const seenTitles = new Set();
+
+      for (const [key, task] of newTasksByTitle.entries()) {
+        seenTitles.add(key);
+        mergedTasks.push(task);
+      }
+
+      for (const task of existingTasks) {
+        const key = task.title.toLowerCase();
+        if (!seenTitles.has(key)) {
+          seenTitles.add(key);
+          mergedTasks.push(task);
+        }
+      }
+
+      // Merge events
+      const existingEvents = storedData.events || [];
+      const deletedEventKeys = new Set(
+        (storedData.deletedEventKeys || []).map(k => String(k).toLowerCase())
+      );
+
+      // Build lookup for acknowledged events
+      const acknowledgedMap = new Map();
+      existingEvents.forEach(ev => {
+        const key = (ev.id || `${ev.title.toLowerCase().replace(/[^a-z0-9]/g, '')}_${ev.date}`).toLowerCase();
+        if (ev.acknowledged) {
+          acknowledgedMap.set(key, {
+            acknowledged: true,
+            acknowledgedAt: ev.acknowledgedAt || null
+          });
+        }
+      });
+
+      const seenEvents = new Set();
+      const mergedEvents = [];
+
+      // Add existing events (unless deleted)
+      for (const ev of existingEvents) {
+        const key = (ev.id || `${ev.title.toLowerCase().replace(/[^a-z0-9]/g, '')}_${ev.date}`).toLowerCase();
+        if (!deletedEventKeys.has(key) && !seenEvents.has(key)) {
+          seenEvents.add(key);
+          mergedEvents.push(ev);
+        }
+      }
+
+      // Add newly parsed events (unless deleted or already present)
+      for (const ev of parsed.events) {
+        const key = (ev.id || `${ev.title.toLowerCase().replace(/[^a-z0-9]/g, '')}_${ev.date}`).toLowerCase();
+        if (deletedEventKeys.has(key)) {
+          continue;
+        }
+        if (!seenEvents.has(key)) {
+          seenEvents.add(key);
+          const ackInfo = acknowledgedMap.get(key);
+          mergedEvents.push({
+            ...ev,
+            acknowledged: ackInfo ? ackInfo.acknowledged : false,
+            acknowledgedAt: ackInfo ? ackInfo.acknowledgedAt : null
+          });
+        }
+      }
+
+      // Save merged state to persistent storage
+      const nowIso = new Date().toISOString();
+      const updatedStorage = await saveDashboardData({
+        tasks: mergedTasks,
+        events: mergedEvents,
+        lastSyncedAt: nowIso,
+        lastSyncStats: parsed.stats
+      });
 
       return res.json({
         success: true,
         source: 'gmail_api',
-        timeframe: `Last ${days} days`,
-        syncedAt: new Date().toISOString(),
-        tasks: parsed.tasks,
-        events: parsed.events,
+        isLiveGmail: true,
+        timeframe: mode === 'full' ? `Last ${maxDays} days` : 'Since previous pull',
+        message: `Extracted ${parsed.tasks.length} new/updated assignments and ${parsed.events.length} schedule events.`,
+        syncedAt: nowIso,
+        tasks: updatedStorage.tasks,
+        events: updatedStorage.events,
         emails: parsed.emails,
         stats: parsed.stats
       });
     } catch (gmailErr) {
-      console.warn('Gmail API fetch failed, falling back to demo 2-week school data archive:', gmailErr.message);
-      const sampleEmails = getSampleEmails();
-      const parsedData = parseEmailPayloads(sampleEmails, { daysBack: days });
-
-      return res.json({
-        success: true,
-        source: 'demo_archive',
-        isLiveGmail: false,
-        timeframe: `Last ${days} days`,
-        message: `Extracted school communications from the last ${days} days for Ben and Jade (Westlake Lutheran Academy & sportsYou)`,
-        syncedAt: new Date().toISOString(),
-        tasks: parsedData.tasks,
-        events: parsedData.events,
-        emails: parsedData.emails,
-        stats: parsedData.stats
+      console.error('[Gmail Sync] Gmail API fetch failed:', gmailErr.message);
+      return res.status(500).json({
+        success: false,
+        authenticated: true,
+        source: 'gmail_api_error',
+        message: `Gmail API error: ${gmailErr.message}`,
+        tasks: storedData.tasks || [],
+        events: storedData.events || [],
+        emails: [],
+        stats: { totalProcessed: 0, matchedEmails: 0, tasksFound: 0, eventsFound: 0 }
       });
     }
   } catch (err) {
@@ -266,7 +412,9 @@ app.get('/api/dashboard/sync', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to sync dashboard inbox',
-      message: err.message
+      message: err.message,
+      tasks: [],
+      events: []
     });
   }
 });

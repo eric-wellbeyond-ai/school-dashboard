@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   RefreshCw,
   ExternalLink,
@@ -21,14 +21,27 @@ import {
   Filter,
   Check,
   Sparkles,
-  Link as LinkIcon
+  Link as LinkIcon,
+  MessageSquare,
+  MessageCircle,
+  Send,
+  ChevronDown,
+  RotateCcw,
+  CheckCheck
 } from 'lucide-react';
 
 export default function App() {
   const [selectedStudent, setSelectedStudent] = useState('All'); // 'All' | 'Ben' | 'Jade'
   const [isSyncing, setIsSyncing] = useState(false);
-  const [lastSynced, setLastSynced] = useState(null);
-  const [syncSource, setSyncSource] = useState('sample_mode');
+  const [syncDropdownOpen, setSyncDropdownOpen] = useState(false);
+  const [lastSynced, setLastSynced] = useState(() => {
+    try {
+      return localStorage.getItem('school_dashboard_last_synced') || null;
+    } catch {
+      return null;
+    }
+  });
+  const [syncSource, setSyncSource] = useState(null);
   const [taskFilter, setTaskFilter] = useState('all'); // 'all' | 'pending' | 'completed'
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskStudent, setNewTaskStudent] = useState('Ben');
@@ -47,191 +60,133 @@ export default function App() {
   });
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authBanner, setAuthBanner] = useState(null);
-
-  // Initial State populated with default school and sports items
-  const [tasks, setTasks] = useState([
-    {
-      id: 'task_b1',
-      title: 'Complete Chapter 4 Pre-Algebra Problem Set #1-25',
-      student: 'Ben',
-      course: 'Mathematics',
-      dueDate: 'Friday, Sep 19',
-      source: 'Westlake Lutheran Academy',
-      completed: false,
-      priority: 'high'
-    },
-    {
-      id: 'task_b2',
-      title: 'Science Fair Project Hypothesis and Materials List',
-      student: 'Ben',
-      course: 'Science',
-      dueDate: 'Monday, Sep 22',
-      source: 'Westlake Lutheran Academy',
-      completed: false,
-      priority: 'high'
-    },
-    {
-      id: 'task_b3',
-      title: 'Turn in signed soccer concussion waiver to Coach Henderson',
-      student: 'Ben',
-      course: 'Athletics',
-      dueDate: 'Wednesday, Sep 17',
-      source: 'sportsYou',
-      completed: true,
-      priority: 'medium'
-    },
-    {
-      id: 'task_b4',
-      title: 'Read chapters 3-5 of The Giver for English Literature',
-      student: 'Ben',
-      course: 'English / ELA',
-      dueDate: 'Thursday, Sep 18',
-      source: 'Westlake Lutheran Academy',
-      completed: false,
-      priority: 'medium'
-    },
-    {
-      id: 'task_j1',
-      title: 'Spelling Unit 4 test preparation & word cards',
-      student: 'Jade',
-      course: 'English / ELA',
-      dueDate: 'Friday, Sep 19',
-      source: 'Westlake Lutheran Academy',
-      completed: false,
-      priority: 'high'
-    },
-    {
-      id: 'task_j2',
-      title: 'Texas History state symbols worksheet packet',
-      student: 'Jade',
-      course: 'History / Social Studies',
-      dueDate: 'Thursday, Sep 18',
-      source: 'Westlake Lutheran Academy',
-      completed: false,
-      priority: 'medium'
-    },
-    {
-      id: 'task_j3',
-      title: 'Bring leaf samples for photosynthesis lab science project',
-      student: 'Jade',
-      course: 'Science',
-      dueDate: 'Wednesday, Sep 17',
-      source: 'Westlake Lutheran Academy',
-      completed: true,
-      priority: 'low'
-    },
-    {
-      id: 'task_j4',
-      title: 'Pack volleyball kneepads and water bottle for clinic',
-      student: 'Jade',
-      course: 'Athletics',
-      dueDate: 'Wednesday, Sep 17',
-      source: 'sportsYou',
-      completed: false,
-      priority: 'medium'
+  // Task collaboration & comment modal state
+  const [selectedTaskForModal, setSelectedTaskForModal] = useState(null);
+  const [commentAuthor, setCommentAuthor] = useState(() => {
+    try {
+      return localStorage.getItem('family_author_name') || '';
+    } catch {
+      return '';
     }
-  ]);
+  });
+  const [commentText, setCommentText] = useState('');
 
-  const [events, setEvents] = useState([
-    {
-      id: 'ev_1',
-      title: 'All-School Chapel Service',
-      student: 'All',
-      date: 'Wed, Sep 17',
-      time: '8:30 AM - 9:15 AM',
-      location: 'WLA Sanctuary',
-      source: 'Westlake Lutheran Academy',
-      type: 'school_event',
-      description: 'Formal uniform dress code required'
-    },
-    {
-      id: 'ev_2',
-      title: 'Boys Soccer: Home Game vs Concordia Lutheran',
-      student: 'Ben',
-      date: 'Thu, Sep 18',
-      time: '4:30 PM (Arrive 3:45 PM)',
-      location: 'Westlake Athletic Field',
-      source: 'sportsYou',
-      type: 'sports',
-      description: 'Wear royal blue game kits'
-    },
-    {
-      id: 'ev_3',
-      title: 'Girls Youth Volleyball Clinic & Practice',
-      student: 'Jade',
-      date: 'Wed, Sep 17',
-      time: '4:00 PM - 5:15 PM',
-      location: 'WLA Auxiliary Gym',
-      source: 'sportsYou',
-      type: 'sports',
-      description: 'Focus on underhand serving and passing'
-    },
-    {
-      id: 'ev_4',
-      title: 'Westlake Lutheran Spirit Day & Pep Rally',
-      student: 'All',
-      date: 'Fri, Sep 19',
-      time: '2:15 PM - 3:00 PM',
-      location: 'Main Gym',
-      source: 'Westlake Lutheran Academy',
-      type: 'school_event',
-      description: 'Wear blue and gold spirit shirts'
-    },
-    {
-      id: 'ev_5',
-      title: 'Middle School Soccer Tournament Match',
-      student: 'Ben',
-      date: 'Sat, Sep 20',
-      time: '10:00 AM',
-      location: "St. John's Athletic Complex",
-      source: 'sportsYou',
-      type: 'sports',
-      description: 'Tournament Round 1'
-    },
-    {
-      id: 'ev_6',
-      title: 'Volleyball Scrimmage vs St. Paul',
-      student: 'Jade',
-      date: 'Sat, Sep 20',
-      time: '11:30 AM',
-      location: 'Westlake Main Gym',
-      source: 'sportsYou',
-      type: 'sports',
-      description: 'Parent volunteers needed for score table'
+  // Persistent state: rehydrates from browser localStorage immediately
+  const [tasks, setTasks] = useState(() => {
+    try {
+      const saved = localStorage.getItem('school_dashboard_tasks');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
     }
-  ]);
+  });
+
+  const [events, setEvents] = useState(() => {
+    try {
+      const saved = localStorage.getItem('school_dashboard_events');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [deletedEventKeys, setDeletedEventKeys] = useState(() => {
+    try {
+      const saved = localStorage.getItem('school_dashboard_deleted_events');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const [eventFilter, setEventFilter] = useState('active'); // 'active' | 'acknowledged'
+
+  const isInitialMount = useRef(true);
+
+  // Auto-persist tasks, events, and deletedEventKeys to localStorage and backend whenever they change
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+    try {
+      localStorage.setItem('school_dashboard_tasks', JSON.stringify(tasks));
+      localStorage.setItem('school_dashboard_events', JSON.stringify(events));
+      localStorage.setItem('school_dashboard_deleted_events', JSON.stringify(deletedEventKeys));
+      fetch('/api/dashboard/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tasks, events, deletedEventKeys })
+      }).catch(() => {});
+    } catch (e) {
+      console.warn('Local persistence sync error:', e);
+    }
+  }, [tasks, events, deletedEventKeys]);
 
   // Sync Inbox function calling backend Express API
-  const handleSyncInbox = async () => {
+  const handleSyncInbox = async (mode = 'incremental') => {
     setIsSyncing(true);
+    setSyncDropdownOpen(false);
     try {
-      const res = await fetch('/api/dashboard/sync');
+      const res = await fetch(`/api/dashboard/sync?mode=${mode}`);
       if (!res.ok) {
-        throw new Error(`Sync failed with status: ${res.status}`);
+        const errData = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          setAuthBanner({
+            type: 'info',
+            message: 'Please connect your Google Account first to sync school emails from your inbox.'
+          });
+          setShowAuthModal(true);
+        } else {
+          setAuthBanner({
+            type: 'error',
+            message: errData.message || `Sync failed with status: ${res.status}`
+          });
+        }
+        return;
       }
       const data = await res.json();
       
-      if (data.tasks && data.tasks.length > 0) {
-        // Merge fetched tasks preserving existing completed status where matched
+      // Update tasks preserving user completed checks and comments where titles match
+      if (data.tasks) {
         setTasks(prevTasks => {
-          const completedIds = new Set(prevTasks.filter(t => t.completed).map(t => t.title.toLowerCase()));
-          return data.tasks.map(t => ({
-            ...t,
-            completed: completedIds.has(t.title.toLowerCase()) || Boolean(t.completed)
-          }));
+          const completedMap = new Map(prevTasks.map(t => [t.title.toLowerCase(), t.completed]));
+          const commentsMap = new Map(prevTasks.map(t => [t.title.toLowerCase(), t.comments || []]));
+          return data.tasks.map(t => {
+            const key = t.title.toLowerCase();
+            return {
+              ...t,
+              completed: completedMap.has(key) ? completedMap.get(key) : Boolean(t.completed),
+              comments: commentsMap.has(key) && commentsMap.get(key).length > 0 ? commentsMap.get(key) : (t.comments || [])
+            };
+          });
+        });
+      } else {
+        setTasks([]);
+      }
+
+      setEvents(data.events || []);
+      setSyncSource(data.source || 'gmail_api');
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      setLastSynced(timeStr);
+      try {
+        localStorage.setItem('school_dashboard_last_synced', timeStr);
+      } catch {}
+
+      if (data.message) {
+        setAuthBanner({
+          type: 'success',
+          message: data.message
         });
       }
-
-      if (data.events && data.events.length > 0) {
-        setEvents(data.events);
-      }
-
-      setSyncSource(data.source || 'sample_mode');
-      setLastSynced(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
     } catch (err) {
       console.error('Failed to sync with server API:', err);
-      // Fallback timestamp if offline
-      setLastSynced(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+      setAuthBanner({
+        type: 'error',
+        message: 'Could not connect to dashboard server to sync.'
+      });
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      setLastSynced(timeStr);
     } finally {
       setTimeout(() => setIsSyncing(false), 600);
     }
@@ -249,8 +204,46 @@ export default function App() {
     }
   };
 
+  // Load persisted state from server on startup
+  const loadDashboardState = async () => {
+    try {
+      const res = await fetch('/api/dashboard/state');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.tasks && data.tasks.length > 0) {
+          setTasks(prev => {
+            if (!prev || prev.length === 0) return data.tasks;
+            const completedMap = new Map(prev.map(t => [t.title.toLowerCase(), t.completed]));
+            const commentsMap = new Map(prev.map(t => [t.title.toLowerCase(), t.comments || []]));
+            return data.tasks.map(t => {
+              const key = t.title.toLowerCase();
+              return {
+                ...t,
+                completed: completedMap.has(key) ? completedMap.get(key) : Boolean(t.completed),
+                comments: commentsMap.has(key) && commentsMap.get(key).length > 0 ? commentsMap.get(key) : (t.comments || [])
+              };
+            });
+          });
+        }
+        if (data.events && data.events.length > 0) {
+          setEvents(prev => (!prev || prev.length === 0 ? data.events : prev));
+        }
+        if (data.deletedEventKeys && Array.isArray(data.deletedEventKeys)) {
+          setDeletedEventKeys(prev => Array.from(new Set([...prev, ...data.deletedEventKeys])));
+        }
+        if (data.lastSyncedAt) {
+          const timeStr = new Date(data.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          setLastSynced(prev => prev || timeStr);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to load dashboard state:', err.message);
+    }
+  };
+
   useEffect(() => {
     fetchAuthStatus();
+    loadDashboardState();
 
     // Check OAuth return params
     const params = new URLSearchParams(window.location.search);
@@ -261,7 +254,7 @@ export default function App() {
       });
       window.history.replaceState({}, document.title, window.location.pathname);
       fetchAuthStatus();
-      handleSyncInbox();
+      handleSyncInbox('incremental');
     } else if (params.get('auth') === 'failed' || params.get('auth') === 'error') {
       const errorMsg = params.get('message') || 'Google authentication could not be completed.';
       setAuthBanner({
@@ -297,16 +290,85 @@ export default function App() {
   // Toggle completion status of a task
   const toggleTask = (taskId) => {
     setTasks(prev =>
-      prev.map(task =>
-        task.id === taskId ? { ...task, completed: !task.completed } : task
-      )
+      prev.map(task => {
+        if (task.id === taskId) {
+          const updated = { ...task, completed: !task.completed };
+          if (selectedTaskForModal && selectedTaskForModal.id === taskId) {
+            setSelectedTaskForModal(updated);
+          }
+          return updated;
+        }
+        return task;
+      })
     );
   };
 
   // Delete a task
   const deleteTask = (taskId, e) => {
-    e.stopPropagation();
+    if (e) e.stopPropagation();
     setTasks(prev => prev.filter(t => t.id !== taskId));
+    if (selectedTaskForModal && selectedTaskForModal.id === taskId) {
+      setSelectedTaskForModal(null);
+    }
+  };
+
+  // Open task detail & collaboration modal
+  const handleOpenTaskModal = (task) => {
+    const current = tasks.find(t => t.id === task.id) || task;
+    setSelectedTaskForModal(current);
+  };
+
+  // Add a new comment to the selected task
+  const handleAddComment = (e) => {
+    e.preventDefault();
+    if (!commentText.trim() || !selectedTaskForModal) return;
+
+    const authorName = commentAuthor.trim() || 'Parent / Family';
+    try {
+      localStorage.setItem('family_author_name', authorName);
+    } catch {}
+
+    const newComment = {
+      id: `comm_${Date.now()}`,
+      author: authorName,
+      text: commentText.trim(),
+      timestamp: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' at ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+
+    setTasks(prev =>
+      prev.map(task => {
+        if (task.id === selectedTaskForModal.id) {
+          const updated = {
+            ...task,
+            comments: [...(task.comments || []), newComment]
+          };
+          setSelectedTaskForModal(updated);
+          return updated;
+        }
+        return task;
+      })
+    );
+
+    setCommentText('');
+  };
+
+  // Delete a comment from the task
+  const handleDeleteComment = (taskId, commentId) => {
+    setTasks(prev =>
+      prev.map(task => {
+        if (task.id === taskId) {
+          const updated = {
+            ...task,
+            comments: (task.comments || []).filter(c => c.id !== commentId)
+          };
+          if (selectedTaskForModal && selectedTaskForModal.id === taskId) {
+            setSelectedTaskForModal(updated);
+          }
+          return updated;
+        }
+        return task;
+      })
+    );
   };
 
   // Add a new manual task
@@ -322,12 +384,84 @@ export default function App() {
       dueDate: newTaskDue || 'Due soon',
       source: 'Westlake Lutheran Academy',
       completed: false,
-      priority: 'medium'
+      priority: 'medium',
+      comments: []
     };
 
     setTasks(prev => [newTask, ...prev]);
     setNewTaskTitle('');
     setIsAddingTask(false);
+  };
+
+  // Acknowledge an event (marks acknowledged and removes from active view)
+  const acknowledgeEvent = (eventId, e) => {
+    if (e) e.stopPropagation();
+    setEvents(prev =>
+      prev.map(ev => {
+        if (ev.id === eventId) {
+          return {
+            ...ev,
+            acknowledged: true,
+            acknowledgedAt: new Date().toISOString()
+          };
+        }
+        return ev;
+      })
+    );
+    setAuthBanner({
+      type: 'success',
+      message: 'Event acknowledged and removed from active schedule.'
+    });
+    setTimeout(() => {
+      setAuthBanner(prev => (prev?.message?.includes('acknowledged') ? null : prev));
+    }, 3500);
+  };
+
+  // Restore an acknowledged event back to active
+  const restoreEvent = (eventId, e) => {
+    if (e) e.stopPropagation();
+    setEvents(prev =>
+      prev.map(ev => {
+        if (ev.id === eventId) {
+          return {
+            ...ev,
+            acknowledged: false,
+            acknowledgedAt: null
+          };
+        }
+        return ev;
+      })
+    );
+    setAuthBanner({
+      type: 'info',
+      message: 'Event restored to active schedule.'
+    });
+    setTimeout(() => {
+      setAuthBanner(prev => (prev?.message?.includes('restored') ? null : prev));
+    }, 3500);
+  };
+
+  // Delete an event permanently (removes from list and prevents future sync re-adding)
+  const deleteEvent = (eventId, eventTitle, eventDate, e) => {
+    if (e) e.stopPropagation();
+    const eventKey = (eventId || `${(eventTitle || '').toLowerCase().replace(/[^a-z0-9]/g, '')}_${eventDate || ''}`).toLowerCase();
+
+    setEvents(prev => prev.filter(ev => ev.id !== eventId));
+    setDeletedEventKeys(prev => {
+      const next = Array.from(new Set([...prev, eventKey]));
+      try {
+        localStorage.setItem('school_dashboard_deleted_events', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+
+    setAuthBanner({
+      type: 'info',
+      message: 'Event deleted from schedule.'
+    });
+    setTimeout(() => {
+      setAuthBanner(prev => (prev?.message?.includes('deleted') ? null : prev));
+    }, 3500);
   };
 
   // Filter tasks
@@ -340,11 +474,28 @@ export default function App() {
     return true;
   });
 
-  // Filter events
+  // Filter events (excluding deleted, filtered by student and active/acknowledged tab)
   const filteredEvents = events.filter(event => {
-    if (selectedStudent === 'All') return true;
-    return event.student === selectedStudent || event.student === 'All';
+    const key = (event.id || `${(event.title || '').toLowerCase().replace(/[^a-z0-9]/g, '')}_${event.date || ''}`).toLowerCase();
+    if (deletedEventKeys.includes(key)) return false;
+
+    const matchesStudent = selectedStudent === 'All' || event.student === selectedStudent || event.student === 'All';
+    if (!matchesStudent) return false;
+
+    if (eventFilter === 'active') return !event.acknowledged;
+    if (eventFilter === 'acknowledged') return Boolean(event.acknowledged);
+    return true;
   });
+
+  const activeEventsCount = events.filter(ev => {
+    const key = (ev.id || `${(ev.title || '').toLowerCase().replace(/[^a-z0-9]/g, '')}_${ev.date || ''}`).toLowerCase();
+    return !deletedEventKeys.includes(key) && !ev.acknowledged && (selectedStudent === 'All' || ev.student === selectedStudent || ev.student === 'All');
+  }).length;
+
+  const acknowledgedEventsCount = events.filter(ev => {
+    const key = (ev.id || `${(ev.title || '').toLowerCase().replace(/[^a-z0-9]/g, '')}_${ev.date || ''}`).toLowerCase();
+    return !deletedEventKeys.includes(key) && Boolean(ev.acknowledged) && (selectedStudent === 'All' || ev.student === selectedStudent || ev.student === 'All');
+  }).length;
 
   // Statistics
   const benTasks = tasks.filter(t => t.student === 'Ben');
@@ -500,8 +651,8 @@ export default function App() {
         <div className="mt-8 pt-4 border-t border-slate-800/80">
           <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
             <span className="flex items-center gap-1.5">
-              <span className={`w-2 h-2 rounded-full ${authStatus.authenticated ? 'bg-emerald-400 animate-pulse' : 'bg-blue-400'}`}></span>
-              {authStatus.authenticated ? 'Gmail API Active' : 'Sample Sync Mode'}
+              <span className={`w-2 h-2 rounded-full ${authStatus.authenticated ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
+              {authStatus.authenticated ? 'Gmail API Active' : 'Gmail Disconnected'}
             </span>
             <span className="font-mono text-[11px] text-slate-500">v1.0.0</span>
           </div>
@@ -513,7 +664,7 @@ export default function App() {
             className="w-full py-1.5 px-2.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-[11px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
           >
             <Shield className="w-3.5 h-3.5 text-indigo-400" />
-            <span>{authStatus.authenticated ? 'Gmail Connected' : 'Google OAuth Setup'}</span>
+            <span>{authStatus.authenticated ? 'Gmail Connected' : 'Connect Google Inbox'}</span>
           </button>
         </div>
       </aside>
@@ -581,16 +732,52 @@ export default function App() {
               </button>
             )}
 
-            {/* Sync Inbox Button */}
-            <button
-              id="sync-inbox-button"
-              onClick={handleSyncInbox}
-              disabled={isSyncing}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-sm font-semibold shadow-lg shadow-indigo-600/25 border border-indigo-400/30 active:scale-[0.98] transition-all disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
-            >
-              <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span>{isSyncing ? 'Syncing Inbox...' : 'Sync Inbox'}</span>
-            </button>
+            {/* Sync Inbox Button Group */}
+            <div className="relative inline-flex items-center shadow-lg shadow-indigo-600/25">
+              <button
+                id="sync-inbox-button"
+                onClick={() => handleSyncInbox('incremental')}
+                disabled={isSyncing}
+                title="Sync new emails since previous pull (capped at 2 weeks)"
+                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-l-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-sm font-semibold border-y border-l border-indigo-400/30 active:scale-[0.99] transition-all disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+              >
+                <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>{isSyncing ? 'Syncing...' : 'Sync Inbox'}</span>
+              </button>
+              <button
+                type="button"
+                id="sync-options-dropdown-button"
+                onClick={() => setSyncDropdownOpen(prev => !prev)}
+                disabled={isSyncing}
+                title="Sync options (Incremental vs Full 14-Day)"
+                className="px-2 py-2.5 rounded-r-xl bg-indigo-700 hover:bg-indigo-600 text-white border-y border-r border-indigo-400/30 transition-all cursor-pointer disabled:opacity-60"
+              >
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Sync Options Dropdown */}
+              {syncDropdownOpen && (
+                <div className="absolute right-0 top-full mt-2 w-72 bg-slate-900 border border-slate-700/80 rounded-xl shadow-2xl z-50 p-2 text-xs backdrop-blur-xl">
+                  <div className="px-2.5 py-1 text-slate-400 font-semibold border-b border-slate-800 mb-1">
+                    Email Synchronization Window
+                  </div>
+                  <button
+                    onClick={() => handleSyncInbox('incremental')}
+                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-200 transition-colors flex flex-col cursor-pointer"
+                  >
+                    <span className="font-semibold text-white">Sync Since Last Pull</span>
+                    <span className="text-slate-400 text-[11px]">Syncs from previous pull (up to 2 weeks maximum)</span>
+                  </button>
+                  <button
+                    onClick={() => handleSyncInbox('full')}
+                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-200 transition-colors flex flex-col cursor-pointer mt-1"
+                  >
+                    <span className="font-semibold text-white">Full 14-Day Rescan</span>
+                    <span className="text-slate-400 text-[11px]">Re-analyzes all inbox emails over the last 14 days</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -814,12 +1001,43 @@ export default function App() {
               {/* Task Items List */}
               <div className="mt-4 space-y-2.5 flex-1 overflow-y-auto max-h-[620px] pr-1">
                 {filteredTasks.length === 0 ? (
-                  <div className="text-center py-12 px-4 rounded-xl border border-dashed border-slate-800 text-slate-400">
-                    <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-slate-600" />
-                    <p className="text-sm font-medium text-slate-300">No tasks found</p>
-                    <p className="text-xs text-slate-500 mt-1">
-                      {taskFilter !== 'all' ? 'Try switching your filter or click "Sync Inbox"' : 'All tasks are cleared for this view!'}
-                    </p>
+                  <div className="text-center py-12 px-6 rounded-xl border border-dashed border-slate-800 text-slate-400 bg-slate-950/30">
+                    {!authStatus.authenticated ? (
+                      <>
+                        <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                          <Inbox className="w-6 h-6" />
+                        </div>
+                        <p className="text-sm font-semibold text-slate-200">Connect Gmail to Sync Real Assignments</p>
+                        <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1 leading-relaxed">
+                          Link your Google account to automatically scan emails from Westlake Lutheran Academy and sportsYou for Ben and Jade.
+                        </p>
+                        <button
+                          onClick={handleConnectGoogle}
+                          className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md transition-all cursor-pointer"
+                        >
+                          <Shield className="w-3.5 h-3.5" />
+                          <span>Connect Gmail Account</span>
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-slate-600" />
+                        <p className="text-sm font-semibold text-slate-200">No Assignments Found</p>
+                        <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                          {taskFilter !== 'all'
+                            ? 'No assignments match the selected filter.'
+                            : 'No assignment emails detected in the last 14 days. Click "Sync Inbox" to check again.'}
+                        </p>
+                        <button
+                          onClick={() => handleSyncInbox('incremental')}
+                          disabled={isSyncing}
+                          className="mt-4 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-200 text-xs font-medium border border-slate-700 transition-colors cursor-pointer disabled:opacity-60"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                          <span>{isSyncing ? 'Syncing...' : 'Sync Inbox Now'}</span>
+                        </button>
+                      </>
+                    )}
                   </div>
                 ) : (
                   filteredTasks.map(task => {
@@ -827,11 +1045,11 @@ export default function App() {
                     return (
                       <div
                         key={task.id}
-                        onClick={() => toggleTask(task.id)}
+                        onClick={() => handleOpenTaskModal(task)}
                         className={`group p-3.5 rounded-xl border transition-all duration-150 flex items-start justify-between gap-3 cursor-pointer ${
                           task.completed
                             ? 'bg-slate-900/40 border-slate-800/60 opacity-60 hover:opacity-90'
-                            : 'bg-slate-900/90 border-slate-800 hover:border-slate-700 hover:bg-slate-850 shadow-sm'
+                            : 'bg-slate-900/90 border-slate-800 hover:border-indigo-500/50 hover:bg-slate-850 shadow-sm'
                         }`}
                       >
                         {/* Checkbox and Title */}
@@ -843,6 +1061,7 @@ export default function App() {
                               toggleTask(task.id);
                             }}
                             className="mt-0.5 text-slate-400 group-hover:text-indigo-400 transition-colors focus:outline-none"
+                            title={task.completed ? "Mark as open" : "Mark as completed"}
                           >
                             {task.completed ? (
                               <CheckCircle2 className="w-5 h-5 text-emerald-400 fill-emerald-500/20" />
@@ -862,7 +1081,7 @@ export default function App() {
                               {task.title}
                             </p>
 
-                            {/* Badges: Student, Course, Due Date, Source */}
+                            {/* Badges: Student, Course, Due Date, Comments, Source */}
                             <div className="flex flex-wrap items-center gap-1.5 mt-2">
                               {/* Student Tag */}
                               <span
@@ -888,6 +1107,18 @@ export default function App() {
                                 {task.dueDate}
                               </span>
 
+                              {/* Comments count indicator */}
+                              {task.comments && task.comments.length > 0 ? (
+                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 flex items-center gap-1 font-medium">
+                                  <MessageSquare className="w-2.5 h-2.5" />
+                                  {task.comments.length}
+                                </span>
+                              ) : (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+                                  <MessageSquare className="w-2.5 h-2.5" /> Note
+                                </span>
+                              )}
+
                               {/* Source Badge */}
                               <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-400">
                                 {task.source === 'sportsYou' ? 'sportsYou' : 'Westlake'}
@@ -896,8 +1127,19 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* Action buttons (Delete) */}
-                        <div className="shrink-0 flex items-center opacity-0 group-hover:opacity-100 transition-opacity">
+                        {/* Action buttons (Comment & Delete) */}
+                        <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenTaskModal(task);
+                            }}
+                            className="p-1 rounded text-slate-400 hover:text-indigo-300 hover:bg-slate-800"
+                            title="View details & comments"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                          </button>
                           <button
                             onClick={(e) => deleteTask(task.id, e)}
                             className="p-1 rounded text-slate-500 hover:text-red-400 hover:bg-slate-800"
@@ -917,7 +1159,7 @@ export default function App() {
             {/* Right Column: Events & Sports Schedule Widget        */}
             {/* ---------------------------------------------------- */}
             <section className="lg:col-span-5 bg-slate-950/60 rounded-2xl border border-slate-800/80 p-5 shadow-lg flex flex-col">
-              <div className="flex items-center justify-between pb-4 border-b border-slate-800/80">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800/80 gap-3">
                 <div className="flex items-center gap-2.5">
                   <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center">
                     <Calendar className="w-4 h-4" />
@@ -926,21 +1168,55 @@ export default function App() {
                     <h2 className="text-base font-bold text-white flex items-center gap-2">
                       Events & Sports
                       <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-normal">
-                        {filteredEvents.length} upcoming
+                        {activeEventsCount} active
                       </span>
                     </h2>
                     <p className="text-xs text-slate-400">From sportsYou & Westlake calendar</p>
                   </div>
+                </div>
+
+                {/* Active vs Acknowledged Filter Tabs */}
+                <div className="inline-flex rounded-lg bg-slate-900 p-1 border border-slate-800 text-xs self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setEventFilter('active')}
+                    className={`px-2.5 py-1 rounded-md font-semibold transition-all cursor-pointer ${
+                      eventFilter === 'active'
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Active ({activeEventsCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEventFilter('acknowledged')}
+                    className={`px-2.5 py-1 rounded-md font-semibold transition-all cursor-pointer ${
+                      eventFilter === 'acknowledged'
+                        ? 'bg-slate-800 text-slate-200 border border-slate-700 shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Acknowledged ({acknowledgedEventsCount})
+                  </button>
                 </div>
               </div>
 
               {/* Event Cards List */}
               <div className="mt-4 space-y-3 flex-1 overflow-y-auto max-h-[620px] pr-1">
                 {filteredEvents.length === 0 ? (
-                  <div className="text-center py-12 px-4 rounded-xl border border-dashed border-slate-800 text-slate-400">
+                  <div className="text-center py-12 px-6 rounded-xl border border-dashed border-slate-800 text-slate-400 bg-slate-950/30">
                     <Calendar className="w-8 h-8 mx-auto mb-2 text-slate-600" />
-                    <p className="text-sm font-medium text-slate-300">No events scheduled</p>
-                    <p className="text-xs text-slate-500 mt-1">No upcoming sports or school events for this selection.</p>
+                    <p className="text-sm font-semibold text-slate-200">
+                      {eventFilter === 'acknowledged' ? 'No Acknowledged Events' : 'No Events Scheduled'}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
+                      {eventFilter === 'acknowledged'
+                        ? 'Events that you acknowledge from the active list will appear here.'
+                        : !authStatus.authenticated
+                        ? 'Connect your Gmail account to scan for games, practices, and school chapel schedules.'
+                        : 'All scheduled events have been acknowledged or no upcoming events were found.'}
+                    </p>
                   </div>
                 ) : (
                   filteredEvents.map(event => {
@@ -951,66 +1227,116 @@ export default function App() {
                     return (
                       <div
                         key={event.id}
-                        className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-slate-700 transition-all duration-150 shadow-sm"
+                        className={`group relative p-3.5 rounded-xl transition-all duration-150 shadow-sm border ${
+                          event.acknowledged
+                            ? 'bg-slate-900/40 border-slate-800/60 opacity-80'
+                            : 'bg-slate-900/90 border-slate-800 hover:border-slate-700'
+                        }`}
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            {/* Date & Time Header */}
-                            <div className="flex items-center gap-2 text-xs font-semibold text-amber-400">
-                              <Calendar className="w-3.5 h-3.5" />
-                              <span>{event.date}</span>
-                              <span className="text-slate-600">&bull;</span>
-                              <span className="text-slate-300 flex items-center gap-1 font-mono text-[11px]">
-                                <Clock className="w-3 h-3 text-slate-400" />
-                                {event.time}
-                              </span>
-                            </div>
-
-                            {/* Title */}
-                            <h3 className="text-sm font-bold text-slate-100 mt-1.5 leading-snug">
-                              {event.title}
-                            </h3>
-
-                            {/* Description / note if present */}
-                            {event.description && (
-                              <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                                {event.description}
-                              </p>
-                            )}
-
-                            {/* Meta items: Location, Student, Source */}
-                            <div className="flex flex-wrap items-center gap-2 mt-3 text-[11px] text-slate-400">
-                              <span className="flex items-center gap-1 bg-slate-950/80 px-2 py-0.5 rounded-md border border-slate-800 text-slate-300">
-                                <MapPin className="w-3 h-3 text-red-400 shrink-0" />
-                                <span className="truncate max-w-[140px]">{event.location}</span>
-                              </span>
-
-                              {/* Student Tag */}
-                              <span
-                                className={`font-semibold px-2 py-0.5 rounded-md border text-[10px] ${
-                                  isBen
-                                    ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
-                                    : isJade
-                                    ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
-                                    : 'bg-slate-800 text-slate-300 border-slate-700'
-                                }`}
-                              >
-                                {event.student}
-                              </span>
-
-                              {/* Source Pill */}
-                              <span
-                                className={`text-[10px] px-2 py-0.5 rounded-md font-medium flex items-center gap-1 ${
-                                  isSports
-                                    ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
-                                    : 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/30'
-                                }`}
-                              >
-                                {isSports ? <Trophy className="w-2.5 h-2.5" /> : <GraduationCap className="w-2.5 h-2.5" />}
-                                {event.source}
-                              </span>
-                            </div>
+                        {/* Top Header Row: Date/Time on left, Compact Actions on right */}
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 text-xs font-semibold text-amber-400">
+                            <Calendar className="w-3.5 h-3.5 shrink-0" />
+                            <span>{event.date}</span>
+                            <span className="text-slate-600">&bull;</span>
+                            <span className="text-slate-300 flex items-center gap-1 font-mono text-[11px]">
+                              <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+                              {event.time}
+                            </span>
                           </div>
+
+                          {/* Seamless Integrated Actions */}
+                          <div className="flex items-center gap-1 shrink-0">
+                            {!event.acknowledged ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={(e) => acknowledgeEvent(event.id, e)}
+                                  title="Acknowledge (remove from active list)"
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-800/80 hover:bg-emerald-500/15 text-slate-400 hover:text-emerald-300 border border-slate-700/80 hover:border-emerald-500/30 text-[11px] font-medium transition-all cursor-pointer"
+                                >
+                                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                  <span className="hidden sm:inline">Acknowledge</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => deleteEvent(event.id, event.title, event.date, e)}
+                                  title="Delete event permanently"
+                                  className="p-1 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <span className="text-[10px] font-medium text-emerald-400/90 bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-500/20 inline-flex items-center gap-1">
+                                  <CheckCheck className="w-3 h-3" />
+                                  <span>Ack'd</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => restoreEvent(event.id, e)}
+                                  title="Restore to active schedule"
+                                  className="p-1 rounded-md text-slate-400 hover:text-indigo-300 hover:bg-indigo-500/10 transition-colors cursor-pointer"
+                                >
+                                  <RotateCcw className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => deleteEvent(event.id, event.title, event.date, e)}
+                                  title="Delete event permanently"
+                                  className="p-1 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Title: Unobstructed full width */}
+                        <h3 className="text-sm font-bold text-slate-100 mt-2 leading-snug">
+                          {event.title}
+                        </h3>
+
+                        {/* Description / note if present */}
+                        {event.description && (
+                          <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                            {event.description}
+                          </p>
+                        )}
+
+                        {/* Meta items: Location, Student, Source */}
+                        <div className="flex flex-wrap items-center gap-2 mt-3 text-[11px] text-slate-400">
+                          <span className="flex items-center gap-1 bg-slate-950/80 px-2 py-0.5 rounded-md border border-slate-800 text-slate-300">
+                            <MapPin className="w-3 h-3 text-red-400 shrink-0" />
+                            <span className="truncate max-w-[160px]">{event.location}</span>
+                          </span>
+
+                          {/* Student Tag */}
+                          <span
+                            className={`font-semibold px-2 py-0.5 rounded-md border text-[10px] ${
+                              isBen
+                                ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
+                                : isJade
+                                ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
+                                : 'bg-slate-800 text-slate-300 border-slate-700'
+                            }`}
+                          >
+                            {event.student}
+                          </span>
+
+                          {/* Source Pill */}
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-md font-medium flex items-center gap-1 ${
+                              isSports
+                                ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
+                                : 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/30'
+                            }`}
+                          >
+                            {isSports ? <Trophy className="w-2.5 h-2.5" /> : <GraduationCap className="w-2.5 h-2.5" />}
+                            {event.source}
+                          </span>
                         </div>
                       </div>
                     );
@@ -1132,6 +1458,193 @@ export default function App() {
                   Save Secret to Start
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------------------------------------------- */}
+      {/* Assignment Detail & Collaboration Comments Modal     */}
+      {/* ---------------------------------------------------- */}
+      {selectedTaskForModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-xl w-full p-6 shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-800 shrink-0">
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Student Tag */}
+                <span
+                  className={`text-xs font-semibold px-2.5 py-1 rounded-md border ${
+                    selectedTaskForModal.student === 'Ben'
+                      ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
+                      : 'bg-purple-500/10 text-purple-300 border-purple-500/30'
+                  }`}
+                >
+                  {selectedTaskForModal.student}
+                </span>
+                {/* Course Tag */}
+                {selectedTaskForModal.course && (
+                  <span className="text-xs px-2.5 py-1 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
+                    {selectedTaskForModal.course}
+                  </span>
+                )}
+                {/* Source Badge */}
+                <span className="text-xs px-2 py-0.5 rounded bg-slate-800/90 text-slate-400 border border-slate-700/60">
+                  {selectedTaskForModal.source}
+                </span>
+              </div>
+              <button
+                onClick={() => setSelectedTaskForModal(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer text-lg leading-none"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Task Details Info */}
+            <div className="py-4 border-b border-slate-800/80 space-y-3 shrink-0">
+              <div className="flex items-start justify-between gap-3">
+                <h2 className="text-base font-bold text-white leading-snug">
+                  {selectedTaskForModal.title}
+                </h2>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <div className="flex items-center gap-3 text-xs text-slate-300">
+                  <span className="flex items-center gap-1.5 text-amber-400 font-medium">
+                    <Clock className="w-3.5 h-3.5" />
+                    Due: {selectedTaskForModal.dueDate}
+                  </span>
+                  <span className="text-slate-600">&bull;</span>
+                  <span className="text-slate-400">
+                    Priority: <span className="capitalize text-slate-200">{selectedTaskForModal.priority || 'medium'}</span>
+                  </span>
+                </div>
+
+                {/* Complete / Reopen Toggle Button */}
+                <button
+                  type="button"
+                  onClick={() => toggleTask(selectedTaskForModal.id)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                    selectedTaskForModal.completed
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30'
+                      : 'bg-slate-800 text-slate-300 border border-slate-700 hover:border-slate-600 hover:text-white'
+                  }`}
+                >
+                  {selectedTaskForModal.completed ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      Completed
+                    </>
+                  ) : (
+                    <>
+                      <Circle className="w-3.5 h-3.5 text-slate-400" />
+                      Mark Complete
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Collaboration & Comments Thread */}
+            <div className="flex-1 flex flex-col min-h-0 pt-4">
+              <div className="flex items-center justify-between pb-3">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4 text-indigo-400" />
+                  Family Notes & Collaboration
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-normal">
+                    {(selectedTaskForModal.comments || []).length}
+                  </span>
+                </h3>
+                <span className="text-[11px] text-slate-500">Visible to family members</span>
+              </div>
+
+              {/* Scrollable comments list */}
+              <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 min-h-[140px] max-h-[260px]">
+                {(selectedTaskForModal.comments || []).length === 0 ? (
+                  <div className="text-center py-8 px-4 rounded-xl border border-dashed border-slate-800 text-slate-500">
+                    <MessageCircle className="w-6 h-6 mx-auto mb-1.5 text-slate-600" />
+                    <p className="text-xs font-medium text-slate-400">No notes or comments yet</p>
+                    <p className="text-[11px] text-slate-600 mt-0.5">Leave a comment below to coordinate with family members.</p>
+                  </div>
+                ) : (
+                  (selectedTaskForModal.comments || []).map(comment => (
+                    <div
+                      key={comment.id}
+                      className="p-3 rounded-xl bg-slate-950/80 border border-slate-800/90 hover:border-slate-700/80 transition-colors group"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-indigo-500/20 border border-indigo-400/30 text-indigo-300 flex items-center justify-center text-[10px] font-bold">
+                            {comment.author ? comment.author.charAt(0).toUpperCase() : 'F'}
+                          </div>
+                          <span className="text-xs font-semibold text-slate-200">{comment.author}</span>
+                          <span className="text-[10px] text-slate-500">&bull;</span>
+                          <span className="text-[10px] text-slate-500 font-mono">{comment.timestamp}</span>
+                        </div>
+                        <button
+                          onClick={() => handleDeleteComment(selectedTaskForModal.id, comment.id)}
+                          className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 text-xs transition-opacity p-0.5 cursor-pointer"
+                          title="Delete note"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <p className="text-xs text-slate-300 mt-2 leading-relaxed whitespace-pre-wrap pl-8">
+                        {comment.text}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Comment input form */}
+              <form onSubmit={handleAddComment} className="pt-3 mt-3 border-t border-slate-800/80 space-y-2.5 shrink-0">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="Your name (e.g. Mom, Dad, Ben)"
+                    value={commentAuthor}
+                    onChange={(e) => setCommentAuthor(e.target.value)}
+                    className="px-3 py-1.5 text-xs bg-slate-950 rounded-lg border border-slate-700 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 w-44"
+                  />
+                  <div className="flex items-center gap-1">
+                    {['Mom', 'Dad', 'Ben', 'Jade'].map(quickName => (
+                      <button
+                        key={quickName}
+                        type="button"
+                        onClick={() => setCommentAuthor(quickName)}
+                        className="px-2 py-1 rounded bg-slate-800/80 hover:bg-slate-700 text-[10px] text-slate-400 hover:text-white transition-colors cursor-pointer"
+                      >
+                        {quickName}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <textarea
+                    placeholder="Add a comment, note, or update on this assignment..."
+                    value={commentText}
+                    onChange={(e) => setCommentText(e.target.value)}
+                    rows={2}
+                    className="flex-1 px-3 py-2 text-xs bg-slate-950 rounded-lg border border-slate-700 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleAddComment(e);
+                      }
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={!commentText.trim()}
+                    className="px-4 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Post</span>
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         </div>

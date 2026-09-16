@@ -1,0 +1,166 @@
+{
+  "tasks": [
+    {
+      "id": "task_1a0ac0cd70d4681b_quiz_ben",
+      "title": "Study for Science Quiz (Periodic Table, EMS, & Percent Abundance) - Ms. Dube",
+      "student": "Ben",
+      "course": "Science",
+      "dueDate": "This week",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "high",
+      "emailSubject": "Re: Ben's notes",
+      "emailDate": "Wed, 16 Sep 2026 21:08:34 +0000",
+      "comments": []
+    },
+    {
+      "id": "task_1a0abbe906053d5f_test_ben",
+      "title": "Short Story test (Emily Falvey)",
+      "student": "Ben",
+      "course": "English / ELA",
+      "dueDate": "Friday, 9/18",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "high",
+      "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Reminder",
+      "emailDate": "Wed, 16 Sep 2026 19:43:07 +0000",
+      "comments": []
+    },
+    {
+      "id": "task_1a0abbe906053d5f_study_guide_ben",
+      "title": "Complete Short Story Review & Study Guide (Graded) (Emily Falvey)",
+      "student": "Ben",
+      "course": "English / ELA",
+      "dueDate": "Friday, 9/18",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "high",
+      "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Reminder",
+      "emailDate": "Wed, 16 Sep 2026 19:43:07 +0000",
+      "comments": []
+    },
+    {
+      "id": "task_1a0abbe906053d5f_novel_ben",
+      "title": "Read assigned novel chapters (at-home reading) (Emily Falvey)",
+      "student": "Ben",
+      "course": "English / ELA",
+      "dueDate": "Ongoing",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "medium",
+      "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Reminder",
+      "emailDate": "Wed, 16 Sep 2026 19:43:07 +0000",
+      "comments": []
+    }
+  ],
+  "events": [
+    {
+      "id": "ev_subj_1a0ab2a516c8a291",
+      "title": "a new game on sportsYou",
+      "student": "Jade",
+      "date": "Wed, Sep 16",
+      "time": "Check sportsYou",
+      "location": "Athletic Field / Course",
+      "source": "sportsYou",
+      "type": "sports",
+      "description": "You have been invited to a new game on sportsYou. ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎"
+    },
+    {
+      "id": "event_1a0ab2a516c8a291_2",
+      "title": "New game invitation",
+      "student": "All",
+      "date": "Wed, Sep 16",
+      "time": "Time TBA",
+      "location": "Westlake Campus",
+      "source": "sportsYou",
+      "type": "sports",
+      "description": "New game invitation"
+    },
+    {
+      "id": "event_1a0ab2a516c8a291_3",
+      "title": "Second Baptist XC - High School &amp; Middle School Meet",
+      "student": "Ben",
+      "date": "Wed, Sep 16",
+      "time": "Time TBA",
+      "location": "Westlake Campus",
+      "source": "sportsYou",
+      "type": "sports",
+      "description": "Second Baptist XC - High School &amp; Middle School Meet"
+    },
+    {
+      "id": "event_1a0ab26fd4e88fa3_1",
+      "title": "Game canceled on Wildcat CC",
+      "student": "All",
+      "date": "Wed, Sep 16",
+      "time": "Time TBA",
+      "location": "CC",
+      "source": "sportsYou",
+      "type": "sports",
+      "description": "Game canceled on Wildcat CC"
+    },
+    {
+      "id": "event_1a0a11841e7fa64b_1",
+      "title": "Updated Match Schedule",
+      "student": "All",
+      "date": "Mon, Sep 14",
+      "time": "Time TBA",
+      "location": "Westlake Campus",
+      "source": "sportsYou",
+      "type": "sports",
+      "description": "Updated Match Schedule"
+    },
+    {
+      "id": "event_1a0a10e87b69f959_1",
+      "title": "There has been a correction to this weeks VB schedule. B team will not have a game tomorrow, 9/15. They can be picked up at regular dismissal.",
+      "student": "All",
+      "date": "9/15",
+      "time": "Time TBA",
+      "location": "Westlake Campus",
+      "source": "sportsYou",
+      "type": "sports",
+      "description": "There has been a correction to this weeks VB schedule. B team will not have a game tomorrow, 9/15. They can be picked up at regular dismissal."
+    },
+    {
+      "id": "event_1a0a10e87b69f959_2",
+      "title": "The HIGH SCHOOL game on 9/15 vs Beren Academy will start at 5pm.",
+      "student": "All",
+      "date": "9/15",
+      "time": "5pm",
+      "location": "Westlake Campus",
+      "source": "sportsYou",
+      "type": "sports",
+      "description": "The HIGH SCHOOL game on 9/15 vs Beren Academy will start at 5pm."
+    },
+    {
+      "id": "ev_subj_1a0a0a5767c2cfcb",
+      "title": "MS XC Practice",
+      "student": "Ben",
+      "date": "Mon, Sep 14",
+      "time": "Check sportsYou",
+      "location": "Athletic Field / Course",
+      "source": "sportsYou",
+      "type": "sports",
+      "description": "An event has been changed on your calendar, please note what has changed. ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌"
+    },
+    {
+      "id": "event_1a0a083922c888ea_1",
+      "title": "This message is for parents of A and C players to pre buy tickets for the Cornerstone game tomorrow. Cornerstone does not take payment at the door. Please keep your receipts!!",
+      "student": "All",
+      "date": "Mon, Sep 14",
+      "time": "Time TBA",
+      "location": "Westlake Campus",
+      "source": "sportsYou",
+      "type": "sports",
+      "description": "This message is for parents of A and C players to pre buy tickets for the Cornerstone game tomorrow. Cornerstone does not take payment at the door. Please keep your receipts!!"
+    }
+  ],
+  "deletedEventKeys": [],
+  "lastSyncedAt": "2026-09-16T21:51:58.876Z",
+  "lastSyncStats": {
+    "totalProcessed": 25,
+    "matchedEmails": 21,
+    "tasksFound": 4,
+    "eventsFound": 9
+  },
+  "updatedAt": "2026-09-16T21:55:05.556Z"
+}
