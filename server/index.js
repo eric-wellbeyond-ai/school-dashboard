@@ -581,12 +581,28 @@ app.get('/api/dashboard/sync', async (req, res) => {
       const seenEvents = new Set();
       const mergedEvents = [];
 
-      // Add existing events (unless deleted)
+      // Create lookup map of newly parsed events to enrich existing events
+      const newlyParsedMap = new Map();
+      for (const ev of parsed.events) {
+        const key = (ev.id || `${ev.title.toLowerCase().replace(/[^a-z0-9]/g, '')}_${ev.date}`).toLowerCase();
+        newlyParsedMap.set(key, ev);
+      }
+
+      // Add existing events (unless deleted), enriched with any new metadata
       for (const ev of existingEvents) {
         const key = (ev.id || `${ev.title.toLowerCase().replace(/[^a-z0-9]/g, '')}_${ev.date}`).toLowerCase();
         if (!deletedEventKeys.has(key) && !seenEvents.has(key)) {
           seenEvents.add(key);
-          mergedEvents.push(ev);
+          const newlyParsed = newlyParsedMap.get(key);
+          mergedEvents.push({
+            ...ev,
+            emailId: ev.emailId || (newlyParsed ? newlyParsed.emailId : undefined),
+            emailFrom: ev.emailFrom || (newlyParsed ? newlyParsed.emailFrom : undefined),
+            rawEmailFrom: ev.rawEmailFrom || (newlyParsed ? newlyParsed.rawEmailFrom : undefined),
+            emailSubject: ev.emailSubject || (newlyParsed ? newlyParsed.emailSubject : undefined),
+            emailDate: ev.emailDate || (newlyParsed ? newlyParsed.emailDate : undefined),
+            emailBody: ev.emailBody || (newlyParsed ? newlyParsed.emailBody : undefined)
+          });
         }
       }
 

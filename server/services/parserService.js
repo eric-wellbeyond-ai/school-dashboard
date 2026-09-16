@@ -480,6 +480,17 @@ export function extractEventsFromEmail(email, source) {
   const lines = (email.body || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const emailWideStudent = detectStudent(email.subject);
 
+  // Resolve clean sender/poster name
+  let senderName = email.from || '';
+  if (source === 'sportsYou') {
+    const postMatch = (email.subject || '').match(/^([A-Za-z\s'-]+?)\s+posted\s+in/i);
+    if (postMatch && postMatch[1]) {
+      senderName = `${postMatch[1].trim()} (via sportsYou)`;
+    } else {
+      senderName = email.from || 'sportsYou';
+    }
+  }
+
   // If email is a direct sportsYou event alert, extract primary event from subject/snippet
   if (source === 'sportsYou' && (email.subject.includes('game has been added') || email.subject.includes('Meet') || email.subject.includes('Practice has been'))) {
     let subjectTitle = email.subject.replace(/ has been (?:added to|updated on).*$/i, '').trim();
@@ -497,7 +508,13 @@ export function extractEventsFromEmail(email, source) {
       location: 'Athletic Field / Course',
       source: 'sportsYou',
       type: 'sports',
-      description: email.snippet || email.subject
+      description: email.snippet || email.subject,
+      emailId: email.id,
+      emailFrom: senderName,
+      rawEmailFrom: email.from || '',
+      emailSubject: email.subject || '',
+      emailDate: email.date || '',
+      emailBody: email.body || email.snippet || ''
     });
   }
 
@@ -604,7 +621,13 @@ export function extractEventsFromEmail(email, source) {
       location: location,
       source: source,
       type: type,
-      description: line.replace(/^[-*•\d\.\)\s]+/, '').trim()
+      description: line.replace(/^[-*•\d\.\)\s]+/, '').trim(),
+      emailId: email.id,
+      emailFrom: senderName,
+      rawEmailFrom: email.from || '',
+      emailSubject: email.subject || '',
+      emailDate: email.date || '',
+      emailBody: email.body || email.snippet || ''
     });
   }
 

@@ -30,7 +30,10 @@ import {
   CheckCheck,
   Award,
   AlertTriangle,
-  Key
+  Key,
+  Mail,
+  Copy,
+  FileText
 } from 'lucide-react';
 
 export default function App() {
@@ -103,6 +106,10 @@ export default function App() {
     }
   });
   const [commentText, setCommentText] = useState('');
+
+  // Event & email detail modal state
+  const [selectedEventForModal, setSelectedEventForModal] = useState(null);
+  const [copiedEmailText, setCopiedEmailText] = useState(false);
 
   // Persistent state: rehydrates from browser localStorage immediately
   const [tasks, setTasks] = useState(() => {
@@ -304,6 +311,18 @@ export default function App() {
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (selectedEventForModal) setSelectedEventForModal(null);
+        if (selectedTaskForModal) setSelectedTaskForModal(null);
+        if (showBlackbaudModal) setShowBlackbaudModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedEventForModal, selectedTaskForModal, showBlackbaudModal]);
 
   const fetchBlackbaudStatus = async () => {
     try {
@@ -589,6 +608,7 @@ export default function App() {
       persistDashboardState(undefined, updated);
       return updated;
     });
+    setSelectedEventForModal(prev => (prev && prev.id === eventId ? { ...prev, acknowledged: true, acknowledgedAt: new Date().toISOString() } : prev));
     setAuthBanner({
       type: 'success',
       message: 'Event acknowledged and removed from active schedule.'
@@ -615,6 +635,7 @@ export default function App() {
       persistDashboardState(undefined, updated);
       return updated;
     });
+    setSelectedEventForModal(prev => (prev && prev.id === eventId ? { ...prev, acknowledged: false, acknowledgedAt: null } : prev));
     setAuthBanner({
       type: 'info',
       message: 'Event restored to active schedule.'
@@ -634,6 +655,7 @@ export default function App() {
     setEvents(nextEvents);
     setDeletedEventKeys(nextKeys);
     persistDashboardState(undefined, nextEvents, nextKeys);
+    setSelectedEventForModal(prev => (prev && prev.id === eventId ? null : prev));
 
     setAuthBanner({
       type: 'info',
@@ -642,6 +664,13 @@ export default function App() {
     setTimeout(() => {
       setAuthBanner(prev => (prev?.message?.includes('deleted') ? null : prev));
     }, 3500);
+  };
+
+  const handleCopyEmailText = (text) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text);
+    setCopiedEmailText(true);
+    setTimeout(() => setCopiedEmailText(false), 2000);
   };
 
   // Filter tasks
@@ -1713,10 +1742,11 @@ export default function App() {
                     return (
                       <div
                         key={event.id}
-                        className={`group relative p-3.5 rounded-xl transition-all duration-150 shadow-sm border ${
+                        onClick={() => setSelectedEventForModal(event)}
+                        className={`group relative p-3.5 rounded-xl transition-all duration-150 shadow-sm border cursor-pointer ${
                           event.acknowledged
-                            ? 'bg-slate-900/40 border-slate-800/60 opacity-80'
-                            : 'bg-slate-900/90 border-slate-800 hover:border-slate-700'
+                            ? 'bg-slate-900/40 border-slate-800/60 hover:border-slate-700 opacity-80'
+                            : 'bg-slate-900/90 border-slate-800 hover:border-indigo-500/50 hover:bg-slate-900/95 hover:shadow-md'
                         }`}
                       >
                         {/* Top Header Row: Date/Time on left, Compact Actions on right */}
@@ -1732,7 +1762,7 @@ export default function App() {
                           </div>
 
                           {/* Seamless Integrated Actions */}
-                          <div className="flex items-center gap-1 shrink-0">
+                          <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                             {!event.acknowledged ? (
                               <>
                                 <button
@@ -1781,13 +1811,24 @@ export default function App() {
                         </div>
 
                         {/* Title: Unobstructed full width */}
-                        <h3 className="text-sm font-bold text-slate-100 mt-2 leading-snug">
+                        <h3 className="text-sm font-bold text-slate-100 mt-2 leading-snug group-hover:text-white transition-colors">
                           {event.title}
                         </h3>
 
+                        {/* Sender info if present */}
+                        {event.emailFrom && (
+                          <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mt-1.5">
+                            <Mail className="w-3 h-3 text-slate-500 shrink-0" />
+                            <span className="truncate">
+                              <span className="text-slate-500">From:</span>{' '}
+                              <span className="text-slate-300 font-medium">{event.emailFrom}</span>
+                            </span>
+                          </div>
+                        )}
+
                         {/* Description / note if present */}
                         {event.description && (
-                          <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                          <p className="text-xs text-slate-400 mt-1 leading-relaxed line-clamp-2">
                             {event.description}
                           </p>
                         )}
@@ -1796,7 +1837,7 @@ export default function App() {
                         <div className="flex flex-wrap items-center gap-2 mt-3 text-[11px] text-slate-400">
                           <span className="flex items-center gap-1 bg-slate-950/80 px-2 py-0.5 rounded-md border border-slate-800 text-slate-300">
                             <MapPin className="w-3 h-3 text-red-400 shrink-0" />
-                            <span className="truncate max-w-[160px]">{event.location}</span>
+                            <span className="truncate max-w-[150px]">{event.location}</span>
                           </span>
 
                           {/* Student Tag */}
@@ -1822,6 +1863,12 @@ export default function App() {
                           >
                             {isSports ? <Trophy className="w-2.5 h-2.5" /> : <GraduationCap className="w-2.5 h-2.5" />}
                             {event.source}
+                          </span>
+
+                          {/* Open email indicator */}
+                          <span className="text-[10px] text-slate-500 group-hover:text-indigo-400 flex items-center gap-1 ml-auto font-medium transition-colors">
+                            <span>Open email</span>
+                            <ExternalLink className="w-2.5 h-2.5" />
                           </span>
                         </div>
                       </div>
@@ -2226,13 +2273,13 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <input
                     type="text"
-                    placeholder="Your name (e.g. Mom, Dad, Ben)"
+                    placeholder="Your name (e.g. Stefani, Dad, Ben)"
                     value={commentAuthor}
                     onChange={(e) => setCommentAuthor(e.target.value)}
                     className="px-3 py-1.5 text-xs bg-slate-950 rounded-lg border border-slate-700 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 w-44"
                   />
                   <div className="flex items-center gap-1">
-                    {['Mom', 'Dad', 'Ben', 'Jade'].map(quickName => (
+                    {['Stefani', 'Dad', 'Ben', 'Jade'].map(quickName => (
                       <button
                         key={quickName}
                         type="button"
@@ -2268,6 +2315,246 @@ export default function App() {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------------------------------------------- */}
+      {/* Event & Full Email Detail Modal                      */}
+      {/* ---------------------------------------------------- */}
+      {selectedEventForModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"
+          onClick={() => setSelectedEventForModal(null)}
+        >
+          <div
+            className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col max-h-[90vh] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Top Badges & Close Button */}
+            <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-800 shrink-0">
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Student Badge */}
+                <span
+                  className={`text-xs font-semibold px-2.5 py-1 rounded-md border ${
+                    selectedEventForModal.student === 'Ben'
+                      ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
+                      : selectedEventForModal.student === 'Jade'
+                      ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
+                      : 'bg-slate-800 text-slate-300 border-slate-700'
+                  }`}
+                >
+                  {selectedEventForModal.student}
+                </span>
+
+                {/* Event Type Badge */}
+                <span
+                  className={`text-xs font-medium px-2.5 py-1 rounded-md border flex items-center gap-1.5 ${
+                    selectedEventForModal.type === 'sports'
+                      ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                      : selectedEventForModal.type === 'academic'
+                      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                      : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/30'
+                  }`}
+                >
+                  {selectedEventForModal.type === 'sports' ? (
+                    <Trophy className="w-3.5 h-3.5" />
+                  ) : (
+                    <GraduationCap className="w-3.5 h-3.5" />
+                  )}
+                  <span className="capitalize">{selectedEventForModal.type ? selectedEventForModal.type.replace('_', ' ') : 'Event'}</span>
+                </span>
+
+                {/* Source Badge */}
+                <span className="text-xs px-2 py-0.5 rounded bg-slate-800/90 text-slate-400 border border-slate-700/60">
+                  {selectedEventForModal.source}
+                </span>
+
+                {/* Status indicator */}
+                {selectedEventForModal.acknowledged && (
+                  <span className="text-[10px] font-medium text-emerald-400/90 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-500/20 inline-flex items-center gap-1">
+                    <CheckCheck className="w-3 h-3" />
+                    <span>Acknowledged</span>
+                  </span>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSelectedEventForModal(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer text-lg leading-none"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Event Title & Schedule Info Bar */}
+            <div className="py-4 border-b border-slate-800/80 space-y-3 shrink-0">
+              <div className="flex items-start justify-between gap-3">
+                <h2 className="text-base sm:text-lg font-bold text-white leading-snug">
+                  {selectedEventForModal.title}
+                </h2>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-300">
+                  <span className="flex items-center gap-1.5 text-amber-400 font-medium">
+                    <Calendar className="w-3.5 h-3.5" />
+                    {selectedEventForModal.date}
+                  </span>
+                  <span className="text-slate-600">&bull;</span>
+                  <span className="flex items-center gap-1 text-slate-300 font-mono">
+                    <Clock className="w-3.5 h-3.5 text-slate-400" />
+                    {selectedEventForModal.time}
+                  </span>
+                  <span className="text-slate-600">&bull;</span>
+                  <span className="flex items-center gap-1 text-slate-300">
+                    <MapPin className="w-3.5 h-3.5 text-red-400" />
+                    {selectedEventForModal.location}
+                  </span>
+                </div>
+
+                {/* Actions: Acknowledge & Delete */}
+                <div className="flex items-center gap-2">
+                  {!selectedEventForModal.acknowledged ? (
+                    <button
+                      type="button"
+                      onClick={(e) => acknowledgeEvent(selectedEventForModal.id, e)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-slate-800 hover:bg-emerald-500/20 text-slate-300 hover:text-emerald-300 border border-slate-700 hover:border-emerald-500/40 transition-all cursor-pointer"
+                    >
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Acknowledge</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => restoreEvent(selectedEventForModal.id, e)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-slate-800 hover:bg-indigo-500/20 text-slate-300 hover:text-indigo-300 border border-slate-700 hover:border-indigo-500/40 transition-all cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Restore to Active</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      if (window.confirm(`Delete "${selectedEventForModal.title}" from schedule?`)) {
+                        deleteEvent(selectedEventForModal.id, selectedEventForModal.title, selectedEventForModal.date, e);
+                      }
+                    }}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/30 transition-all cursor-pointer"
+                    title="Delete event permanently"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Email Metadata & Full Body Section */}
+            <div className="flex-1 flex flex-col min-h-0 pt-4 space-y-3">
+              {/* Sender & Subject Header Box */}
+              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2 shrink-0">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 flex items-center justify-center shrink-0">
+                      <Mail className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Email Sender</div>
+                      <div className="text-xs font-semibold text-slate-200 truncate">
+                        {selectedEventForModal.emailFrom || selectedEventForModal.rawEmailFrom || 'sportsYou / School Notification'}
+                      </div>
+                      {selectedEventForModal.rawEmailFrom && selectedEventForModal.emailFrom !== selectedEventForModal.rawEmailFrom && (
+                        <div className="text-[10px] text-slate-500 truncate">
+                          via {selectedEventForModal.rawEmailFrom}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Copy Button */}
+                  <button
+                    type="button"
+                    onClick={() => handleCopyEmailText(selectedEventForModal.emailBody || selectedEventForModal.description || '')}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white border border-slate-700 text-xs font-medium transition-colors cursor-pointer shrink-0"
+                    title="Copy full email text"
+                  >
+                    {copiedEmailText ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span className="text-emerald-400 font-semibold">Copied!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5 text-slate-400" />
+                        <span>Copy Text</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Email Subject */}
+                {selectedEventForModal.emailSubject && (
+                  <div className="pt-2 border-t border-slate-800/80 text-xs text-slate-300 flex items-baseline gap-2">
+                    <span className="text-slate-500 shrink-0 font-medium">Subject:</span>
+                    <span className="text-slate-200 font-semibold truncate">{selectedEventForModal.emailSubject}</span>
+                  </div>
+                )}
+
+                {/* Email Date if present */}
+                {selectedEventForModal.emailDate && (
+                  <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                    <span>Sent:</span>
+                    <span className="text-slate-400">
+                      {isNaN(new Date(selectedEventForModal.emailDate).getTime())
+                        ? selectedEventForModal.emailDate
+                        : new Date(selectedEventForModal.emailDate).toLocaleString('en-US', {
+                            weekday: 'short',
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit'
+                          })}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Scrollable Email Text Body */}
+              <div className="flex-1 flex flex-col min-h-0">
+                <div className="flex items-center justify-between pb-1.5">
+                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                    Full Email Message
+                  </span>
+                  <span className="text-[11px] text-slate-500">Original message content</span>
+                </div>
+
+                <div className="flex-1 overflow-y-auto bg-slate-950/90 border border-slate-800 rounded-xl p-4 text-xs text-slate-200 leading-relaxed whitespace-pre-wrap select-text selection:bg-indigo-500/40 font-mono">
+                  {selectedEventForModal.emailBody ? (
+                    selectedEventForModal.emailBody
+                  ) : selectedEventForModal.description ? (
+                    selectedEventForModal.description
+                  ) : (
+                    <span className="text-slate-500 italic">No additional email text body available.</span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="pt-4 mt-3 border-t border-slate-800 flex items-center justify-end shrink-0">
+              <button
+                type="button"
+                onClick={() => setSelectedEventForModal(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>
