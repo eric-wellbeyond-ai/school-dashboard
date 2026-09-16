@@ -7,7 +7,7 @@ A full-stack Node.js and React dashboard application designed for families at We
 - **Inbox Sync & Parser Service**:
   - Connects to Google Gmail API using OAuth2 with `https://www.googleapis.com/auth/gmail.readonly` scope.
   - Automatically identifies emails originating from **Westlake Lutheran Academy** or **sportsYou**.
-  - Extracts student-specific tasks and homework for **Ben** (Middle School) and **Jade** (Elementary).
+  - Extracts student-specific tasks and homework for **Ben** (High School) and **Jade** (Middle School).
   - Extracts upcoming events, games, practices, and chapel schedules.
   - Graceful fallback to rich sample school payload mode when offline or credentials are not yet configured.
 - **Unified Parent Dashboard (React + Tailwind CSS)**:

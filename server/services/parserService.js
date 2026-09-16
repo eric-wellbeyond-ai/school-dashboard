@@ -119,8 +119,8 @@ export function identifySource(email) {
 // Determine student relevance ("Ben", "Jade", or "Both")
 export function detectStudent(text) {
   if (!text) return null;
-  const hasBen = /\bBen\b/i.test(text) || /\bBenjamin\b/i.test(text) || /\b(middle school|7th grade|varsity soccer)\b/i.test(text);
-  const hasJade = /\bJade\b/i.test(text) || /\b(elementary|4th grade|youth volleyball)\b/i.test(text);
+  const hasBen = /\bBen\b/i.test(text) || /\bBenjamin\b/i.test(text) || /\b(high school|hs\b|high school meet|ap world)\b/i.test(text);
+  const hasJade = /\bJade\b/i.test(text) || /\b(middle school|ms wildcat|ms volleyball|ms\b|ms xc)\b/i.test(text);
 
   if (hasBen && hasJade) return 'Both';
   if (hasBen) return 'Ben';

@@ -622,7 +622,7 @@ export default function App() {
                   </div>
                   <div>
                     <div className="text-sm font-semibold text-slate-100">Ben</div>
-                    <div className="text-[11px] text-slate-400">Middle School &bull; Soccer</div>
+                    <div className="text-[11px] text-slate-400">High School &bull; Athletics</div>
                   </div>
                 </div>
                 <span className="text-xs px-2 py-0.5 rounded-full bg-blue-950/80 border border-blue-800/60 text-blue-300 font-mono">
@@ -645,7 +645,7 @@ export default function App() {
                   </div>
                   <div>
                     <div className="text-sm font-semibold text-slate-100">Jade</div>
-                    <div className="text-[11px] text-slate-400">Elementary &bull; Volleyball</div>
+                    <div className="text-[11px] text-slate-400">Middle School &bull; Volleyball</div>
                   </div>
                 </div>
                 <span className="text-xs px-2 py-0.5 rounded-full bg-purple-950/80 border border-purple-800/60 text-purple-300 font-mono">
@@ -975,8 +975,8 @@ export default function App() {
                       onChange={(e) => setNewTaskStudent(e.target.value)}
                       className="px-2.5 py-1.5 text-xs bg-slate-950 rounded-lg border border-slate-700 text-slate-300 focus:outline-none"
                     >
-                      <option value="Ben">Ben (Middle School)</option>
-                      <option value="Jade">Jade (Elementary)</option>
+                      <option value="Ben">Ben (High School)</option>
+                      <option value="Jade">Jade (Middle School)</option>
                     </select>
                     <select
                       value={newTaskCourse}
