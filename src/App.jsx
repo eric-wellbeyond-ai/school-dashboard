@@ -101,27 +101,26 @@ export default function App() {
 
   const [eventFilter, setEventFilter] = useState('active'); // 'active' | 'acknowledged'
 
-  const isInitialMount = useRef(true);
+  // Persist state to both localStorage and backend Express API only on deliberate user actions
+  const persistDashboardState = (newTasks, newEvents, newDeletedKeys) => {
+    const t = newTasks !== undefined ? newTasks : tasks;
+    const ev = newEvents !== undefined ? newEvents : events;
+    const dk = newDeletedKeys !== undefined ? newDeletedKeys : deletedEventKeys;
 
-  // Auto-persist tasks, events, and deletedEventKeys to localStorage and backend whenever they change
-  useEffect(() => {
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
-      return;
-    }
     try {
-      localStorage.setItem('school_dashboard_tasks', JSON.stringify(tasks));
-      localStorage.setItem('school_dashboard_events', JSON.stringify(events));
-      localStorage.setItem('school_dashboard_deleted_events', JSON.stringify(deletedEventKeys));
-      fetch('/api/dashboard/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tasks, events, deletedEventKeys })
-      }).catch(() => {});
+      localStorage.setItem('school_dashboard_tasks', JSON.stringify(t));
+      localStorage.setItem('school_dashboard_events', JSON.stringify(ev));
+      localStorage.setItem('school_dashboard_deleted_events', JSON.stringify(dk));
     } catch (e) {
-      console.warn('Local persistence sync error:', e);
+      console.warn('LocalStorage error:', e);
     }
-  }, [tasks, events, deletedEventKeys]);
+
+    fetch('/api/dashboard/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tasks: t, events: ev, deletedEventKeys: dk })
+    }).catch(err => console.warn('Failed to save dashboard state:', err));
+  };
 
   // Sync Inbox function calling backend Express API
   const handleSyncInbox = async (mode = 'incremental') => {
@@ -148,24 +147,19 @@ export default function App() {
       const data = await res.json();
       
       // Update tasks preserving user completed checks and comments where titles match
-      if (data.tasks) {
-        setTasks(prevTasks => {
-          const completedMap = new Map(prevTasks.map(t => [t.title.toLowerCase(), t.completed]));
-          const commentsMap = new Map(prevTasks.map(t => [t.title.toLowerCase(), t.comments || []]));
-          return data.tasks.map(t => {
-            const key = t.title.toLowerCase();
-            return {
-              ...t,
-              completed: completedMap.has(key) ? completedMap.get(key) : Boolean(t.completed),
-              comments: commentsMap.has(key) && commentsMap.get(key).length > 0 ? commentsMap.get(key) : (t.comments || [])
-            };
-          });
-        });
-      } else {
-        setTasks([]);
+      if (Array.isArray(data.tasks)) {
+        setTasks(data.tasks);
+        try {
+          localStorage.setItem('school_dashboard_tasks', JSON.stringify(data.tasks));
+        } catch {}
       }
 
-      setEvents(data.events || []);
+      if (Array.isArray(data.events)) {
+        setEvents(data.events);
+        try {
+          localStorage.setItem('school_dashboard_events', JSON.stringify(data.events));
+        } catch {}
+      }
       setSyncSource(data.source || 'gmail_api');
       const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       setLastSynced(timeStr);
@@ -210,30 +204,30 @@ export default function App() {
       const res = await fetch('/api/dashboard/state');
       if (res.ok) {
         const data = await res.json();
-        if (data.tasks && data.tasks.length > 0) {
-          setTasks(prev => {
-            if (!prev || prev.length === 0) return data.tasks;
-            const completedMap = new Map(prev.map(t => [t.title.toLowerCase(), t.completed]));
-            const commentsMap = new Map(prev.map(t => [t.title.toLowerCase(), t.comments || []]));
-            return data.tasks.map(t => {
-              const key = t.title.toLowerCase();
-              return {
-                ...t,
-                completed: completedMap.has(key) ? completedMap.get(key) : Boolean(t.completed),
-                comments: commentsMap.has(key) && commentsMap.get(key).length > 0 ? commentsMap.get(key) : (t.comments || [])
-              };
-            });
-          });
+        if (Array.isArray(data.tasks)) {
+          setTasks(data.tasks);
+          try {
+            localStorage.setItem('school_dashboard_tasks', JSON.stringify(data.tasks));
+          } catch {}
         }
-        if (data.events && data.events.length > 0) {
-          setEvents(prev => (!prev || prev.length === 0 ? data.events : prev));
+        if (Array.isArray(data.events)) {
+          setEvents(data.events);
+          try {
+            localStorage.setItem('school_dashboard_events', JSON.stringify(data.events));
+          } catch {}
         }
         if (data.deletedEventKeys && Array.isArray(data.deletedEventKeys)) {
-          setDeletedEventKeys(prev => Array.from(new Set([...prev, ...data.deletedEventKeys])));
+          setDeletedEventKeys(data.deletedEventKeys);
+          try {
+            localStorage.setItem('school_dashboard_deleted_events', JSON.stringify(data.deletedEventKeys));
+          } catch {}
         }
         if (data.lastSyncedAt) {
           const timeStr = new Date(data.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-          setLastSynced(prev => prev || timeStr);
+          setLastSynced(timeStr);
+          try {
+            localStorage.setItem('school_dashboard_last_synced', timeStr);
+          } catch {}
         }
       }
     } catch (err) {
@@ -289,24 +283,30 @@ export default function App() {
 
   // Toggle completion status of a task
   const toggleTask = (taskId) => {
-    setTasks(prev =>
-      prev.map(task => {
+    setTasks(prev => {
+      const updated = prev.map(task => {
         if (task.id === taskId) {
-          const updated = { ...task, completed: !task.completed };
+          const u = { ...task, completed: !task.completed };
           if (selectedTaskForModal && selectedTaskForModal.id === taskId) {
-            setSelectedTaskForModal(updated);
+            setSelectedTaskForModal(u);
           }
-          return updated;
+          return u;
         }
         return task;
-      })
-    );
+      });
+      persistDashboardState(updated);
+      return updated;
+    });
   };
 
   // Delete a task
   const deleteTask = (taskId, e) => {
     if (e) e.stopPropagation();
-    setTasks(prev => prev.filter(t => t.id !== taskId));
+    setTasks(prev => {
+      const updated = prev.filter(t => t.id !== taskId);
+      persistDashboardState(updated);
+      return updated;
+    });
     if (selectedTaskForModal && selectedTaskForModal.id === taskId) {
       setSelectedTaskForModal(null);
     }
@@ -335,40 +335,44 @@ export default function App() {
       timestamp: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' at ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
-    setTasks(prev =>
-      prev.map(task => {
+    setTasks(prev => {
+      const updated = prev.map(task => {
         if (task.id === selectedTaskForModal.id) {
-          const updated = {
+          const u = {
             ...task,
             comments: [...(task.comments || []), newComment]
           };
-          setSelectedTaskForModal(updated);
-          return updated;
+          setSelectedTaskForModal(u);
+          return u;
         }
         return task;
-      })
-    );
+      });
+      persistDashboardState(updated);
+      return updated;
+    });
 
     setCommentText('');
   };
 
   // Delete a comment from the task
   const handleDeleteComment = (taskId, commentId) => {
-    setTasks(prev =>
-      prev.map(task => {
+    setTasks(prev => {
+      const updated = prev.map(task => {
         if (task.id === taskId) {
-          const updated = {
+          const u = {
             ...task,
             comments: (task.comments || []).filter(c => c.id !== commentId)
           };
           if (selectedTaskForModal && selectedTaskForModal.id === taskId) {
-            setSelectedTaskForModal(updated);
+            setSelectedTaskForModal(u);
           }
-          return updated;
+          return u;
         }
         return task;
-      })
-    );
+      });
+      persistDashboardState(updated);
+      return updated;
+    });
   };
 
   // Add a new manual task
@@ -388,7 +392,11 @@ export default function App() {
       comments: []
     };
 
-    setTasks(prev => [newTask, ...prev]);
+    setTasks(prev => {
+      const updated = [newTask, ...prev];
+      persistDashboardState(updated);
+      return updated;
+    });
     setNewTaskTitle('');
     setIsAddingTask(false);
   };
@@ -396,8 +404,8 @@ export default function App() {
   // Acknowledge an event (marks acknowledged and removes from active view)
   const acknowledgeEvent = (eventId, e) => {
     if (e) e.stopPropagation();
-    setEvents(prev =>
-      prev.map(ev => {
+    setEvents(prev => {
+      const updated = prev.map(ev => {
         if (ev.id === eventId) {
           return {
             ...ev,
@@ -406,8 +414,10 @@ export default function App() {
           };
         }
         return ev;
-      })
-    );
+      });
+      persistDashboardState(undefined, updated);
+      return updated;
+    });
     setAuthBanner({
       type: 'success',
       message: 'Event acknowledged and removed from active schedule.'
@@ -420,8 +430,8 @@ export default function App() {
   // Restore an acknowledged event back to active
   const restoreEvent = (eventId, e) => {
     if (e) e.stopPropagation();
-    setEvents(prev =>
-      prev.map(ev => {
+    setEvents(prev => {
+      const updated = prev.map(ev => {
         if (ev.id === eventId) {
           return {
             ...ev,
@@ -430,8 +440,10 @@ export default function App() {
           };
         }
         return ev;
-      })
-    );
+      });
+      persistDashboardState(undefined, updated);
+      return updated;
+    });
     setAuthBanner({
       type: 'info',
       message: 'Event restored to active schedule.'
@@ -446,14 +458,11 @@ export default function App() {
     if (e) e.stopPropagation();
     const eventKey = (eventId || `${(eventTitle || '').toLowerCase().replace(/[^a-z0-9]/g, '')}_${eventDate || ''}`).toLowerCase();
 
-    setEvents(prev => prev.filter(ev => ev.id !== eventId));
-    setDeletedEventKeys(prev => {
-      const next = Array.from(new Set([...prev, eventKey]));
-      try {
-        localStorage.setItem('school_dashboard_deleted_events', JSON.stringify(next));
-      } catch {}
-      return next;
-    });
+    const nextEvents = events.filter(ev => ev.id !== eventId);
+    const nextKeys = Array.from(new Set([...deletedEventKeys, eventKey]));
+    setEvents(nextEvents);
+    setDeletedEventKeys(nextKeys);
+    persistDashboardState(undefined, nextEvents, nextKeys);
 
     setAuthBanner({
       type: 'info',

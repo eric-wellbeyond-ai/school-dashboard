@@ -180,15 +180,52 @@ export function extractTasksFromEmail(email, source) {
     const author = authorMatch ? authorMatch[1].trim() : '';
     const authorSuffix = author ? ` (${author})` : '';
 
-    // Check for Tests / Exams (e.g., "Short Story test which is Friday, 9/18")
-    const testPattern = /(?:for\s+their|for\s+the|upcoming|next)\s+([A-Za-z0-9\s]{3,35}?(?:test|quiz|exam))\s+(?:which\s+is|on|is)\s+([A-Za-z]+,?\s+\d{1,2}(?:\/\d{1,2})?|[A-Za-z]+)/i;
-    const testMatch = cleanBody.match(testPattern);
-    if (testMatch) {
-      const testTitle = testMatch[1].trim().replace(/^the\s+/i, '');
-      const testDueDate = testMatch[2].trim();
+    // A. Check for Rescheduled Quizzes / Tests (e.g., "The quiz is moved to Monday!")
+    const movedPattern = /(?:quiz|test|exam)\s+is\s+moved\s+to\s+([A-Za-z]+,?\s*(?:Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?)?\s*\d{0,2})/i;
+    const movedMatch = cleanBody.match(movedPattern);
+    if (movedMatch) {
+      const dueDate = movedMatch[1].trim();
+      tasks.push({
+        id: `task_${email.id}_quiz_rescheduled_${bbStudent.toLowerCase()}`,
+        title: `Science Quiz (Rescheduled to ${dueDate})${authorSuffix}`,
+        student: bbStudent,
+        course: detectCourse('Science ' + author + ' ' + cleanBody),
+        dueDate: dueDate,
+        source: 'Westlake Lutheran Academy',
+        completed: false,
+        priority: 'high',
+        emailSubject: email.subject,
+        emailDate: email.date
+      });
+    }
+
+    // B. Check for Tests / Exams
+    let testMatch = null;
+    let testTitle = '';
+    let testDueDate = '';
+
+    const explicitTestMatch = cleanBody.match(/(?:for\s+their|for\s+the|our|the)\s+([A-Za-z0-9\s'-]{3,30}?(?:test|quiz|exam))\s+(?:will\s+be|which\s+is|is\s+on|is|on)\s+([A-Za-z]+,?\s*(?:Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?)?\s*\d{0,2}(?:\/\d{1,2})?|[A-Za-z]+)/i);
+    const genericTestMatch = cleanBody.match(/(?:students\s+have\s+(?:their|a)|there\s+is\s+a|reminder\s+(?:of|about)\s+the)\s+([A-Za-z0-9\s'-]{0,20}?(?:test|quiz|exam))\s+(?:will\s+be|which\s+is|is\s+on|is|on)\s+([A-Za-z]+,?\s*(?:Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?)?\s*\d{0,2}(?:\/\d{1,2})?|[A-Za-z]+)/i);
+
+    if (explicitTestMatch) {
+      testMatch = explicitTestMatch;
+      let raw = explicitTestMatch[1].trim().replace(/^(?:the|our|their)\s+/i, '');
+      testTitle = raw.charAt(0).toUpperCase() + raw.slice(1);
+      testDueDate = explicitTestMatch[2].trim();
+    } else if (genericTestMatch) {
+      testMatch = genericTestMatch;
+      let raw = genericTestMatch[1].trim().replace(/^(?:the|our|their)\s+/i, '');
+      if (!raw || /^(?:test|quiz|exam)$/i.test(raw)) {
+        raw = 'Classroom Test';
+      }
+      testTitle = raw.charAt(0).toUpperCase() + raw.slice(1);
+      testDueDate = genericTestMatch[2].trim();
+    }
+
+    if (testMatch && !movedMatch) {
       tasks.push({
         id: `task_${email.id}_test_${bbStudent.toLowerCase()}`,
-        title: `${testTitle.charAt(0).toUpperCase() + testTitle.slice(1)}${authorSuffix}`,
+        title: `${testTitle}${authorSuffix}`,
         student: bbStudent,
         course: detectCourse(testTitle + ' ' + author + ' ' + cleanBody),
         dueDate: testDueDate,
@@ -200,16 +237,48 @@ export function extractTasksFromEmail(email, source) {
       });
     }
 
-    // Check for Review Guides / Study Guides that are graded
+    // C. Check for Wayground / Classlink review assignments (e.g. Dianna DesJardins for Jade)
+    if (/Wayground/i.test(cleanBody)) {
+      const isOptional = /optional/i.test(cleanBody);
+      tasks.push({
+        id: `task_${email.id}_wayground_${bbStudent.toLowerCase()}`,
+        title: `Wayground Review Assignment${isOptional ? ' (Optional)' : ''} via Classlink${authorSuffix}`,
+        student: bbStudent,
+        course: detectCourse(author + ' ' + cleanBody),
+        dueDate: testMatch ? testMatch[2].trim() : 'Monday',
+        source: 'Westlake Lutheran Academy',
+        completed: false,
+        priority: isOptional ? 'medium' : 'high',
+        emailSubject: email.subject,
+        emailDate: email.date
+      });
+    }
+
+    // D. Check for Review Guides / Study Guides
     if (/study guide|review guide/i.test(cleanBody)) {
       const isGraded = /grade|due|turn in/i.test(cleanBody);
-      const testDue = testMatch ? testMatch[2].trim() : 'Due Friday';
+      let guideTitle = 'Study & Review Guide';
+      if (/Unit\s*\d+\s+Study\s+Guide/i.test(cleanBody)) {
+        const uMatch = cleanBody.match(/Unit\s*\d+\s+Study\s+Guide/i);
+        guideTitle = uMatch[0];
+      } else if (/Short\s+Story/i.test(cleanBody)) {
+        guideTitle = 'Short Story Review & Study Guide';
+      } else {
+        const guideTitleMatch = cleanBody.match(/([A-Za-z0-9\s'-]{2,25}?(?:study guide|review guide))/i);
+        if (guideTitleMatch && !/the\s+study|a\s+study|their\s+study/i.test(guideTitleMatch[1])) {
+          guideTitle = guideTitleMatch[1].trim();
+        }
+      }
+
+      const dueMatch = cleanBody.match(/(?:due\s+on\s+(?:the\s+day\s+of\s+the\s+test,?\s*)?|due\s+(?:is\s+)?)([A-Za-z]+,?\s+[A-Za-z]+\s+\d{1,2}|[A-Za-z]+,?\s+\d{1,2}(?:\/\d{1,2})?|[A-Za-z]+)/i);
+      const dueDate = dueMatch ? dueMatch[1].trim() : (testMatch ? testMatch[2].trim() : 'Due on test day');
+
       tasks.push({
         id: `task_${email.id}_study_guide_${bbStudent.toLowerCase()}`,
-        title: `Complete Short Story Review & Study Guide${isGraded ? ' (Graded)' : ''}${authorSuffix}`,
+        title: `Complete ${guideTitle}${isGraded ? ' (Graded)' : ''}${authorSuffix}`,
         student: bbStudent,
-        course: detectCourse('study guide ' + author + ' ' + cleanBody),
-        dueDate: testDue,
+        course: detectCourse(guideTitle + ' ' + author + ' ' + cleanBody),
+        dueDate: dueDate,
         source: 'Westlake Lutheran Academy',
         completed: false,
         priority: isGraded ? 'high' : 'medium',
@@ -218,14 +287,50 @@ export function extractTasksFromEmail(email, source) {
       });
     }
 
-    // Check for novel reading assignments
-    if (/novels?|reading/i.test(cleanBody) && /mix of in-class reading and at home reading|staying on top/i.test(cleanBody)) {
+    // E. Check for Novel reading / book requirements (e.g. The Scarlet Letter)
+    if (/novel|hard copy of the text/i.test(cleanBody)) {
+      if (/hard copy of the text|starting our (?:first\s+)?class novel/i.test(cleanBody)) {
+        const novelMatch = cleanBody.match(/(?:novel|book)\s+([A-Za-z0-9\s'-]+?)(?=\s+on\s+\d|\s+by|\s*\.|\s*,)/i);
+        const novelName = novelMatch ? novelMatch[1].trim() : (cleanBody.includes('Scarlet Letter') ? 'The Scarlet Letter' : 'class novel');
+        const dueMatch = cleanBody.match(/(?:on|by|due)\s+(\d{1,2}\/\d{1,2}|[A-Za-z]+\s+\d{1,2})/i);
+        const dueDate = dueMatch ? dueMatch[1].trim() : 'Upcoming';
+
+        tasks.push({
+          id: `task_${email.id}_novel_text_${bbStudent.toLowerCase()}`,
+          title: `Obtain hard copy of novel '${novelName}'${authorSuffix}`,
+          student: bbStudent,
+          course: 'English / ELA',
+          dueDate: dueDate,
+          source: 'Westlake Lutheran Academy',
+          completed: false,
+          priority: 'medium',
+          emailSubject: email.subject,
+          emailDate: email.date
+        });
+      } else if (/mix of in-class reading and at home reading|staying on top/i.test(cleanBody)) {
+        tasks.push({
+          id: `task_${email.id}_novel_${bbStudent.toLowerCase()}`,
+          title: `Read assigned novel chapters (at-home reading)${authorSuffix}`,
+          student: bbStudent,
+          course: 'English / ELA',
+          dueDate: 'Ongoing',
+          source: 'Westlake Lutheran Academy',
+          completed: false,
+          priority: 'medium',
+          emailSubject: email.subject,
+          emailDate: email.date
+        });
+      }
+    }
+
+    // F. Check for Quill diagnostics activity pack (Emily Falvey)
+    if (/Quill diagnostics|activity pack/i.test(cleanBody)) {
       tasks.push({
-        id: `task_${email.id}_novel_${bbStudent.toLowerCase()}`,
-        title: `Read assigned novel chapters (at-home reading)${authorSuffix}`,
+        id: `task_${email.id}_quill_${bbStudent.toLowerCase()}`,
+        title: `Complete Quill Diagnostic Activities (20 pack)${authorSuffix}`,
         student: bbStudent,
         course: 'English / ELA',
-        dueDate: 'Ongoing',
+        dueDate: 'Check Blackbaud',
         source: 'Westlake Lutheran Academy',
         completed: false,
         priority: 'medium',
@@ -234,7 +339,7 @@ export function extractTasksFromEmail(email, source) {
       });
     }
 
-    // Check for Science Space Unit & instructional activities (e.g. Jade's announcement)
+    // G. Check for Science Space Unit & instructional activities (Jade, Crystal Dube)
     if (/Space Unit/i.test(cleanBody) && /instructional activities|vocabulary illustration/i.test(cleanBody)) {
       tasks.push({
         id: `task_${email.id}_space_${bbStudent.toLowerCase()}`,
@@ -328,10 +433,14 @@ export function extractTasksFromEmail(email, source) {
       const lineStudent = detectStudent(line) || currentSectionStudent || emailWideStudent;
       if (!lineStudent) continue;
 
-      const cleanTitle = line
+      let cleanTitle = line
         .replace(/^[-*•\d\.\)\s]+/, '')
         .replace(/^(Ben|Jade):\s*/i, '')
         .trim();
+
+      if (/Grandparent['’]s Day skit/i.test(cleanTitle) && /memoriz/i.test(cleanTitle)) {
+        cleanTitle = "Memorize lines for Grandparent's Day Skit (Ava, Niko, Jade, Bryce)";
+      }
 
       if (cleanTitle.length >= 6) {
         const targetStudents = lineStudent === 'Both' ? ['Ben', 'Jade'] : [lineStudent];

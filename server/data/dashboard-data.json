@@ -1,6 +1,19 @@
 {
   "tasks": [
     {
+      "id": "task_1a0ac3e51e6f1121_quiz_rescheduled_ben",
+      "title": "Science Quiz (Rescheduled to Monday) (Crystal Dube)",
+      "student": "Ben",
+      "course": "Science",
+      "dueDate": "Monday",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "high",
+      "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Announcement",
+      "emailDate": "Wed, 16 Sep 2026 22:02:39 +0000",
+      "comments": []
+    },
+    {
       "id": "task_1a0ac0cd70d4681b_quiz_ben",
       "title": "Study for Science Quiz (Periodic Table, EMS, & Percent Abundance) - Ms. Dube",
       "student": "Ben",
@@ -50,6 +63,97 @@
       "priority": "medium",
       "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Reminder",
       "emailDate": "Wed, 16 Sep 2026 19:43:07 +0000",
+      "comments": []
+    },
+    {
+      "id": "task_1a09d105e2e73d42_space_jade",
+      "title": "Space Unit: Review Instructional Activities & Vocabulary Illustration (Crystal Dube)",
+      "student": "Jade",
+      "course": "Science",
+      "dueDate": "This week",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "medium",
+      "emailSubject": "Westlake Lutheran Academy: Jade Smith - Classroom Announcement",
+      "emailDate": "Sun, 13 Sep 2026 23:18:10 +0000",
+      "comments": []
+    },
+    {
+      "id": "task_1a09214421534dac_test_jade",
+      "title": "Classroom Test (Dianna DesJardins)",
+      "student": "Jade",
+      "course": "General",
+      "dueDate": "Monday",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "high",
+      "emailSubject": "Westlake Lutheran Academy: Jade Smith - Classroom Announcement",
+      "emailDate": "Fri, 11 Sep 2026 20:06:35 +0000",
+      "comments": []
+    },
+    {
+      "id": "task_1a09214421534dac_wayground_jade",
+      "title": "Wayground Review Assignment (Optional) via Classlink (Dianna DesJardins)",
+      "student": "Jade",
+      "course": "General",
+      "dueDate": "Monday",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "medium",
+      "emailSubject": "Westlake Lutheran Academy: Jade Smith - Classroom Announcement",
+      "emailDate": "Fri, 11 Sep 2026 20:06:35 +0000",
+      "comments": []
+    },
+    {
+      "id": "task_1a090e6fbbf45813_1_jade",
+      "title": "Memorize lines for Grandparent's Day Skit (Ava, Niko, Jade, Bryce)",
+      "student": "Jade",
+      "course": "General",
+      "dueDate": "Sep 11",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "high",
+      "emailSubject": "ONE ACT PLAY AUDITIONS MONDAY",
+      "emailDate": "Fri, 11 Sep 2026 14:37:22 +0000",
+      "comments": []
+    },
+    {
+      "id": "task_1a08cf0b257e8924_novel_text_ben",
+      "title": "Obtain hard copy of novel 'The Scarlet Letter' (Emily Falvey)",
+      "student": "Ben",
+      "course": "English / ELA",
+      "dueDate": "9/22",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "medium",
+      "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Announcement",
+      "emailDate": "Thu, 10 Sep 2026 20:09:36 +0000",
+      "comments": []
+    },
+    {
+      "id": "task_1a08cbf11f6cb9ef_test_ben",
+      "title": "AP World History Unit 1 Test (Ashley Johnson)",
+      "student": "Ben",
+      "course": "History / Social Studies",
+      "dueDate": "Thursday, September 17",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "high",
+      "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Reminder",
+      "emailDate": "Thu, 10 Sep 2026 19:15:26 +0000",
+      "comments": []
+    },
+    {
+      "id": "task_1a08cbf11f6cb9ef_study_guide_ben",
+      "title": "Complete Unit 1 Study Guide (Graded) (Ashley Johnson)",
+      "student": "Ben",
+      "course": "History / Social Studies",
+      "dueDate": "Thursday, September 17",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "high",
+      "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Reminder",
+      "emailDate": "Thu, 10 Sep 2026 19:15:26 +0000",
       "comments": []
     }
   ],
@@ -155,12 +259,12 @@
     }
   ],
   "deletedEventKeys": [],
-  "lastSyncedAt": "2026-09-16T21:51:58.876Z",
+  "lastSyncedAt": "2026-09-16T22:27:59.591Z",
   "lastSyncStats": {
-    "totalProcessed": 25,
-    "matchedEmails": 21,
-    "tasksFound": 4,
-    "eventsFound": 9
+    "totalProcessed": 50,
+    "matchedEmails": 50,
+    "tasksFound": 12,
+    "eventsFound": 32
   },
-  "updatedAt": "2026-09-16T21:55:05.556Z"
+  "updatedAt": "2026-09-16T22:28:24.276Z"
 }

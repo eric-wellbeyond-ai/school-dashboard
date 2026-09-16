@@ -276,7 +276,39 @@ app.get('/api/dashboard/state', async (req, res) => {
 app.post('/api/dashboard/state', async (req, res) => {
   try {
     const { tasks, events, deletedEventKeys } = req.body;
-    const updated = await saveDashboardData({ tasks, events, deletedEventKeys });
+    const existing = await getDashboardData();
+
+    let updatedTasks = existing.tasks || [];
+    if (Array.isArray(tasks) && tasks.length > 0) {
+      const clientTaskMap = new Map(tasks.map(t => [t.id || t.title.toLowerCase(), t]));
+      // Update existing tasks with client state (completion, comments)
+      updatedTasks = updatedTasks.map(srvTask => {
+        const clientTask = clientTaskMap.get(srvTask.id) || clientTaskMap.get(srvTask.title.toLowerCase());
+        if (clientTask) {
+          return {
+            ...srvTask,
+            completed: clientTask.completed !== undefined ? clientTask.completed : srvTask.completed,
+            comments: clientTask.comments || srvTask.comments || []
+          };
+        }
+        return srvTask;
+      });
+
+      // Also append any new user-added custom tasks
+      for (const clientTask of tasks) {
+        if (clientTask.id && clientTask.id.startsWith('task_custom_')) {
+          if (!updatedTasks.some(t => t.id === clientTask.id)) {
+            updatedTasks.unshift(clientTask);
+          }
+        }
+      }
+    }
+
+    const updated = await saveDashboardData({
+      tasks: updatedTasks,
+      events: events !== undefined ? events : existing.events,
+      deletedEventKeys: deletedEventKeys !== undefined ? deletedEventKeys : existing.deletedEventKeys
+    });
     res.json({ success: true, data: updated });
   } catch (err) {
     console.error('Failed to save dashboard state:', err);
@@ -329,13 +361,13 @@ app.get('/api/dashboard/sync', async (req, res) => {
       client.setCredentials(tokens);
       const gmail = google.gmail({ version: 'v1', auth: client });
 
-      const query = `after:${afterSeconds} (westlake OR sportsyou OR "Westlake Lutheran" OR "sportsYou" OR "Blackbaud" OR Ben OR Jade)`;
+      const query = `after:${afterSeconds} (from:westlakelutheran.org OR from:myschoolapp.com OR from:sportsyou.com OR "Westlake Lutheran" OR "sportsYou" OR "Blackbaud") -from:me`;
       console.log(`[Gmail Sync] Mode: ${mode} | Syncing after: ${afterSeconds} (${new Date(afterSeconds * 1000).toISOString()})`);
 
       const listRes = await gmail.users.messages.list({
         userId: 'me',
         q: query,
-        maxResults: 40
+        maxResults: 80
       });
 
       const messages = listRes.data.messages || [];
@@ -358,9 +390,10 @@ app.get('/api/dashboard/sync', async (req, res) => {
         });
       }
 
-      // Fetch message contents with brief pause to stay well within per-minute quota
+      // Fetch message contents with safe pause to stay well within per-minute quota
       const fetchedEmails = [];
-      for (const msg of messages.slice(0, 25)) {
+      const fetchLimit = Math.min(messages.length, 50);
+      for (const msg of messages.slice(0, fetchLimit)) {
         try {
           const detail = await gmail.users.messages.get({
             userId: 'me',
@@ -368,9 +401,13 @@ app.get('/api/dashboard/sync', async (req, res) => {
             format: 'full'
           });
           fetchedEmails.push(detail.data);
-          await new Promise(resolve => setTimeout(resolve, 40));
+          await new Promise(resolve => setTimeout(resolve, 45));
         } catch (msgErr) {
           console.warn(`[Gmail Sync] Error fetching email ${msg.id}:`, msgErr.message);
+          if (msgErr.message && (msgErr.message.includes('Quota exceeded') || msgErr.message.includes('403'))) {
+            console.warn('[Gmail Sync] Per-minute quota limit encountered, continuing with fetched emails so far.');
+            break;
+          }
         }
       }
 
@@ -402,6 +439,10 @@ app.get('/api/dashboard/sync', async (req, res) => {
       for (const task of existingTasks) {
         const key = task.title.toLowerCase();
         if (!seenTitles.has(key)) {
+          // Filter out obsolete unformatted bullet sentences or bad old regex captures
+          if (key.includes('also, those of you') || key.includes('lease remember') || key.includes('synthetic')) {
+            continue;
+          }
           seenTitles.add(key);
           mergedTasks.push(task);
         }
