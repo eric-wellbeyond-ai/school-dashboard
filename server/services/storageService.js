@@ -60,37 +60,65 @@ function ensureStorage() {
   }
 }
 
+function getKvConfig() {
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  return { url, token };
+}
+
 /**
  * Get current dashboard data
  */
 export async function getDashboardData() {
-  // If Vercel KV is configured in production
-  if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
+  // If Upstash Redis / Vercel KV is configured
+  const { url: kvUrl, token: kvToken } = getKvConfig();
+  if (kvUrl && kvToken) {
     try {
-      const res = await fetch(`${process.env.KV_REST_API_URL}/get/school_dashboard_data`, {
+      const res = await fetch(`${kvUrl}/get/school_dashboard_data`, {
         headers: {
-          Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}`
+          Authorization: `Bearer ${kvToken}`
         }
       });
       if (res.ok) {
         const json = await res.json();
         if (json && json.result) {
-          const parsed = typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
-          memoryStore = parsed;
-          return parsed;
+          let parsed = json.result;
+          if (typeof parsed === 'string') {
+            try { parsed = JSON.parse(parsed); } catch (e) {}
+          }
+          if (typeof parsed === 'string') {
+            try { parsed = JSON.parse(parsed); } catch (e) {}
+          }
+          if (parsed && typeof parsed === 'object') {
+            memoryStore = parsed;
+            return parsed;
+          }
         }
       }
     } catch (kvErr) {
-      console.warn('[Storage] Vercel KV read failed, falling back to local file:', kvErr.message);
+      console.warn('[Storage] Upstash/KV read failed, falling back to local file:', kvErr.message);
     }
   }
 
-  // Local file storage
+  // Local file storage / Seed initial data
   ensureStorage();
   try {
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, 'utf-8');
       memoryStore = JSON.parse(raw);
+
+      // Auto-seed Upstash if it was empty on first startup!
+      if (kvUrl && kvToken && memoryStore && memoryStore.tasks && memoryStore.tasks.length > 0) {
+        fetch(`${kvUrl}/set/school_dashboard_data`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${kvToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(memoryStore)
+        }).catch(() => {});
+      }
+
       return memoryStore;
     }
   } catch (err) {
@@ -123,19 +151,20 @@ export async function saveDashboardData(data) {
 
   memoryStore = updated;
 
-  // Persist to Vercel KV if available
-  if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
+  // Persist to Upstash / Vercel KV if available
+  const { url: kvUrl, token: kvToken } = getKvConfig();
+  if (kvUrl && kvToken) {
     try {
-      await fetch(`${process.env.KV_REST_API_URL}/set/school_dashboard_data`, {
+      await fetch(`${kvUrl}/set/school_dashboard_data`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}`,
+          Authorization: `Bearer ${kvToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(JSON.stringify(updated))
+        body: typeof updated === 'string' ? updated : JSON.stringify(updated)
       });
     } catch (kvErr) {
-      console.warn('[Storage] Vercel KV write failed:', kvErr.message);
+      console.warn('[Storage] Upstash/KV write failed:', kvErr.message);
     }
   }
 

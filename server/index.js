@@ -34,6 +34,12 @@ const TOKENS_PATH = process.env.VERCEL ? '/tmp/.tokens.json' : path.join(__dirna
 
 let userTokens = null;
 
+function getKvConfig() {
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  return { url, token };
+}
+
 async function getUserTokens() {
   if (userTokens) return userTokens;
 
@@ -54,21 +60,31 @@ async function getUserTokens() {
     return userTokens;
   }
 
-  // 2. Vercel KV store (Upstash Redis)
-  if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
+  // 2. Upstash Redis / Vercel KV store
+  const { url: kvUrl, token: kvToken } = getKvConfig();
+  if (kvUrl && kvToken) {
     try {
-      const res = await fetch(`${process.env.KV_REST_API_URL}/get/google_user_tokens`, {
-        headers: { Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}` }
+      const res = await fetch(`${kvUrl}/get/google_user_tokens`, {
+        headers: { Authorization: `Bearer ${kvToken}` }
       });
       if (res.ok) {
         const json = await res.json();
         if (json && json.result) {
-          userTokens = typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
-          return userTokens;
+          let parsed = json.result;
+          if (typeof parsed === 'string') {
+            try { parsed = JSON.parse(parsed); } catch (e) {}
+          }
+          if (typeof parsed === 'string') {
+            try { parsed = JSON.parse(parsed); } catch (e) {}
+          }
+          if (parsed && typeof parsed === 'object') {
+            userTokens = parsed;
+            return userTokens;
+          }
         }
       }
     } catch (kvErr) {
-      console.warn('[Tokens] Vercel KV read failed:', kvErr.message);
+      console.warn('[Tokens] Upstash/KV read failed:', kvErr.message);
     }
   }
 
@@ -86,27 +102,28 @@ async function getUserTokens() {
 async function saveTokens(tokens) {
   userTokens = tokens;
 
-  // Persist to Vercel KV if configured
-  if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
+  // Persist to Upstash / Vercel KV if configured
+  const { url: kvUrl, token: kvToken } = getKvConfig();
+  if (kvUrl && kvToken) {
     try {
       if (tokens) {
-        await fetch(`${process.env.KV_REST_API_URL}/set/google_user_tokens`, {
+        await fetch(`${kvUrl}/set/google_user_tokens`, {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}`,
+            Authorization: `Bearer ${kvToken}`,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify(JSON.stringify(tokens))
+          body: typeof tokens === 'string' ? tokens : JSON.stringify(tokens)
         });
       } else {
         // Delete token on disconnect
-        await fetch(`${process.env.KV_REST_API_URL}/del/google_user_tokens`, {
+        await fetch(`${kvUrl}/del/google_user_tokens`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}` }
+          headers: { Authorization: `Bearer ${kvToken}` }
         });
       }
     } catch (kvErr) {
-      console.warn('[Tokens] Vercel KV write failed:', kvErr.message);
+      console.warn('[Tokens] Upstash/KV write failed:', kvErr.message);
     }
   }
 
