@@ -166,6 +166,17 @@ export function extractTasksFromEmail(email, source) {
   const cleanBody = rawBody.replace(/<[^>]+>/g, ' ').replace(/&#160;/g, ' ').replace(/&amp;/g, '&');
   const emailWideStudent = detectStudent(email.subject) || detectStudent(email.from);
 
+  const finalizeTasks = (list) => {
+    return list.map(t => ({
+      emailId: email.id,
+      emailFrom: email.from || '',
+      emailSubject: email.subject || '',
+      emailDate: email.date || '',
+      emailBody: email.body || email.snippet || '',
+      ...t
+    }));
+  };
+
   // ----------------------------------------------------
   // 1. Specialized Parser for Blackbaud (myschoolapp.com) & Teacher Portals
   // ----------------------------------------------------
@@ -358,7 +369,7 @@ export function extractTasksFromEmail(email, source) {
 
     // If specialized patterns caught tasks, return them
     if (tasks.length > 0) {
-      return tasks;
+      return finalizeTasks(tasks);
     }
   }
 
@@ -379,7 +390,7 @@ export function extractTasksFromEmail(email, source) {
       emailSubject: email.subject,
       emailDate: email.date
     });
-    return tasks;
+    return finalizeTasks(tasks);
   }
 
   // ----------------------------------------------------
@@ -464,7 +475,7 @@ export function extractTasksFromEmail(email, source) {
     }
   }
 
-  return tasks;
+  return finalizeTasks(tasks);
 }
 
 // Extract events and sports schedule items
