@@ -29,7 +29,7 @@ const GMAIL_SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly'
 ];
 
-const TOKENS_PATH = path.join(__dirname, '.tokens.json');
+const TOKENS_PATH = process.env.VERCEL ? '/tmp/.tokens.json' : path.join(__dirname, '.tokens.json');
 
 function loadTokens() {
   if (fs.existsSync(TOKENS_PATH)) {
@@ -321,6 +321,10 @@ app.get('/', (req, res) => {
   res.redirect(FRONTEND_URL);
 });
 
-app.listen(PORT, () => {
-  console.log(`School Dashboard backend server running on http://localhost:${PORT}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`School Dashboard backend server running on http://localhost:${PORT}`);
+  });
+}
+
+export default app;
