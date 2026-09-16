@@ -32,47 +32,115 @@ const GMAIL_SCOPES = [
 
 const TOKENS_PATH = process.env.VERCEL ? '/tmp/.tokens.json' : path.join(__dirname, '.tokens.json');
 
-function loadTokens() {
-  if (fs.existsSync(TOKENS_PATH)) {
+let userTokens = null;
+
+async function getUserTokens() {
+  if (userTokens) return userTokens;
+
+  // 1. Direct environment variable (ideal for Vercel deployment)
+  if (process.env.GOOGLE_USER_TOKENS) {
     try {
-      const data = JSON.parse(fs.readFileSync(TOKENS_PATH, 'utf-8'));
-      console.log('Loaded saved Google OAuth tokens from .tokens.json');
-      return data;
+      userTokens = JSON.parse(process.env.GOOGLE_USER_TOKENS);
+      return userTokens;
     } catch (e) {
-      return null;
+      console.warn('[Tokens] Failed to parse GOOGLE_USER_TOKENS env var');
     }
   }
+  if (process.env.GOOGLE_REFRESH_TOKEN) {
+    userTokens = {
+      refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
+      token_type: 'Bearer'
+    };
+    return userTokens;
+  }
+
+  // 2. Vercel KV store (Upstash Redis)
+  if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
+    try {
+      const res = await fetch(`${process.env.KV_REST_API_URL}/get/google_user_tokens`, {
+        headers: { Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}` }
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json && json.result) {
+          userTokens = typeof json.result === 'string' ? JSON.parse(json.result) : json.result;
+          return userTokens;
+        }
+      }
+    } catch (kvErr) {
+      console.warn('[Tokens] Vercel KV read failed:', kvErr.message);
+    }
+  }
+
+  // 3. Local filesystem tokens file
+  if (fs.existsSync(TOKENS_PATH)) {
+    try {
+      userTokens = JSON.parse(fs.readFileSync(TOKENS_PATH, 'utf-8'));
+      return userTokens;
+    } catch (e) {}
+  }
+
   return null;
 }
 
-function saveTokens(tokens) {
+async function saveTokens(tokens) {
+  userTokens = tokens;
+
+  // Persist to Vercel KV if configured
+  if (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN) {
+    try {
+      if (tokens) {
+        await fetch(`${process.env.KV_REST_API_URL}/set/google_user_tokens`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(JSON.stringify(tokens))
+        });
+      } else {
+        // Delete token on disconnect
+        await fetch(`${process.env.KV_REST_API_URL}/del/google_user_tokens`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${process.env.KV_REST_API_TOKEN}` }
+        });
+      }
+    } catch (kvErr) {
+      console.warn('[Tokens] Vercel KV write failed:', kvErr.message);
+    }
+  }
+
+  // Persist to local filesystem
   try {
-    fs.writeFileSync(TOKENS_PATH, JSON.stringify(tokens, null, 2));
-    console.log('Saved Google OAuth tokens to .tokens.json');
+    if (tokens) {
+      fs.writeFileSync(TOKENS_PATH, JSON.stringify(tokens, null, 2));
+    } else if (fs.existsSync(TOKENS_PATH)) {
+      fs.unlinkSync(TOKENS_PATH);
+    }
   } catch (e) {
-    console.error('Failed to save tokens:', e.message);
+    console.warn('[Tokens] Local file save failed:', e.message);
   }
 }
 
 let oauth2Client = null;
-let userTokens = loadTokens();
 
 function getOAuthConfig() {
   dotenv.config();
   const clientId = (process.env.GOOGLE_CLIENT_ID || '').replace(/^['"]|['"]$/g, '').trim();
   const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').replace(/^['"]|['"]$/g, '').trim();
-  const redirectUri = (process.env.GOOGLE_REDIRECT_URI || `http://localhost:${PORT}/auth/google/callback`).replace(/^['"]|['"]$/g, '').trim();
+  const redirectUri = (
+    process.env.GOOGLE_REDIRECT_URI || 
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}/auth/google/callback` : `http://localhost:${PORT}/auth/google/callback`)
+  ).replace(/^['"]|['"]$/g, '').trim();
   return { clientId, clientSecret, redirectUri };
 }
 
 function getOAuth2Client() {
   const { clientId, clientSecret, redirectUri } = getOAuthConfig();
   if (clientId && clientSecret) {
-    if (!oauth2Client) {
-      oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
-    }
+    return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
   }
-  return oauth2Client;
+  return null;
 }
 
 // ----------------------------------------------------
@@ -128,8 +196,7 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
 
     const { tokens } = await client.getToken(code);
     client.setCredentials(tokens);
-    userTokens = tokens;
-    saveTokens(tokens);
+    await saveTokens(tokens);
 
     console.log('Google OAuth authentication successful');
     res.redirect(`${FRONTEND_URL}?auth=success`);
@@ -142,15 +209,16 @@ app.get(['/auth/google/callback', '/api/auth/google/callback'], async (req, res)
 /**
  * Route: Get Google OAuth authentication status
  */
-app.get('/api/auth/status', (req, res) => {
+app.get('/api/auth/status', async (req, res) => {
   const { clientId, clientSecret, redirectUri } = getOAuthConfig();
+  const tokens = await getUserTokens();
   res.json({
     configured: Boolean(clientId && clientSecret),
     hasClientId: Boolean(clientId),
     hasClientSecret: Boolean(clientSecret),
     clientId: clientId ? `${clientId.substring(0, 20)}...` : null,
     redirectUri: redirectUri,
-    authenticated: Boolean(userTokens),
+    authenticated: Boolean(tokens),
     scope: GMAIL_SCOPES
   });
 });
@@ -158,15 +226,10 @@ app.get('/api/auth/status', (req, res) => {
 /**
  * Route: Disconnect / Log out Google OAuth
  */
-app.post('/api/auth/disconnect', (req, res) => {
-  userTokens = null;
+app.post('/api/auth/disconnect', async (req, res) => {
+  await saveTokens(null);
   if (oauth2Client) {
     oauth2Client.setCredentials({});
-  }
-  if (fs.existsSync(TOKENS_PATH)) {
-    try {
-      fs.unlinkSync(TOKENS_PATH);
-    } catch (e) {}
   }
   res.json({ success: true, message: 'Disconnected Google account' });
 });
@@ -216,9 +279,10 @@ app.post('/api/dashboard/state', async (req, res) => {
 app.get('/api/dashboard/sync', async (req, res) => {
   try {
     const client = getOAuth2Client();
+    const tokens = await getUserTokens();
 
     // If not authenticated, return clear unauthenticated status
-    if (!userTokens || !client) {
+    if (!tokens || !client) {
       return res.status(401).json({
         success: false,
         authenticated: false,
@@ -245,7 +309,7 @@ app.get('/api/dashboard/sync', async (req, res) => {
 
     // Live Gmail API sync
     try {
-      client.setCredentials(userTokens);
+      client.setCredentials(tokens);
       const gmail = google.gmail({ version: 'v1', auth: client });
 
       const query = `after:${afterSeconds} (westlake OR sportsyou OR "Westlake Lutheran" OR "sportsYou" OR "Blackbaud" OR Ben OR Jade)`;

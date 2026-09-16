@@ -36,6 +36,15 @@ function ensureStorage() {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     if (!fs.existsSync(DATA_FILE)) {
+      const bundledPath = path.join(__dirname, '..', 'data', 'dashboard-data.json');
+      if (fs.existsSync(bundledPath)) {
+        try {
+          fs.writeFileSync(DATA_FILE, fs.readFileSync(bundledPath, 'utf-8'), 'utf-8');
+          return;
+        } catch (seedErr) {
+          console.warn('[Storage] Could not seed from bundled data:', seedErr.message);
+        }
+      }
       const initial = {
         tasks: [],
         events: [],
