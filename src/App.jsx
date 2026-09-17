@@ -1476,11 +1476,10 @@ export default function App() {
     const onVisible = () => {
       if (document.visibilityState === 'visible') kick();
     };
-    const start = window.setTimeout(kick, selectedStudent ? 400 : 2500);
+    kick();
     const id = window.setInterval(kick, BLACKBAUD_AUTO_SYNC_MS);
     document.addEventListener('visibilitychange', onVisible);
     return () => {
-      window.clearTimeout(start);
       window.clearInterval(id);
       document.removeEventListener('visibilitychange', onVisible);
     };

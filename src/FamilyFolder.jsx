@@ -205,14 +205,6 @@ function AssignmentScoreChip({ earned, max, letter, status, className = '' }) {
   );
 }
 
-function statusLabel(status) {
-  if (status === 'missing') return { text: 'Not turned in', className: 'is-missing' };
-  if (status === 'overdue') return { text: 'Late', className: 'is-late' };
-  if (status === 'dueSoon') return { text: 'Due soon', className: 'is-soon' };
-  if (status === 'done') return { text: 'Done', className: 'is-done' };
-  return { text: 'Assigned', className: 'is-assigned' };
-}
-
 function lateBadgeTone(days) {
   if (days >= 10) return 'is-severe';
   if (days >= 5) return 'is-mid';
@@ -300,6 +292,9 @@ export default function FamilyFolder({
   const signedFirst = firstName(signedInName);
   const blackbaudSync = formatSyncTime(blackbaudStatus.verifiedAt);
   const blackbaudSynced = Boolean(blackbaudStatus.connected && blackbaudStatus.verifiedAt);
+  const sourcesLabel = blackbaudSynced
+    ? (blackbaudSync ? `Sources, Blackbaud synced ${blackbaudSync}` : 'Sources, Blackbaud synced')
+    : 'Sources, Blackbaud not synced';
   const todayLabel = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'long',
@@ -502,8 +497,8 @@ export default function FamilyFolder({
             <button
               type="button"
               className={`ff-feed-btn ff-sources-toggle ${blackbaudSynced ? 'is-synced' : ''}`}
-              aria-label="Sources"
-              title="Sources"
+              aria-label={sourcesLabel}
+              title={sourcesLabel}
               aria-expanded={sourcesOpen}
               aria-haspopup="dialog"
               aria-controls="ff-sources-popover"
