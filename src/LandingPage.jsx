@@ -15,13 +15,7 @@ async function readJson(path) {
 
 function loginMode({ connected, login, webview }) {
   if (connected || login?.dashboardConnected || login?.state === 'connected') return 'connected';
-  const chromeUp = Boolean(
-    login?.playwrightRunning
-    || login?.chromeRunning
-    || webview?.playwrightRunning
-    || webview?.chromeRunning
-    || webview?.running
-  );
+  const chromeUp = Boolean(login?.chromeRunning || webview?.chromeRunning);
   const tPresent = Boolean(login?.cookiePresent || login?.tokenValid || webview?.tokenValid);
   if (chromeUp && tPresent) return 'signed-in';
   if (chromeUp) return 'ready';
@@ -98,7 +92,7 @@ export default function LandingPage({
         ? 'Already signed in on this Mac. Chrome is running in the background.'
         : mode === 'ready'
           ? 'Sign-in is already open on this Mac. This will not start another browser.'
-          : 'Chrome opens on this Mac only after you choose Log in with Blackbaud. Each person keeps a separate session.';
+          : 'Log in with Blackbaud starts Chrome on this Mac. Each person keeps a separate session.';
 
   const primaryLabel = signingIn
     ? 'Signing in…'

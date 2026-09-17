@@ -1057,15 +1057,27 @@ export default function App() {
 
   const startMacWebview = async () => {
     setMacWebviewStarting(true);
+    setShowBlackbaudModal(true);
     try {
-      await fetch('/api/blackbaud/mac-webview/start', { method: 'POST', credentials: 'include' });
-      for (let i = 0; i < 30; i += 1) {
+      const started = await fetch('/api/blackbaud/mac-webview/start', {
+        method: 'POST',
+        credentials: 'include'
+      });
+      if (!started.ok) {
+        const body = await started.json().catch(() => ({}));
+        setAuthBanner({
+          type: 'error',
+          message: body.error || 'Could not start the Mac webview.'
+        });
+        return;
+      }
+      for (let i = 0; i < 40; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 400));
         const res = await fetch('/api/blackbaud/mac-webview', { credentials: 'include' });
         if (!res.ok) continue;
         const data = await res.json();
         setMacWebview(data);
-        if (data.running) break;
+        if (data.chromeRunning || (data.running && data.ready && !/browser has been closed/i.test(data.error || ''))) break;
       }
     } catch (err) {
       setAuthBanner({
@@ -1076,6 +1088,8 @@ export default function App() {
       setMacWebviewStarting(false);
     }
   };
+
+  const chromeIsUp = (login, wv) => Boolean(login?.chromeRunning || wv?.chromeRunning);
 
   const macWebviewOrigin = () => {
     const port = macWebview.port || 5055;
@@ -1361,7 +1375,7 @@ export default function App() {
     });
     setShowBlackbaudModal(true);
     startPortalGradePoll();
-    let running = macWebview.running || loginStatus.playwrightRunning || loginStatus.chromeRunning;
+    let running = chromeIsUp(loginStatus, macWebview);
     try {
       const [wvRes, loginRes] = await Promise.all([
         fetch('/api/blackbaud/mac-webview', { credentials: 'include' }),
@@ -1370,12 +1384,12 @@ export default function App() {
       if (wvRes.ok) {
         const wv = await wvRes.json();
         setMacWebview(wv);
-        running = Boolean(wv.running || wv.playwrightRunning || wv.chromeRunning);
+        running = chromeIsUp(null, wv);
       }
       if (loginRes.ok) {
         const login = await loginRes.json();
         setLoginStatus(login);
-        running = running || Boolean(login.playwrightRunning || login.chromeRunning || login.running);
+        running = running || chromeIsUp(login, null);
       }
     } catch {}
     if (!running) {
@@ -1421,6 +1435,13 @@ export default function App() {
         setView('dashboard');
         return;
       }
+      if (!chromeIsUp(login, wv)) {
+        claimedMacToken.current = null;
+        setShowBlackbaudModal(true);
+        startPortalGradePoll();
+        void startMacWebview();
+        return;
+      }
       const claimToken = wv?.claimToken || login?.claimToken;
       if (claimToken && await claimMacSession(claimToken)) {
         await fetchBlackbaudStatus();
@@ -1460,36 +1481,25 @@ export default function App() {
         setView('dashboard');
         return;
       }
-      const chromeUp = Boolean(
-        login?.playwrightRunning
-        || login?.chromeRunning
-        || login?.running
-        || wv?.running
-        || wv?.playwrightRunning
-        || wv?.chromeRunning
-      );
-      if (chromeUp && (login?.tokenValid || wv?.tokenValid)) {
-        await handleReconnectBlackbaud();
-        return;
-      }
-      if (chromeUp) {
-        setShowBlackbaudModal(true);
-        startPortalGradePoll();
-        return;
-      }
+      claimedMacToken.current = null;
+      setShowBlackbaudModal(true);
+      startPortalGradePoll();
+      void startMacWebview();
     } catch {
-      /* fall through to a fresh sign-in */
+      claimedMacToken.current = null;
+      setShowBlackbaudModal(true);
+      startPortalGradePoll();
+      void startMacWebview();
     } finally {
       setLoginBusy(false);
     }
-    claimedMacToken.current = null;
-    void handleSyncBlackbaud({ openPortal: true });
   };
 
   const handleSyncBlackbaud = async (options = {}) => {
     const openPortal = options?.openPortal === true;
     const quiet = options?.quiet === true;
     if (openPortal) {
+      claimedMacToken.current = null;
       closedAuthPopup.current = false;
       setShowBlackbaudModal(true);
       startPortalGradePoll();
@@ -2548,6 +2558,7 @@ export default function App() {
             {macWebview.running ? (
               <>
                 <iframe
+                  key={`mac-wv-${macWebview.port}-${macWebview.running ? 'on' : 'off'}`}
                   ref={macFrameRef}
                   title="Westlake Chromium on this Mac"
                   src={`${typeof window !== 'undefined' ? window.location.protocol : 'http:'}//${typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1'}:${macWebview.port || 5055}`}

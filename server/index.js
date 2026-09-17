@@ -210,6 +210,10 @@ function sessionHasPortalT(record) {
   return false;
 }
 
+function browserLooksClosed(error) {
+  return /browser has been closed|Target page, context or browser has been closed/i.test(String(error || ''));
+}
+
 function macProcessFlags() {
   const flags = { playwrightRunning: false, chromeRunning: false };
   if (process.env.VERCEL) return flags;
@@ -226,8 +230,11 @@ function macProcessFlags() {
     return flags;
   }
   for (const line of listing.split('\n')) {
-    if (/mac_portal_agent\.py/.test(line)) flags.playwrightRunning = true;
-    if (/playwright-westlake|playwright-login-/.test(line) && !/mac_portal_agent\.py/.test(line)) {
+    if (/mac_portal_agent\.py/.test(line)) {
+      flags.playwrightRunning = true;
+      continue;
+    }
+    if (/playwright-westlake|playwright-login-/.test(line)) {
       flags.chromeRunning = true;
     }
   }
@@ -269,11 +276,17 @@ async function readMacWebviewSnapshot() {
         payload.gradeCount = Number(agent.gradeCount || 0);
         payload.error = agent.error || null;
         payload.ready = Boolean(agent.ready);
-        if (agent.ready || agent.url) payload.chromeRunning = true;
+        if (processes.chromeRunning) {
+          payload.chromeRunning = true;
+        } else if (browserLooksClosed(agent.error)) {
+          payload.chromeRunning = false;
+          payload.ready = false;
+        } else if (agent.ready && agent.url) {
+          payload.chromeRunning = true;
+        }
       }
     } catch {}
   }
-  if (payload.running) payload.chromeRunning = payload.chromeRunning || payload.ready;
   return payload;
 }
 
@@ -284,8 +297,8 @@ function loginStatusFrom(webview, req) {
   const chromeRunning = Boolean(webview.chromeRunning);
   let state = 'idle';
   if (dashboardConnected) state = 'connected';
-  else if ((playwrightRunning || chromeRunning) && webview.tokenValid) state = 'signed-in';
-  else if (playwrightRunning || chromeRunning) state = 'ready';
+  else if (chromeRunning && webview.tokenValid) state = 'signed-in';
+  else if (chromeRunning) state = 'ready';
   return {
     playwrightRunning,
     chromeRunning,
@@ -562,10 +575,10 @@ app.post('/api/blackbaud/mac-webview/start', async (req, res) => {
   }
   const port = Number(process.env.MAC_WEBVIEW_PORT || 5055);
   const existing = await readMacWebviewSnapshot();
-  if (existing.running || existing.playwrightRunning) {
+  if (existing.chromeRunning && existing.running) {
     return res.json({
       ok: true,
-      running: Boolean(existing.running),
+      running: true,
       starting: false,
       reused: true,
       port
