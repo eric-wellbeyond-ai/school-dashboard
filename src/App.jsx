@@ -36,6 +36,56 @@ import {
   FileText
 } from 'lucide-react';
 
+/**
+ * Decode all HTML entities (named, decimal, hex) and strip raw HTML tags
+ */
+export function decodeHtmlEntities(str) {
+  if (!str || typeof str !== 'string') return str || '';
+  return str
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>|<\/div>|<\/li>/gi, '\n')
+    .replace(/<li>/gi, '• ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#160;|&nbsp;/gi, ' ')
+    .replace(/&#8217;|&#39;|&apos;|&rsquo;/gi, "'")
+    .replace(/&#8216;|&lsquo;/gi, "'")
+    .replace(/&#8220;|&ldquo;|&#8221;|&rdquo;/gi, '"')
+    .replace(/&#8212;|&mdash;/gi, '—')
+    .replace(/&#8211;|&ndash;/gi, '–')
+    .replace(/&#8594;|&rarr;/gi, '→')
+    .replace(/&#x3D;|&#61;/gi, '=')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#(\d+);/g, (_, dec) => {
+      try { return String.fromCharCode(parseInt(dec, 10)); } catch { return _; }
+    })
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+      try { return String.fromCharCode(parseInt(hex, 16)); } catch { return _; }
+    })
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n\s*\n+/g, '\n\n')
+    .trim();
+}
+
+function cleanDeep(obj) {
+  if (typeof obj === 'string') {
+    return decodeHtmlEntities(obj);
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(cleanDeep);
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const res = {};
+    for (const [k, v] of Object.entries(obj)) {
+      res[k] = cleanDeep(v);
+    }
+    return res;
+  }
+  return obj;
+}
+
 export default function App() {
   const [selectedStudent, setSelectedStudent] = useState('All'); // 'All' | 'Ben' | 'Jade'
   const [isSyncing, setIsSyncing] = useState(false);
@@ -77,7 +127,7 @@ export default function App() {
   const [blackbaudGrades, setBlackbaudGrades] = useState(() => {
     try {
       const saved = localStorage.getItem('school_dashboard_blackbaud_grades');
-      return saved ? JSON.parse(saved) : { Ben: [], Jade: [] };
+      return saved ? cleanDeep(JSON.parse(saved)) : { Ben: [], Jade: [] };
     } catch {
       return { Ben: [], Jade: [] };
     }
@@ -85,7 +135,7 @@ export default function App() {
   const [blackbaudMissing, setBlackbaudMissing] = useState(() => {
     try {
       const saved = localStorage.getItem('school_dashboard_blackbaud_missing');
-      return saved ? JSON.parse(saved) : [];
+      return saved ? cleanDeep(JSON.parse(saved)) : [];
     } catch {
       return [];
     }
@@ -115,7 +165,7 @@ export default function App() {
   const [tasks, setTasks] = useState(() => {
     try {
       const saved = localStorage.getItem('school_dashboard_tasks');
-      return saved ? JSON.parse(saved) : [];
+      return saved ? cleanDeep(JSON.parse(saved)) : [];
     } catch {
       return [];
     }
@@ -124,7 +174,7 @@ export default function App() {
   const [events, setEvents] = useState(() => {
     try {
       const saved = localStorage.getItem('school_dashboard_events');
-      return saved ? JSON.parse(saved) : [];
+      return saved ? cleanDeep(JSON.parse(saved)) : [];
     } catch {
       return [];
     }
@@ -184,7 +234,8 @@ export default function App() {
         }
         return;
       }
-      const data = await res.json();
+      const rawData = await res.json();
+      const data = cleanDeep(rawData);
       
       // Update tasks preserving user completed checks and comments where titles match
       if (Array.isArray(data.tasks)) {
@@ -243,7 +294,8 @@ export default function App() {
     try {
       const res = await fetch('/api/dashboard/state');
       if (res.ok) {
-        const data = await res.json();
+        const rawData = await res.json();
+        const data = cleanDeep(rawData);
         if (Array.isArray(data.tasks)) {
           setTasks(data.tasks);
           try {
@@ -406,7 +458,8 @@ export default function App() {
     setIsSyncingBlackbaud(true);
     try {
       const res = await fetch('/api/blackbaud/sync');
-      const data = await res.json();
+      const rawData = await res.json();
+      const data = cleanDeep(rawData);
       if (data.grades) {
         setBlackbaudGrades(data.grades);
         try {
@@ -1203,9 +1256,9 @@ export default function App() {
                     {blackbaudMissing.map((m, idx) => (
                       <div key={idx} className="flex items-center justify-between text-xs text-slate-300 bg-slate-900/60 p-2 rounded-lg border border-amber-900/40">
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-semibold text-white truncate">{m.AssignmentTitle || m.title || 'Missing Work'}</span>
+                          <span className="font-semibold text-white truncate">{decodeHtmlEntities(m.AssignmentTitle || m.title || 'Missing Work')}</span>
                           <span className="text-slate-500">&bull;</span>
-                          <span className="text-amber-300/90 text-[11px] truncate">{m.ClassName || m.course || m.student}</span>
+                          <span className="text-amber-300/90 text-[11px] truncate">{decodeHtmlEntities(m.ClassName || m.course || m.student)}</span>
                         </div>
                         <span className="text-[11px] text-slate-400 font-mono shrink-0 ml-2">
                           Due: {m.DateDue || m.dueDate || 'Overdue'}
@@ -1285,8 +1338,8 @@ export default function App() {
                             >
                               <div>
                                 <div className="flex items-start justify-between gap-2">
-                                  <h4 className="text-xs font-bold text-white truncate" title={c.course}>
-                                    {c.course}
+                                  <h4 className="text-xs font-bold text-white truncate" title={decodeHtmlEntities(c.course)}>
+                                    {decodeHtmlEntities(c.course)}
                                   </h4>
                                   {c.letterGrade && (
                                     <span
@@ -1305,7 +1358,7 @@ export default function App() {
                                   )}
                                 </div>
                                 <p className="text-[11px] text-slate-400 mt-1 truncate">
-                                  {c.teacher || 'Teacher TBA'} {c.room ? `• Rm ${c.room}` : ''}
+                                  {decodeHtmlEntities(c.teacher || 'Teacher TBA')} {c.room ? `• Rm ${c.room}` : ''}
                                 </p>
                               </div>
                               {c.percentage && (
@@ -1351,8 +1404,8 @@ export default function App() {
                             >
                               <div>
                                 <div className="flex items-start justify-between gap-2">
-                                  <h4 className="text-xs font-bold text-white truncate" title={c.course}>
-                                    {c.course}
+                                  <h4 className="text-xs font-bold text-white truncate" title={decodeHtmlEntities(c.course)}>
+                                    {decodeHtmlEntities(c.course)}
                                   </h4>
                                   {c.letterGrade && (
                                     <span
@@ -1371,7 +1424,7 @@ export default function App() {
                                   )}
                                 </div>
                                 <p className="text-[11px] text-slate-400 mt-1 truncate">
-                                  {c.teacher || 'Teacher TBA'} {c.room ? `• Rm ${c.room}` : ''}
+                                  {decodeHtmlEntities(c.teacher || 'Teacher TBA')} {c.room ? `• Rm ${c.room}` : ''}
                                 </p>
                               </div>
                               {c.percentage && (
@@ -1593,7 +1646,7 @@ export default function App() {
                                   : 'text-slate-100 group-hover:text-white'
                               }`}
                             >
-                              {task.title}
+                              {decodeHtmlEntities(task.title)}
                             </p>
 
                             {/* Sender line if from teacher email */}
@@ -1602,7 +1655,7 @@ export default function App() {
                                 <Mail className="w-3 h-3 text-slate-500 shrink-0" />
                                 <span className="truncate">
                                   <span className="text-slate-500">From:</span>{' '}
-                                  <span className="text-slate-300 font-medium">{task.emailFrom}</span>
+                                  <span className="text-slate-300 font-medium">{decodeHtmlEntities(task.emailFrom)}</span>
                                 </span>
                               </div>
                             )}
@@ -1623,7 +1676,7 @@ export default function App() {
                               {/* Course Tag */}
                               {task.course && (
                                 <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700/60">
-                                  {task.course}
+                                  {decodeHtmlEntities(task.course)}
                                 </span>
                               )}
 
@@ -1831,7 +1884,7 @@ export default function App() {
 
                         {/* Title: Unobstructed full width */}
                         <h3 className="text-sm font-bold text-slate-100 mt-2 leading-snug group-hover:text-white transition-colors">
-                          {event.title}
+                          {decodeHtmlEntities(event.title)}
                         </h3>
 
                         {/* Sender info if present */}
@@ -1840,7 +1893,7 @@ export default function App() {
                             <Mail className="w-3 h-3 text-slate-500 shrink-0" />
                             <span className="truncate">
                               <span className="text-slate-500">From:</span>{' '}
-                              <span className="text-slate-300 font-medium">{event.emailFrom}</span>
+                              <span className="text-slate-300 font-medium">{decodeHtmlEntities(event.emailFrom)}</span>
                             </span>
                           </div>
                         )}
@@ -1848,7 +1901,7 @@ export default function App() {
                         {/* Description / note if present */}
                         {event.description && (
                           <p className="text-xs text-slate-400 mt-1 leading-relaxed line-clamp-2">
-                            {event.description}
+                            {decodeHtmlEntities(event.description)}
                           </p>
                         )}
 
@@ -1856,7 +1909,7 @@ export default function App() {
                         <div className="flex flex-wrap items-center gap-2 mt-3 text-[11px] text-slate-400">
                           <span className="flex items-center gap-1 bg-slate-950/80 px-2 py-0.5 rounded-md border border-slate-800 text-slate-300">
                             <MapPin className="w-3 h-3 text-red-400 shrink-0" />
-                            <span className="truncate max-w-[150px]">{event.location}</span>
+                            <span className="truncate max-w-[150px]">{decodeHtmlEntities(event.location)}</span>
                           </span>
 
                           {/* Student Tag */}
@@ -2180,7 +2233,7 @@ export default function App() {
                 {/* Course Tag */}
                 {selectedTaskForModal.course && (
                   <span className="text-xs px-2.5 py-1 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
-                    {selectedTaskForModal.course}
+                    {decodeHtmlEntities(selectedTaskForModal.course)}
                   </span>
                 )}
                 {/* Source Badge */}
@@ -2202,7 +2255,7 @@ export default function App() {
               <div className="space-y-3">
                 <div className="flex items-start justify-between gap-3">
                   <h2 className="text-base sm:text-lg font-bold text-white leading-snug">
-                    {selectedTaskForModal.title}
+                    {decodeHtmlEntities(selectedTaskForModal.title)}
                   </h2>
                 </div>
 
@@ -2254,7 +2307,7 @@ export default function App() {
                       <div className="min-w-0">
                         <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Email Sender</div>
                         <div className="text-xs font-semibold text-slate-200 truncate">
-                          {selectedTaskForModal.emailFrom || selectedTaskForModal.source || 'Teacher Announcement'}
+                          {decodeHtmlEntities(selectedTaskForModal.emailFrom || selectedTaskForModal.source || 'Teacher Announcement')}
                         </div>
                       </div>
                     </div>
@@ -2286,7 +2339,7 @@ export default function App() {
                   {selectedTaskForModal.emailSubject && (
                     <div className="pt-2 border-t border-slate-800/80 text-xs text-slate-300 flex items-baseline gap-2">
                       <span className="text-slate-500 shrink-0 font-medium">Subject:</span>
-                      <span className="text-slate-200 font-semibold truncate">{selectedTaskForModal.emailSubject}</span>
+                      <span className="text-slate-200 font-semibold truncate">{decodeHtmlEntities(selectedTaskForModal.emailSubject)}</span>
                     </div>
                   )}
 
@@ -2320,7 +2373,7 @@ export default function App() {
                         <span className="text-[10px] text-slate-500">Scroll to view entire text</span>
                       </div>
                       <div className="max-h-[220px] overflow-y-auto bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 text-xs text-slate-200 leading-relaxed whitespace-pre-wrap select-text selection:bg-indigo-500/40 font-mono">
-                        {selectedTaskForModal.emailBody}
+                        {decodeHtmlEntities(selectedTaskForModal.emailBody)}
                       </div>
                     </div>
                   )}
@@ -2372,7 +2425,7 @@ export default function App() {
                           </button>
                         </div>
                         <p className="text-xs text-slate-300 mt-2 leading-relaxed whitespace-pre-wrap pl-8">
-                          {comment.text}
+                          {decodeHtmlEntities(comment.text)}
                         </p>
                       </div>
                     ))
@@ -2516,7 +2569,7 @@ export default function App() {
             <div className="py-4 border-b border-slate-800/80 space-y-3 shrink-0">
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-base sm:text-lg font-bold text-white leading-snug">
-                  {selectedEventForModal.title}
+                  {decodeHtmlEntities(selectedEventForModal.title)}
                 </h2>
               </div>
 
@@ -2534,7 +2587,7 @@ export default function App() {
                   <span className="text-slate-600">&bull;</span>
                   <span className="flex items-center gap-1 text-slate-300">
                     <MapPin className="w-3.5 h-3.5 text-red-400" />
-                    {selectedEventForModal.location}
+                    {decodeHtmlEntities(selectedEventForModal.location)}
                   </span>
                 </div>
 
@@ -2563,7 +2616,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={(e) => {
-                      if (window.confirm(`Delete "${selectedEventForModal.title}" from schedule?`)) {
+                      if (window.confirm(`Delete "${decodeHtmlEntities(selectedEventForModal.title)}" from schedule?`)) {
                         deleteEvent(selectedEventForModal.id, selectedEventForModal.title, selectedEventForModal.date, e);
                       }
                     }}
@@ -2588,11 +2641,11 @@ export default function App() {
                     <div className="min-w-0">
                       <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Email Sender</div>
                       <div className="text-xs font-semibold text-slate-200 truncate">
-                        {selectedEventForModal.emailFrom || selectedEventForModal.rawEmailFrom || 'sportsYou / School Notification'}
+                        {decodeHtmlEntities(selectedEventForModal.emailFrom || selectedEventForModal.rawEmailFrom || 'sportsYou / School Notification')}
                       </div>
                       {selectedEventForModal.rawEmailFrom && selectedEventForModal.emailFrom !== selectedEventForModal.rawEmailFrom && (
                         <div className="text-[10px] text-slate-500 truncate">
-                          via {selectedEventForModal.rawEmailFrom}
+                          via {decodeHtmlEntities(selectedEventForModal.rawEmailFrom)}
                         </div>
                       )}
                     </div>
@@ -2623,7 +2676,7 @@ export default function App() {
                 {selectedEventForModal.emailSubject && (
                   <div className="pt-2 border-t border-slate-800/80 text-xs text-slate-300 flex items-baseline gap-2">
                     <span className="text-slate-500 shrink-0 font-medium">Subject:</span>
-                    <span className="text-slate-200 font-semibold truncate">{selectedEventForModal.emailSubject}</span>
+                    <span className="text-slate-200 font-semibold truncate">{decodeHtmlEntities(selectedEventForModal.emailSubject)}</span>
                   </div>
                 )}
 
@@ -2659,9 +2712,9 @@ export default function App() {
 
                 <div className="flex-1 overflow-y-auto bg-slate-950/90 border border-slate-800 rounded-xl p-4 text-xs text-slate-200 leading-relaxed whitespace-pre-wrap select-text selection:bg-indigo-500/40 font-mono">
                   {selectedEventForModal.emailBody ? (
-                    selectedEventForModal.emailBody
+                    decodeHtmlEntities(selectedEventForModal.emailBody)
                   ) : selectedEventForModal.description ? (
-                    selectedEventForModal.description
+                    decodeHtmlEntities(selectedEventForModal.description)
                   ) : (
                     <span className="text-slate-500 italic">No additional email text body available.</span>
                   )}

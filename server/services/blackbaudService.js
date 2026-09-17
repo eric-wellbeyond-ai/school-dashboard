@@ -17,6 +17,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { decodeHtmlEntities } from './parserService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -303,8 +304,8 @@ export async function getStudentClassesAndGrades(studentId) {
     if (!Array.isArray(classes)) return [];
 
     return classes.map(c => {
-      const title = c.sectionidentifier || c.course_title || c.GroupName || 'Course';
-      const teacher = c.groupownername || c.Owner || '';
+      const title = decodeHtmlEntities(c.sectionidentifier || c.course_title || c.GroupName || 'Course');
+      const teacher = decodeHtmlEntities(c.groupownername || c.Owner || '');
       const teacherEmail = c.groupowneremail || null;
       const rawGrade = c.cumgrade;
       const numGrade = (rawGrade !== null && rawGrade !== undefined && rawGrade !== '') ? parseFloat(rawGrade) : null;
@@ -352,16 +353,17 @@ export async function getStudentMissingAssignments(studentId, studentName, class
             for (const a of (r.AssignmentGrades || r.Assignments || [])) {
               if (a.Missing === true) {
                 const meta = (hydra.Assignments || []).find(x => x.AssignmentId === a.AssignmentId) || {};
+                const cleanComment = decodeHtmlEntities(a.Comment || '');
                 missingItems.push({
                   id: `bb_missing_${a.AssignmentId}_${studentId}`,
-                  title: meta.AssignShort || meta.ShortDescription || 'Missing Assignment',
-                  course: c.course,
-                  teacher: c.teacher,
+                  title: decodeHtmlEntities(meta.AssignShort || meta.ShortDescription || 'Missing Assignment'),
+                  course: decodeHtmlEntities(c.course),
+                  teacher: decodeHtmlEntities(c.teacher),
                   student: studentName,
                   dueDate: meta.DateDue || 'Overdue',
-                  comment: (a.Comment || '').replace(/<[^>]+>/g, '').trim(),
+                  comment: cleanComment,
                   maxPoints: meta.MaxPoints || 100,
-                  type: meta.AssignmentType || 'Assignment',
+                  type: decodeHtmlEntities(meta.AssignmentType || 'Assignment'),
                   isMissing: true
                 });
               }
@@ -434,19 +436,21 @@ export async function syncBlackbaudData() {
 
       // Also create portal assignment items for any missing work so they show up in the Checklist!
       missing.forEach(m => {
+        const cleanTitle = decodeHtmlEntities(m.title);
+        const cleanComment = decodeHtmlEntities(m.comment);
         results.assignments.push({
           id: m.id,
-          title: `[Missing] ${m.title}${m.comment ? ` (${m.comment})` : ''}`,
+          title: `[Missing] ${cleanTitle}${cleanComment ? ` (${cleanComment})` : ''}`,
           student: stName,
-          course: m.course.split(' - ')[0],
+          course: decodeHtmlEntities(m.course.split(' - ')[0]),
           dueDate: m.dueDate,
           source: 'Blackbaud Portal',
           completed: false,
           priority: 'high',
-          comments: m.comment ? [{
+          comments: cleanComment ? [{
             id: `comm_${Date.now()}`,
             author: 'Blackbaud Teacher Note',
-            text: m.comment,
+            text: cleanComment,
             timestamp: 'Portal Alert'
           }] : []
         });

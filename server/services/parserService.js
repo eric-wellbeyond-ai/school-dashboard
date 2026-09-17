@@ -17,12 +17,45 @@ export function decodeBase64(data) {
   }
 }
 
+/**
+ * Cleanly decode all HTML entities (named, decimal, hex) and strip raw HTML tags
+ */
+export function decodeHtmlEntities(str) {
+  if (!str || typeof str !== 'string') return str || '';
+  return str
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>|<\/div>|<\/li>/gi, '\n')
+    .replace(/<li>/gi, '• ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#160;|&nbsp;/gi, ' ')
+    .replace(/&#8217;|&#39;|&apos;|&rsquo;/gi, "'")
+    .replace(/&#8216;|&lsquo;/gi, "'")
+    .replace(/&#8220;|&ldquo;|&#8221;|&rdquo;/gi, '"')
+    .replace(/&#8212;|&mdash;/gi, '—')
+    .replace(/&#8211;|&ndash;/gi, '–')
+    .replace(/&#8594;|&rarr;/gi, '→')
+    .replace(/&#x3D;|&#61;/gi, '=')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#(\d+);/g, (_, dec) => {
+      try { return String.fromCharCode(parseInt(dec, 10)); } catch { return _; }
+    })
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+      try { return String.fromCharCode(parseInt(hex, 16)); } catch { return _; }
+    })
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n\s*\n+/g, '\n\n')
+    .trim();
+}
+
 // Extract full plain text or HTML body from a nested Gmail message payload
 export function extractBodyFromPayload(payload) {
   if (!payload) return '';
   
   if (payload.body && payload.body.data) {
-    return decodeBase64(payload.body.data);
+    return decodeHtmlEntities(decodeBase64(payload.body.data));
   }
 
   let text = '';
@@ -32,14 +65,18 @@ export function extractBodyFromPayload(payload) {
         text += decodeBase64(part.body.data) + '\n';
       } else if (part.mimeType === 'text/html' && part.body && part.body.data && !text) {
         // Fallback to HTML if plain text not found
-        text += decodeBase64(part.body.data).replace(/<[^>]+>/g, ' ') + '\n';
+        text += decodeBase64(part.body.data)
+          .replace(/<br\s*\/?>/gi, '\n')
+          .replace(/<\/p>|<\/div>|<\/li>/gi, '\n')
+          .replace(/<li>/gi, '• ')
+          .replace(/<[^>]+>/g, ' ') + '\n';
       } else if (part.parts) {
         text += extractBodyFromPayload(part) + '\n';
       }
     }
   }
 
-  return text.trim();
+  return decodeHtmlEntities(text.trim());
 }
 
 // Normalize email structure whether coming directly from Gmail API or simplified objects
@@ -50,10 +87,10 @@ export function normalizeEmail(email) {
   if (email.subject && email.body && email.from) {
     return {
       id: email.id || `mail_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      from: email.from,
-      subject: email.subject,
-      snippet: email.snippet || '',
-      body: email.body,
+      from: decodeHtmlEntities(email.from),
+      subject: decodeHtmlEntities(email.subject),
+      snippet: decodeHtmlEntities(email.snippet || ''),
+      body: decodeHtmlEntities(email.body),
       date: email.date || new Date().toISOString()
     };
   }
@@ -65,13 +102,13 @@ export function normalizeEmail(email) {
     return header ? header.value : '';
   };
 
-  const from = getHeader('From') || email.from || '';
-  const subject = getHeader('Subject') || email.subject || '';
+  const from = decodeHtmlEntities(getHeader('From') || email.from || '');
+  const subject = decodeHtmlEntities(getHeader('Subject') || email.subject || '');
   const date = getHeader('Date') || (email.internalDate 
     ? new Date(parseInt(email.internalDate, 10)).toISOString() 
     : new Date().toISOString());
-  const snippet = email.snippet || '';
-  const body = extractBodyFromPayload(email.payload) || snippet;
+  const snippet = decodeHtmlEntities(email.snippet || '');
+  const body = decodeHtmlEntities(extractBodyFromPayload(email.payload) || snippet);
 
   return {
     id: email.id || `mail_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -163,17 +200,19 @@ export function extractTasksFromEmail(email, source) {
   }
 
   const rawBody = email.body || '';
-  const cleanBody = rawBody.replace(/<[^>]+>/g, ' ').replace(/&#160;/g, ' ').replace(/&amp;/g, '&');
+  const cleanBody = decodeHtmlEntities(rawBody);
   const emailWideStudent = detectStudent(email.subject) || detectStudent(email.from);
 
   const finalizeTasks = (list) => {
     return list.map(t => ({
       emailId: email.id,
-      emailFrom: email.from || '',
-      emailSubject: email.subject || '',
+      emailFrom: decodeHtmlEntities(email.from || ''),
+      emailSubject: decodeHtmlEntities(email.subject || ''),
       emailDate: email.date || '',
-      emailBody: email.body || email.snippet || '',
-      ...t
+      emailBody: decodeHtmlEntities(email.body || email.snippet || ''),
+      ...t,
+      title: decodeHtmlEntities(t.title),
+      course: decodeHtmlEntities(t.course || '')
     }));
   };
 
@@ -512,20 +551,20 @@ export function extractEventsFromEmail(email, source) {
     const student = emailWideStudent || (email.subject.toLowerCase().includes('ms xc') || email.subject.toLowerCase().includes('soccer') ? 'Ben' : 'Jade');
     events.push({
       id: `ev_subj_${email.id}`,
-      title: subjectTitle,
+      title: decodeHtmlEntities(subjectTitle),
       student: student,
       date: new Date(email.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
       time: 'Check sportsYou',
       location: 'Athletic Field / Course',
       source: 'sportsYou',
       type: 'sports',
-      description: email.snippet || email.subject,
+      description: decodeHtmlEntities(email.snippet || email.subject),
       emailId: email.id,
-      emailFrom: senderName,
-      rawEmailFrom: email.from || '',
-      emailSubject: email.subject || '',
+      emailFrom: decodeHtmlEntities(senderName),
+      rawEmailFrom: decodeHtmlEntities(email.from || ''),
+      emailSubject: decodeHtmlEntities(email.subject || ''),
       emailDate: email.date || '',
-      emailBody: email.body || email.snippet || ''
+      emailBody: decodeHtmlEntities(email.body || email.snippet || '')
     });
   }
 
@@ -625,20 +664,20 @@ export function extractEventsFromEmail(email, source) {
 
     events.push({
       id: `event_${email.id}_${events.length + 1}`,
-      title: cleanTitle,
+      title: decodeHtmlEntities(cleanTitle),
       student: student === 'Both' ? 'All' : student,
       date: dateStr,
       time: time,
-      location: location,
+      location: decodeHtmlEntities(location),
       source: source,
       type: type,
-      description: line.replace(/^[-*•\d\.\)\s]+/, '').trim(),
+      description: decodeHtmlEntities(line.replace(/^[-*•\d\.\)\s]+/, '').trim()),
       emailId: email.id,
-      emailFrom: senderName,
-      rawEmailFrom: email.from || '',
-      emailSubject: email.subject || '',
+      emailFrom: decodeHtmlEntities(senderName),
+      rawEmailFrom: decodeHtmlEntities(email.from || ''),
+      emailSubject: decodeHtmlEntities(email.subject || ''),
       emailDate: email.date || '',
-      emailBody: email.body || email.snippet || ''
+      emailBody: decodeHtmlEntities(email.body || email.snippet || '')
     });
   }
 

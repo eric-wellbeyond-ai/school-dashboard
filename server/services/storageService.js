@@ -17,6 +17,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { decodeHtmlEntities } from './parserService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,6 +27,23 @@ const DATA_FILE = path.join(DATA_DIR, 'dashboard-data.json');
 
 // In-memory cache for fast access
 let memoryStore = null;
+
+function cleanDeep(obj) {
+  if (typeof obj === 'string') {
+    return decodeHtmlEntities(obj);
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(cleanDeep);
+  }
+  if (obj !== null && typeof obj === 'object') {
+    const res = {};
+    for (const [k, v] of Object.entries(obj)) {
+      res[k] = cleanDeep(v);
+    }
+    return res;
+  }
+  return obj;
+}
 
 /**
  * Initialize storage directory and default file if needed
@@ -90,8 +108,8 @@ export async function getDashboardData() {
             try { parsed = JSON.parse(parsed); } catch (e) {}
           }
           if (parsed && typeof parsed === 'object') {
-            memoryStore = parsed;
-            return parsed;
+            memoryStore = cleanDeep(parsed);
+            return memoryStore;
           }
         }
       }
@@ -105,7 +123,7 @@ export async function getDashboardData() {
   try {
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-      memoryStore = JSON.parse(raw);
+      memoryStore = cleanDeep(JSON.parse(raw));
 
       // Auto-seed Upstash if it was empty on first startup!
       if (kvUrl && kvToken && memoryStore && memoryStore.tasks && memoryStore.tasks.length > 0) {
@@ -140,7 +158,7 @@ export async function getDashboardData() {
  */
 export async function saveDashboardData(data) {
   const current = (await getDashboardData()) || {};
-  const updated = {
+  const rawUpdated = {
     tasks: data.tasks !== undefined ? data.tasks : current.tasks || [],
     events: data.events !== undefined ? data.events : current.events || [],
     deletedEventKeys: data.deletedEventKeys !== undefined ? data.deletedEventKeys : current.deletedEventKeys || [],
@@ -151,6 +169,7 @@ export async function saveDashboardData(data) {
     updatedAt: new Date().toISOString()
   };
 
+  const updated = cleanDeep(rawUpdated);
   memoryStore = updated;
 
   // Persist to Upstash / Vercel KV if available
