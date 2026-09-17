@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ExternalLink, Paperclip, X } from 'lucide-react';
 
 function decodeHtml(str) {
@@ -23,12 +23,48 @@ function looksLikeHtml(value) {
   return /<\/?[a-z][\s\S]*>/i.test(String(value || ''));
 }
 
-function isDeadPostImage(image) {
-  const src = String(image?.src || '').trim();
+export function isDeadPostImage(image) {
+  const src = String(image?.src || image || '').trim();
   const alt = String(image?.alt || image?.caption || '').trim();
-  if (!src || src === '?' || src === '#') return true;
+  if (!src || src === '?' || src === '#' || src === 'undefined' || src === 'null') return true;
   if (alt === '?' || alt === '??') return true;
-  return /question[_\s-]?mark|nophoto|no[_-]?photo|placeholder|ftpimages\/0\//i.test(`${src} ${alt}`);
+  if (/-2147483648/.test(src)) return true;
+  const hay = `${src} ${alt}`.toLowerCase();
+  if (/question[_\s-]?mark|nophoto|no[_-]?photo|no[_-]?image|placeholder|missing[_-]?image|unknown[_-]?user|default[_-]?user|large_user\.|small_user\.|ftpimages\/0\//i.test(hay)) {
+    return true;
+  }
+  try {
+    const file = decodeURIComponent((new URL(src, 'https://local.invalid').pathname.split('/').pop() || '').split('?')[0]);
+    if (file === '?' || file === '.') return true;
+  } catch {
+    return true;
+  }
+  return false;
+}
+
+export function liveImageSrc(image) {
+  if (!image) return null;
+  const src = typeof image === 'string' ? image : image.src;
+  if (!src || isDeadPostImage(typeof image === 'string' ? { src } : image)) return null;
+  return src;
+}
+
+export function SafePostImage({ src, alt = '', className, ...rest }) {
+  const [hidden, setHidden] = useState(false);
+  const live = liveImageSrc({ src, alt });
+  useEffect(() => {
+    setHidden(false);
+  }, [live]);
+  if (!live || hidden) return null;
+  return (
+    <img
+      src={live}
+      alt={alt}
+      className={className}
+      onError={() => setHidden(true)}
+      {...rest}
+    />
+  );
 }
 
 function sanitizeArticleHtml(html) {
@@ -74,6 +110,32 @@ function sanitizeArticleHtml(html) {
   return root.innerHTML;
 }
 
+function PostMediaFigure({ image }) {
+  const [hidden, setHidden] = useState(false);
+  const src = liveImageSrc(image);
+  if (!src || hidden) return null;
+  const href = image.href || image.src;
+  const picture = (
+    <img
+      src={src}
+      alt={image.caption ? '' : (image.alt || '')}
+      onError={() => setHidden(true)}
+    />
+  );
+  return (
+    <figure>
+      {href ? (
+        <a href={href} target="_blank" rel="noopener noreferrer">
+          {picture}
+        </a>
+      ) : picture}
+      {(image.caption || image.note) ? (
+        <figcaption>{[image.caption, image.note].filter(Boolean).join(' — ')}</figcaption>
+      ) : null}
+    </figure>
+  );
+}
+
 function feedLabel(item) {
   if (item?.feed === 'notes') return 'Official note';
   if (item?.feed === 'news') return item.type === 'Bulletin' ? 'Bulletin' : 'News';
@@ -96,12 +158,12 @@ export function toPostItem(item, extra = {}) {
     author: item.author || extra.author || '',
     html,
     description,
-    images: Array.isArray(item.images) ? item.images.filter((image) => !isDeadPostImage(image)) : [],
+    images: Array.isArray(item.images) ? item.images.filter((image) => liveImageSrc(image)) : [],
     files: Array.isArray(item.files) ? item.files : (item.attachments || []),
     links: Array.isArray(item.links) ? item.links : [],
-    imageUrl: item.imageUrl && !isDeadPostImage({ src: item.imageUrl, alt: item.title })
-      ? item.imageUrl
-      : (extra.imageUrl && !isDeadPostImage({ src: extra.imageUrl }) ? extra.imageUrl : null),
+    imageUrl: liveImageSrc({ src: item.imageUrl, alt: item.title })
+      || liveImageSrc({ src: extra.imageUrl })
+      || null,
     url: item.url || extra.url || null,
     feed: extra.feed || item.feed || item.kind || 'post',
     viewed: extra.viewed != null ? extra.viewed : item.viewed !== false,
@@ -118,14 +180,14 @@ export default function PostDetail({ post, onClose, onToggleRead }) {
   const html = looksLikeHtml(post?.html) ? sanitizeArticleHtml(post.html)
     : (looksLikeHtml(post?.description) ? sanitizeArticleHtml(post.description) : '');
   const plain = html ? '' : decodeHtml(post?.description || post?.body || '');
-  const images = (post?.images || []).filter((image) => !isDeadPostImage(image));
+  const images = (post?.images || []).filter((image) => liveImageSrc(image));
   const files = post?.files || [];
   const links = (post?.links || []).filter((link) => link?.url && link.url !== post?.url);
-  const cover = post?.imageUrl && !isDeadPostImage({ src: post.imageUrl, alt: post.title })
-    && !images.some((image) => image.src === post.imageUrl)
-    ? { src: post.imageUrl, alt: post.title || '', caption: '', href: post.imageUrl }
+  const coverSrc = liveImageSrc({ src: post.imageUrl, alt: post.title });
+  const cover = coverSrc && !images.some((image) => image.src === coverSrc)
+    ? { src: coverSrc, alt: post.title || '', caption: '', href: post.imageUrl }
     : null;
-  const media = cover ? [cover, ...images] : images;
+  const media = (cover ? [cover, ...images] : images).filter((image) => liveImageSrc(image));
   const meta = [post?.date, post?.author, post?.student && post.student !== 'All' ? post.student : null]
     .filter(Boolean)
     .join(' · ');
@@ -153,8 +215,13 @@ export default function PostDetail({ post, onClose, onToggleRead }) {
     const onError = (event) => {
       const img = event.currentTarget;
       img.hidden = true;
-      const frame = img.closest('a');
-      if (frame && frame.querySelectorAll('img:not([hidden])').length === 0) frame.hidden = true;
+      img.style.display = 'none';
+      img.removeAttribute('src');
+      const frame = img.closest('a') || img.closest('figure');
+      if (frame && frame.querySelectorAll('img:not([hidden])').length === 0) {
+        frame.hidden = true;
+        frame.style.display = 'none';
+      }
     };
     imgs.forEach((img) => img.addEventListener('error', onError));
     return () => {
@@ -200,33 +267,9 @@ export default function PostDetail({ post, onClose, onToggleRead }) {
 
           {media.length > 0 ? (
             <div className="post-detail-media">
-              {media.map((image, index) => {
-                const href = image.href || image.src;
-                const picture = (
-                  <img
-                    src={image.src}
-                    alt={image.caption ? '' : (image.alt || '')}
-                    onError={(event) => {
-                      const node = event.currentTarget;
-                      node.hidden = true;
-                      const frame = node.closest('a, figure');
-                      if (frame) frame.hidden = true;
-                    }}
-                  />
-                );
-                return (
-                  <figure key={image.src || index}>
-                    {href ? (
-                      <a href={href} target="_blank" rel="noopener noreferrer">
-                        {picture}
-                      </a>
-                    ) : picture}
-                    {(image.caption || image.note) ? (
-                      <figcaption>{[image.caption, image.note].filter(Boolean).join(' — ')}</figcaption>
-                    ) : null}
-                  </figure>
-                );
-              })}
+              {media.map((image, index) => (
+                <PostMediaFigure key={image.src || index} image={image} />
+              ))}
             </div>
           ) : null}
 

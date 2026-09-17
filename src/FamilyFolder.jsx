@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Calendar,
   CheckCircle2,
@@ -15,7 +16,8 @@ import {
   Plus,
   RefreshCw,
   Sparkles,
-  Trophy
+  Trophy,
+  X
 } from 'lucide-react';
 import CalendarBoard from './CalendarBoard.jsx';
 import CourseGradeList from './CourseGradeList.jsx';
@@ -25,7 +27,8 @@ import {
   gradeToneClass
 } from './lib/gradeColors.js';
 import { formatAssignmentScore } from './lib/assignmentScore.js';
-import { isZeroCreditMissing, parsePortalDate } from './lib/assignmentBuckets.js';
+import { dueDateFromAssignment, isZeroCreditMissing } from './lib/assignmentBuckets.js';
+import { liveImageSrc, SafePostImage } from './PostDetail.jsx';
 
 const GRADE_CHIP_CLASS =
   'inline-flex min-w-[2.75rem] justify-center tabular-nums font-semibold text-[13px] px-2 py-0.5 rounded-md border';
@@ -34,10 +37,11 @@ export function ProfileAvatar({ name, photoUrl, size = 28, className = '' }) {
   const [broken, setBroken] = useState(false);
   const initial = String(name || '?').trim().charAt(0).toUpperCase() || '?';
   const dim = `${size}px`;
-  if (photoUrl && !broken) {
+  const live = liveImageSrc(photoUrl);
+  if (live && !broken) {
     return (
       <img
-        src={photoUrl}
+        src={live}
         alt=""
         width={size}
         height={size}
@@ -94,7 +98,7 @@ function formatSyncTime(iso) {
 }
 
 function daysFromDue(task) {
-  const due = parsePortalDate(task?.dueDateISO || task?.dueDate);
+  const due = dueDateFromAssignment(task);
   if (!due) return null;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -118,11 +122,50 @@ function assignmentRightStatus(task) {
   if (task.status === 'done') {
     return { text: 'Done', tone: 'is-done' };
   }
-  if (task.status === 'dueSoon' || task.status === 'assigned') {
+  return null;
+}
+
+function assignmentDueSlot(task) {
+  if (task.status === 'overdue') {
+    const late = daysLate(task);
+    if (late <= 0) return null;
     return {
-      text: dueCountdownLabel(daysFromDue(task), task.status),
-      tone: task.status === 'dueSoon' ? 'is-soon' : 'is-assigned'
+      num: late,
+      unit: 'Days late',
+      tone: lateBadgeTone(late),
+      label: `${late} days late`
     };
+  }
+  if (task.status === 'dueSoon' || task.status === 'assigned') {
+    const days = daysFromDue(task);
+    if (days == null) return null;
+    const till = Math.max(0, days);
+    return {
+      num: till,
+      unit: 'Days till due',
+      tone: task.status === 'dueSoon' ? 'is-soon' : 'is-assigned',
+      label: dueCountdownLabel(till, task.status)
+    };
+  }
+  return null;
+}
+
+function sortUnreadFirst(items) {
+  return [...(items || [])].sort((a, b) => {
+    const au = a?.viewed === false ? 0 : 1;
+    const bu = b?.viewed === false ? 0 : 1;
+    return au - bu;
+  });
+}
+
+function feedThumbSrc(item) {
+  const candidates = [
+    item?.imageUrl,
+    ...((item?.images || []).map((image) => image?.src))
+  ];
+  for (const src of candidates) {
+    const live = liveImageSrc({ src, alt: item?.title });
+    if (live) return live;
   }
   return null;
 }
@@ -139,23 +182,54 @@ function noteMatchesStudent(item, filter) {
   return item.student === filter || item.student === 'All';
 }
 
-function FeedListPopover({
+function FeedListSheet({
   id,
   title,
   empty,
   items,
   onSelect,
+  onClose,
   filters,
   filter,
   onFilter,
   filterLabel
 }) {
-  return (
-    <div id={id} className="ff-feed-pop" role="dialog" aria-label={title}>
-      <div className="ff-feed-pop-head">
-        <p className="ff-feed-pop-kicker">{title}</p>
+  const closeRef = useRef(null);
+  const titleId = `${id}-title`;
+  const rows = sortUnreadFirst(items);
+  useEffect(() => {
+    const prev = document.activeElement;
+    closeRef.current?.focus();
+    return () => {
+      if (prev && typeof prev.focus === 'function') prev.focus();
+    };
+  }, []);
+
+  return createPortal(
+    <div className="post-detail-root" onClick={onClose}>
+      <div
+        id={id}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="post-detail-panel"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="post-detail-grabber" aria-hidden="true" />
+        <header className="post-detail-toolbar">
+          <button
+            ref={closeRef}
+            type="button"
+            className="post-detail-icon-btn"
+            aria-label={`Close ${title}`}
+            onClick={onClose}
+          >
+            <X className="w-5 h-5" aria-hidden="true" />
+          </button>
+          <p id={titleId} className="post-detail-kicker">{title}</p>
+        </header>
         {filters?.length > 1 ? (
-          <div className="ff-feed-filters" role="tablist" aria-label={filterLabel}>
+          <div className="ff-feed-filters ff-feed-sheet-filters" role="tablist" aria-label={filterLabel}>
             {filters.map((tab) => (
               <button
                 key={tab.id}
@@ -173,35 +247,46 @@ function FeedListPopover({
             ))}
           </div>
         ) : null}
+        <div className="post-detail-scroll">
+          {rows.length === 0 ? (
+            <p className="ff-feed-empty">{empty}</p>
+          ) : (
+            <ul className="ff-feed-sheet-list">
+              {rows.map((item) => {
+                const thumb = feedThumbSrc(item);
+                return (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      className={`ff-feed-row ${item.viewed === false ? 'is-unread' : ''}`}
+                      onClick={() => onSelect(item)}
+                    >
+                      <span className="ff-feed-row-copy">
+                        <span className="ff-feed-row-title">{decodeHtml(item.title)}</span>
+                        <span className="ff-feed-row-meta">
+                          {[
+                            item.date,
+                            item.author || (item.student && item.student !== 'All' ? item.student : null),
+                            item.type && item.feed === 'resources' ? item.type : null
+                          ].filter(Boolean).join(' · ')}
+                        </span>
+                        {item.snippet ? (
+                          <span className="ff-feed-row-snippet">{snippetLine(item.snippet)}</span>
+                        ) : null}
+                      </span>
+                      {thumb ? (
+                        <SafePostImage src={thumb} alt="" className="ff-feed-thumb" />
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       </div>
-      {items.length === 0 ? (
-        <p className="ff-feed-empty">{empty}</p>
-      ) : (
-        <ul className="ff-feed-list">
-          {items.map((item) => (
-            <li key={item.id}>
-              <button
-                type="button"
-                className={`ff-feed-row ${item.viewed === false ? 'is-unread' : ''}`}
-                onClick={() => onSelect(item)}
-              >
-                <span className="ff-feed-row-title">{decodeHtml(item.title)}</span>
-                <span className="ff-feed-row-meta">
-                  {[
-                    item.date,
-                    item.author || (item.student && item.student !== 'All' ? item.student : null),
-                    item.type && item.feed === 'resources' ? item.type : null
-                  ].filter(Boolean).join(' · ')}
-                </span>
-                {item.snippet ? (
-                  <span className="ff-feed-row-snippet">{snippetLine(item.snippet)}</span>
-                ) : null}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -342,15 +427,19 @@ export default function FamilyFolder({
 
   useEffect(() => {
     if (!openMenu) return undefined;
+    const isFeed = openMenu === 'notes' || openMenu === 'news' || openMenu === 'resources';
+    const onKey = (event) => {
+      if (event.key === 'Escape') setOpenMenu(null);
+    };
+    document.addEventListener('keydown', onKey);
+    if (isFeed) {
+      return () => document.removeEventListener('keydown', onKey);
+    }
     const onDoc = (event) => {
       if (endRef.current && endRef.current.contains(event.target)) return;
       setOpenMenu(null);
     };
-    const onKey = (event) => {
-      if (event.key === 'Escape') setOpenMenu(null);
-    };
     document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('mousedown', onDoc);
       document.removeEventListener('keydown', onKey);
@@ -455,7 +544,7 @@ export default function FamilyFolder({
                 ) : null}
               </button>
               {notesOpen && (
-                <FeedListPopover
+                <FeedListSheet
                   id="ff-notes-popover"
                   title="Official notes"
                   empty={blackbaudStatus.connected ? 'No official notes for this student.' : 'Sign in to load official notes.'}
@@ -464,6 +553,7 @@ export default function FamilyFolder({
                   filters={noteFilters}
                   filterLabel="Student"
                   onFilter={setNotesFilter}
+                  onClose={() => setOpenMenu(null)}
                   onSelect={(item) => {
                     setOpenMenu(null);
                     onOpenOfficialNote(item);
@@ -491,11 +581,12 @@ export default function FamilyFolder({
                 ) : null}
               </button>
               {newsOpen && (
-                <FeedListPopover
+                <FeedListSheet
                   id="ff-news-popover"
                   title="News"
                   empty={blackbaudStatus.connected ? 'No school news yet.' : 'Sign in to load school news.'}
                   items={featuredNews}
+                  onClose={() => setOpenMenu(null)}
                   onSelect={(item) => {
                     setOpenMenu(null);
                     onOpenFeaturedItem(item);
@@ -523,11 +614,12 @@ export default function FamilyFolder({
                 ) : null}
               </button>
               {resourcesOpen && (
-                <FeedListPopover
+                <FeedListSheet
                   id="ff-resources-popover"
                   title="Resources"
                   empty={blackbaudStatus.connected ? 'No resources for this school.' : 'Sign in to load resources.'}
                   items={schoolResources}
+                  onClose={() => setOpenMenu(null)}
                   onSelect={(item) => {
                     setOpenMenu(null);
                     onOpenResource(item);
@@ -879,8 +971,7 @@ export default function FamilyFolder({
                 <ul>
                   {filteredTasks.map((task) => {
                     const isCustom = String(task.id || '').startsWith('task_custom_');
-                    const late = daysLate(task);
-                    const showLate = (task.status === 'overdue' || task.status === 'missing') && late > 0;
+                    const dueSlot = assignmentDueSlot(task);
                     const familyFiled = task.acknowledged === true || task.doneOverride === true;
                     const showCheck = task.status === 'overdue'
                       || task.status === 'missing'
@@ -908,10 +999,10 @@ export default function FamilyFolder({
                     ) : null;
                     return (
                       <li key={task.id} className="ff-assign-row">
-                        {showLate ? (
-                          <span className={`ff-late-badge ${lateBadgeTone(late)}`} aria-label={`${late} days late`}>
-                            <span className="ff-late-num tabular-nums">{late}</span>
-                            <span className="ff-late-unit">Days late</span>
+                        {dueSlot ? (
+                          <span className={`ff-late-badge ${dueSlot.tone}`} aria-label={dueSlot.label}>
+                            <span className="ff-late-num tabular-nums">{dueSlot.num}</span>
+                            <span className="ff-late-unit">{dueSlot.unit}</span>
                           </span>
                         ) : (
                           <span className="ff-late-badge is-empty" aria-hidden="true" />

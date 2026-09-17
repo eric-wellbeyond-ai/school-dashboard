@@ -16,6 +16,8 @@
  * 9. upcoming
  */
 
+const DUE_LABEL_RE = /^(assigned|no due date|none|n\/?a|tbd|ongoing|upcoming|this week|check blackbaud|due on test day)$/i;
+
 export function parsePortalDate(value) {
   if (!value) return null;
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
@@ -34,6 +36,29 @@ export function parsePortalDate(value) {
   const parsed = new Date(str);
   if (Number.isNaN(parsed.getTime())) return null;
   return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+}
+
+/** Real due dates only — ignore labels and Blackbaud empty sentinels (year 1 / 1900). */
+export function parseDueDate(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'string' && DUE_LABEL_RE.test(value.trim())) return null;
+  const d = parsePortalDate(value);
+  if (!d) return null;
+  const year = d.getFullYear();
+  if (year < 1990 || year > 2100) return null;
+  return d;
+}
+
+/**
+ * Prefer explicit dueDateISO (including null = no due date). Never treat
+ * creation/assigned dates as a due date.
+ */
+export function dueDateFromAssignment(item) {
+  if (!item || typeof item !== 'object') return null;
+  if (Object.prototype.hasOwnProperty.call(item, 'dueDateISO')) {
+    return parseDueDate(item.dueDateISO);
+  }
+  return parseDueDate(item.dateDue || item.DateDue || item.SortDateDue || item.dueDate);
 }
 
 export function toDateKey(d) {

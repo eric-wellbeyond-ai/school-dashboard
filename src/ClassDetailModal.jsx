@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, ExternalLink, Mail, MapPin, Paperclip } from
 import { formatAssignmentScore } from './lib/assignmentScore.js';
 import { gradeBandFromLetterOrPercent, gradeToneClass } from './lib/gradeColors.js';
 import { isZeroCreditMissing } from './lib/assignmentBuckets.js';
+import { liveImageSrc, SafePostImage } from './PostDetail.jsx';
 
 const CLASS_TABS = [
   { id: 'bulletin', label: 'Bulletin' },
@@ -80,9 +81,10 @@ function asPost(item, index, prefix) {
     item.body || item.LongText || item.LongDescription || item.BriefDescription
     || item.description || item.Preview || item.Message || (desc && desc !== title ? desc : '') || ''
   );
-  const images = Array.isArray(item.images) ? item.images : [];
+  const images = Array.isArray(item.images) ? item.images.filter((image) => liveImageSrc(image)) : [];
   const files = Array.isArray(item.files) ? item.files : [];
   const links = Array.isArray(item.links) ? item.links : [];
+  const imageUrl = liveImageSrc({ src: item.imageUrl, alt: title }) || images[0]?.src || null;
   if (!title && !body && !images.length && !files.length) return null;
   return {
     id: String(item.id || item.AlbumID || item.LinkID || item.ItemID || item.ContentItemId || item.DiscussionId || `${prefix}_${index}`),
@@ -96,6 +98,7 @@ function asPost(item, index, prefix) {
     images,
     files,
     links,
+    imageUrl,
     viewed: item.viewed !== true ? false : true,
     feed: item.feed || 'bulletin',
     type: item.type || 'Bulletin',
@@ -104,52 +107,54 @@ function asPost(item, index, prefix) {
   };
 }
 
-function isDeadPostImage(image) {
-  const src = String(image?.src || '').trim();
-  const alt = String(image?.alt || image?.caption || '').trim();
-  if (!src || src === '?' || src === '#') return true;
-  if (alt === '?' || alt === '??') return true;
-  return /question[_\s-]?mark|nophoto|no[_-]?photo|placeholder|ftpimages\/0\//i.test(`${src} ${alt}`);
+function sortUnreadFirst(items) {
+  return [...(items || [])].sort((a, b) => {
+    const au = a?.viewed === false ? 0 : 1;
+    const bu = b?.viewed === false ? 0 : 1;
+    return au - bu;
+  });
 }
 
 function MediaImages({ images }) {
-  const visible = (images || []).filter((image) => !isDeadPostImage(image));
+  const visible = (images || []).filter((image) => liveImageSrc(image));
   if (!visible.length) return null;
   return (
     <div className="class-detail-media mt-3 space-y-3">
-      {visible.map((image, index) => {
-        const href = image.href || image.src;
-        const picture = (
-          <img
-            src={image.src}
-            alt={image.caption ? '' : (image.alt || '')}
-            className="class-detail-media-img"
-            onError={(event) => {
-              const node = event.currentTarget;
-              node.hidden = true;
-              const frame = node.closest('a, figure');
-              if (frame) frame.hidden = true;
-            }}
-          />
-        );
-        return (
-          <figure key={image.src || index} className="space-y-1.5">
-            {href ? (
-              <a href={href} target="_blank" rel="noreferrer">
-                {picture}
-              </a>
-            ) : picture}
-            {(image.caption || image.note) ? (
-              <figcaption className="text-[13px] text-zinc-400 leading-relaxed">
-                {[image.caption, image.note && image.note !== image.caption ? image.note : '']
-                  .filter(Boolean)
-                  .join(' — ')}
-              </figcaption>
-            ) : null}
-          </figure>
-        );
-      })}
+      {visible.map((image, index) => (
+        <ClassMediaFigure key={image.src || index} image={image} />
+      ))}
     </div>
+  );
+}
+
+function ClassMediaFigure({ image }) {
+  const [hidden, setHidden] = useState(false);
+  const src = liveImageSrc(image);
+  if (!src || hidden) return null;
+  const href = image.href || image.src;
+  const picture = (
+    <img
+      src={src}
+      alt={image.caption ? '' : (image.alt || '')}
+      className="class-detail-media-img"
+      onError={() => setHidden(true)}
+    />
+  );
+  return (
+    <figure className="space-y-1.5">
+      {href ? (
+        <a href={href} target="_blank" rel="noreferrer">
+          {picture}
+        </a>
+      ) : picture}
+      {(image.caption || image.note) ? (
+        <figcaption className="text-[13px] text-zinc-400 leading-relaxed">
+          {[image.caption, image.note && image.note !== image.caption ? image.note : '']
+            .filter(Boolean)
+            .join(' — ')}
+        </figcaption>
+      ) : null}
+    </figure>
   );
 }
 
@@ -298,15 +303,16 @@ function TeacherPhoto({ name, photoUrl, size = 72 }) {
   const [broken, setBroken] = useState(false);
   const initial = String(name || '?').trim().charAt(0).toUpperCase() || '?';
   const dim = `${size}px`;
-  if (photoUrl && !broken) {
+  const live = liveImageSrc(photoUrl);
+  if (live && !broken) {
     return (
       <img
-        src={photoUrl}
+        src={live}
         alt=""
         width={size}
         height={size}
         onError={() => setBroken(true)}
-        className="rounded-full object-cover shrink-0 bg-zinc-800"
+        className="rounded-full object-cover shrink-0"
         style={{ width: dim, height: dim }}
       />
     );
@@ -329,11 +335,11 @@ function roundSize(size) {
 function TeacherSidebar({ course, detail, teacherName, teacherEmail, teacherPhoto, room }) {
   return (
     <aside className="shrink-0 md:border-l md:border-zinc-800 md:pl-5 space-y-3">
-      {course.coursePhoto ? (
-        <img
+      {liveImageSrc(course.coursePhoto) ? (
+        <SafePostImage
           src={course.coursePhoto}
           alt=""
-          className="w-full h-24 object-cover rounded-xl border border-zinc-800 bg-zinc-900"
+          className="w-full h-24 object-cover rounded-xl border border-zinc-800"
         />
       ) : null}
       <div className="flex md:flex-col items-center md:items-stretch gap-3">
@@ -408,18 +414,18 @@ export default function ClassDetailModal({
     return types;
   }, [classAssignments]);
 
-  const bulletin = useMemo(() => postsFromDetail(detail).map((item) => {
+  const bulletin = useMemo(() => sortUnreadFirst(postsFromDetail(detail).map((item) => {
     const key = `${item.feed || 'bulletin'}:${item.id}`;
     if (!Object.prototype.hasOwnProperty.call(readOverrides, key)) return item;
     return { ...item, viewed: readOverrides[key] };
-  }), [detail, readOverrides]);
+  })), [detail, readOverrides]);
   const topics = useMemo(() => {
     const list = (detail?.topics && detail.topics.length) ? detail.topics : fallbackTopics;
-    return list.map((item) => {
+    return sortUnreadFirst(list.map((item) => {
       const key = `topics:${item.id}`;
       if (!Object.prototype.hasOwnProperty.call(readOverrides, key)) return item;
       return { ...item, viewed: readOverrides[key] };
-    });
+    }));
   }, [detail, fallbackTopics, readOverrides]);
   const topicsFromGradebook = !(detail?.topics && detail.topics.length) && fallbackTopics.length > 0;
   const openTopic = topics.find((topic) => String(topic.id) === String(openTopicId)) || null;
@@ -593,13 +599,17 @@ export default function ClassDetailModal({
                   </p>
                 ) : (
                   <ul className="space-y-2">
-                    {bulletin.map((post) => (
+                    {bulletin.map((post) => {
+                      const thumb = liveImageSrc({ src: post.imageUrl, alt: post.title })
+                        || liveImageSrc(post.images?.[0]);
+                      return (
                       <li key={post.id}>
                         <button
                           type="button"
-                          className={`w-full min-h-11 rounded-xl border border-zinc-800 px-3.5 py-2.5 text-left hover:bg-zinc-900/70 ${post.viewed === false ? 'ff-feed-row is-unread' : ''}`}
+                          className={`w-full min-h-11 rounded-xl border border-zinc-800 px-3.5 py-2.5 text-left hover:bg-zinc-900/70 flex items-start gap-3 ${post.viewed === false ? 'ff-feed-row is-unread' : ''}`}
                           onClick={() => onOpenPost?.(post)}
                         >
+                          <span className="min-w-0 flex-1">
                           <span className="ff-feed-row-title block text-[15px] font-medium text-zinc-100">{post.title}</span>
                           {(post.author || post.date) && (
                             <span className="mt-1 block text-[13px] text-zinc-500">
@@ -611,9 +621,12 @@ export default function ClassDetailModal({
                               {decode(post.body)}
                             </span>
                           ) : null}
+                          </span>
+                          {thumb ? <SafePostImage src={thumb} alt="" className="ff-feed-thumb" /> : null}
                         </button>
                       </li>
-                    ))}
+                      );
+                    })}
                   </ul>
                 )
               )}
@@ -686,6 +699,8 @@ export default function ClassDetailModal({
                     )}
                     {topics.map((topic) => {
                       const preview = decode(topic.description || '');
+                      const thumb = liveImageSrc({ src: topic.thumbUrl || topic.imageUrl, alt: topic.title })
+                        || liveImageSrc(topic.images?.[0]);
                       return (
                         <li key={topic.id}>
                           <button
@@ -703,7 +718,7 @@ export default function ClassDetailModal({
                               viewed: topic.viewed === false ? false : topic.viewed
                             })}
                             aria-label={`Open topic ${decode(topic.title)}`}
-                            className={`w-full min-h-11 rounded-xl border border-zinc-800 px-3.5 py-2.5 text-left hover:bg-zinc-900/70 flex items-center gap-3 ${topic.viewed === false ? 'ff-feed-row is-unread' : ''}`}
+                            className={`w-full min-h-11 rounded-xl border border-zinc-800 px-3.5 py-2.5 text-left hover:bg-zinc-900/70 flex items-start gap-3 ${topic.viewed === false ? 'ff-feed-row is-unread' : ''}`}
                           >
                             <span className="min-w-0 flex-1">
                               <span className={`block text-[15px] text-zinc-100 ${topic.viewed === false ? 'font-semibold' : 'font-medium'}`}>{decode(topic.title)}</span>
@@ -715,7 +730,8 @@ export default function ClassDetailModal({
                                 <span className="mt-0.5 block text-[13px] text-zinc-500">{topic.publishDate}</span>
                               ) : null}
                             </span>
-                            <ChevronRight className="w-4 h-4 shrink-0 text-zinc-500" aria-hidden="true" />
+                            {thumb ? <SafePostImage src={thumb} alt="" className="ff-feed-thumb" /> : null}
+                            <ChevronRight className="w-4 h-4 shrink-0 text-zinc-500 mt-1" aria-hidden="true" />
                           </button>
                         </li>
                       );

@@ -20,6 +20,7 @@ import { currentWlaSession } from './wlaContext.js';
 import { identifyUser, BEN_ID, JADE_ID } from './sessionStore.js';
 import {
   parsePortalDate,
+  parseDueDate,
   toDateKey,
   classifyAssignment,
   formatAssignmentDate,
@@ -75,7 +76,7 @@ export function isPlaceholderPhoto(url, extra = '') {
   if (!raw || raw === '?' || raw === '#' || raw === 'undefined' || raw === 'null') return true;
   if (hint === '?' || hint === '??') return true;
   const hay = `${raw} ${hint}`.toLowerCase();
-  if (/question[_\s-]?mark|no[_-]?photo|nophoto|no[_-]?image|placeholder|missing[_-]?image|unknown[_-]?user|default[_-]?user|large_user\.|small_user\.|ftpimages\/0\//i.test(hay)) {
+  if (/question[_\s-]?mark|no[_-]?photo|nophoto|no[_-]?image|placeholder|missing[_-]?image|unknown[_-]?user|default[_-]?user|large_user\.|small_user\.|ftpimages\/0\/|-2147483648/i.test(hay)) {
     return true;
   }
   try {
@@ -93,16 +94,9 @@ export function dashboardPhotoSrc(absUrl) {
   try {
     const u = new URL(absUrl, BASE_URL);
     if (!isAllowedPhotoHost(u.hostname)) return null;
-    const needsProxy = /fileaccess/i.test(u.pathname)
-      || /profilephoto/i.test(u.pathname)
-      || u.hostname === 'myschoolapp.com'
-      || u.hostname.endsWith('.myschoolapp.com');
-    if (needsProxy) {
-      return `/api/blackbaud/photo?url=${encodeURIComponent(u.href)}`;
-    }
-    return u.href;
+    return `/api/blackbaud/photo?url=${encodeURIComponent(u.href)}`;
   } catch {
-    return absUrl;
+    return null;
   }
 }
 
@@ -112,7 +106,7 @@ const COVER_IMAGE_CONTENT_ID = 404;
 const COVER_BRIEF_CONTENT_ID = 406;
 
 export function proxiedPhotoSrc(absUrl) {
-  if (!absUrl) return null;
+  if (!absUrl || isPlaceholderPhoto(absUrl)) return null;
   try {
     const u = new URL(String(absUrl), BASE_URL);
     if ((u.protocol !== 'https:' && u.protocol !== 'http:') || !isAllowedPhotoHost(u.hostname)) {
@@ -534,7 +528,7 @@ export async function getStudentClassesAndGrades(studentId, personaId = 1) {
           leadSectionId: c.leadsectionid || c.LeadSectionId || c.sectionid,
           associationId: c.associationid || c.AssociationId || null,
           markingPeriodId: c.markingperiodid,
-          coursePhoto: photoRel ? toCdnPhotoUrl(photoRel) : null,
+          coursePhoto: photoRel ? dashboardPhotoSrc(toCdnPhotoUrl(photoRel) || photoRel) : null,
           overdueCount: c.OverdueCount || 0,
           upcomingCount: c.UpcomingCount || 0
         };
@@ -570,7 +564,7 @@ function shortCourseName(title) {
 
 function mapHydrateAssignment(meta, grade, course, studentId, studentName, now) {
   const assignedAt = parsePortalDate(meta.SortDateAssigned || meta.DateAssigned);
-  const dueAt = parsePortalDate(meta.SortDateDue || meta.DateDue);
+  const dueAt = parseDueDate(meta.SortDateDue || meta.DateDue);
   const createdAt = parsePortalDate(
     meta.DateCreated || meta.CreatedDate || meta.CreateDate || meta.InsertDate || grade.InsertDate
   );
@@ -1169,7 +1163,7 @@ function normalizeBulletinItem(item, index) {
   ].filter((value) => value && typeof value === 'string').join('\n');
   const rich = extractRichContent(html, { attachments: attachmentsFromRecord(item) });
   const cover = item.LargeFilenameUrl || item.CoverFilenameUrl || item.FilenameUrl || item.LinkImageUrl || item.ThumbFilenameUrl;
-  if (cover && !isPlaceholderPhoto(cover, title)) {
+  if (cover && String(cover).trim() && !isPlaceholderPhoto(cover, title)) {
     mergeRich(rich, extractRichContent('', { attachments: [{ url: cover, FileName: cover, Title: title }] }));
   }
   const url = item.Url || item.url || null;
@@ -1300,8 +1294,8 @@ function topicContentEntry(entry) {
     { attachments: attachmentsFromRecord(entry) }
   );
   const fileAbs = joinPortalFile(entry.FilePath, entry.FileName || entry.DownloadUrl);
-  if (fileAbs && isImageRef(fileAbs, entry.FileName || entry.FriendlyFileName || title)) {
-    const src = proxiedPhotoSrc(fileAbs);
+  if (fileAbs && isImageRef(fileAbs, entry.FileName || entry.FriendlyFileName || title) && !isPlaceholderPhoto(fileAbs, title)) {
+    const src = dashboardPhotoSrc(fileAbs) || proxiedPhotoSrc(fileAbs);
     if (src) {
       rich.images.unshift({
         src,
@@ -1338,7 +1332,17 @@ async function hydrateTopic(item, index) {
   );
   for (const entry of asList(contentHit.data)) {
     const contentId = Number(entry.ContentId);
-    if (SKIP_TOPIC_CONTENT_IDS.has(contentId) || contentId === COVER_IMAGE_CONTENT_ID) continue;
+    if (SKIP_TOPIC_CONTENT_IDS.has(contentId)) continue;
+    if (contentId === COVER_IMAGE_CONTENT_ID) {
+      const mapped = topicContentEntry(entry);
+      const live = (mapped.images || []).filter((image) => image?.src && !isPlaceholderPhoto(image.src, image.alt));
+      if (live[0]?.src) {
+        topic.thumbUrl = live[0].src;
+        topic.imageUrl = live[0].src;
+        mergeRich(topic, { images: live, files: [], links: [] });
+      }
+      continue;
+    }
     if (contentId === COVER_BRIEF_CONTENT_ID) {
       const brief = extractRichContent(entry.LongDescription || entry.ShortDescription || '');
       if (brief.text && !topic.description) topic.description = brief.text;
@@ -1353,6 +1357,9 @@ async function hydrateTopic(item, index) {
     }
   }
 
+  topic.images = (topic.images || []).filter((image) => image?.src && !isPlaceholderPhoto(image.src, image.alt));
+  if (!topic.thumbUrl && topic.images[0]?.src) topic.thumbUrl = topic.images[0].src;
+  if (!topic.imageUrl) topic.imageUrl = topic.thumbUrl || null;
   return topic;
 }
 
@@ -1444,7 +1451,7 @@ export async function fetchProfilePhoto(userId) {
 export async function fetchPhotoByUrl(rawUrl) {
   const session = await getBlackbaudSession();
   const cookie = portalCookieHeader(session);
-  if (!cookie || !rawUrl) return null;
+  if (!cookie || !rawUrl || isPlaceholderPhoto(rawUrl)) return null;
   if (!isAllowedPhotoUrl(rawUrl)) return null;
   const headers = {
     'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
@@ -1461,6 +1468,7 @@ export async function fetchPhotoByUrl(rawUrl) {
       const loc = res.headers.get('location');
       if (!loc) return null;
       current = new URL(loc, current).href;
+      if (isPlaceholderPhoto(current)) return null;
       continue;
     }
     if (!res.ok) return null;
@@ -1839,16 +1847,46 @@ function resourceKindLabel(kind) {
   return 'Resource';
 }
 
+function isResourceStub(item) {
+  if (!item || typeof item !== 'object') return true;
+  const id = item.Id ?? item.DownloadID ?? item.LinkID ?? item.AlbumID ?? item.ItemID;
+  if (id === -2147483648) return true;
+  if (isFlagDescription(item.Description)
+    && !item.Url && !item.DownloadUrl && !item.FriendlyFileName && !item.ShortDescription && !item.FileName) {
+    return true;
+  }
+  return false;
+}
+
+function isUsableResource(item) {
+  if (isResourceStub(item)) return false;
+  return Boolean(
+    item.DownloadID
+    || item.LinkID
+    || item.AlbumID
+    || item.Url
+    || item.DownloadUrl
+    || item.FriendlyFileName
+    || item.ShortDescription
+    || (item.Description && !isFlagDescription(item.Description) && String(item.Description).trim().length > 1)
+  );
+}
+
 function normalizeResourceItem(item, index, extra = {}) {
   const mapped = normalizeBulletinItem(item, index);
   const htmlRaw = htmlFromRecord(item);
   const type = extra.type || resourceKindLabel(extra.kind);
-  const title = mapped.title || pickText(item.Name, item.Headline, item.Title, item.FriendlyFileName) || type;
-  const files = mapped.files || [];
-  const links = mapped.links || [];
-  const images = mapped.images || [];
+  const title = pickText(
+    mapped.title,
+    item.ShortDescription,
+    isFlagDescription(item.Description) ? '' : item.Description,
+    item.FriendlyFileName,
+    item.FileName
+  ) || type;
+  const images = (mapped.images || []).filter((image) => image?.src && !isPlaceholderPhoto(image.src, image.alt));
+  const thumb = images[0]?.src || newsImageUrl(item);
   return {
-    id: String(mapped.id || extra.id || `resource_${index}`),
+    id: String(item.DownloadID || item.LinkID || item.AlbumID || mapped.id || extra.id || `resource_${index}`),
     kind: 'resource',
     title,
     date: mapped.date,
@@ -1856,16 +1894,16 @@ function normalizeResourceItem(item, index, extra = {}) {
     student: 'All',
     author: mapped.author,
     type,
-    source: extra.source || 'Resources',
+    source: extra.source || item.GroupName || 'Resources',
     snippet: snippetFrom(mapped.body || title),
     description: mapped.body,
     html: rewriteHtmlPhotos(htmlRaw),
     images,
-    files,
-    links,
+    files: mapped.files || [],
+    links: mapped.links || [],
     viewed: false,
-    imageUrl: images[0]?.src || newsImageUrl(item),
-    url: mapped.url,
+    imageUrl: thumb && !isPlaceholderPhoto(thumb) ? thumb : null,
+    url: mapped.url || resolvePortalUrl(item.DownloadUrl) || resolvePortalUrl(item.Url) || null,
     feed: 'resources'
   };
 }
@@ -1874,8 +1912,8 @@ function uniqueArticles(items) {
   const seen = new Set();
   const unique = [];
   for (const item of items) {
-    if (!item?.title && !item?.files?.length && !item?.links?.length && !item?.images?.length) continue;
-    const key = `${item.feed || item.kind}:${item.type}:${item.id}:${item.title}`;
+    if (!item?.title && !item?.files?.length && !item?.links?.length && !item?.url) continue;
+    const key = `${item.feed || item.kind}:${item.type}:${item.id}:${item.title}:${item.url || ''}`;
     if (seen.has(key)) continue;
     seen.add(key);
     unique.push(item);
@@ -1883,22 +1921,27 @@ function uniqueArticles(items) {
   return unique;
 }
 
-function collectResourceSectionIds(data, out = new Set(), depth = 0) {
-  if (!data || depth > 5) return out;
-  if (Array.isArray(data)) {
-    data.forEach((item) => collectResourceSectionIds(item, out, depth + 1));
-    return out;
+async function classLeadSectionIds() {
+  const ids = new Set();
+  const schoolYear = encodeURIComponent('2026 - 2027');
+  for (const studentId of [BEN_ID, JADE_ID]) {
+    const termsHit = await blackbaudRequestSoft(
+      `/api/DataDirect/StudentGroupTermList/?studentUserId=${studentId}&schoolYearLabel=${schoolYear}&personaId=1`
+    );
+    if (termsHit.expired) return { ids: [], expired: true };
+    const terms = asList(termsHit.data);
+    const active = terms.find((row) => row.CurrentInd === 1 && row.OfferingType === 1) || terms[0];
+    const durationId = active?.DurationId || 0;
+    const classHit = await blackbaudRequestSoft(
+      `/api/datadirect/ParentStudentUserClassesGet?userId=${studentId}&schoolYearLabel=${schoolYear}&memberLevel=3&persona=1&durationList=${durationId}`
+    );
+    if (classHit.expired) return { ids: [], expired: true };
+    for (const course of asList(classHit.data)) {
+      const id = course.leadsectionid || course.LeadSectionId || course.sectionid || course.SectionId;
+      if (id) ids.add(String(id));
+    }
   }
-  if (typeof data !== 'object') return out;
-  for (const key of ['LeadSectionId', 'SectionId', 'GroupId', 'CommunityId', 'ResourceBoardId']) {
-    const value = data[key];
-    if (typeof value === 'number' && value > 0) out.add(String(value));
-    if (typeof value === 'string' && /^\d+$/.test(value) && Number(value) > 0) out.add(value);
-  }
-  for (const key of ['Groups', 'Communities', 'Activities', 'ResourceBoards', 'GroupList', 'Items']) {
-    if (data[key]) collectResourceSectionIds(data[key], out, depth + 1);
-  }
-  return out;
+  return { ids: [...ids], expired: false };
 }
 
 export async function fetchFeaturedContent() {
@@ -1927,86 +1970,64 @@ export async function fetchFeaturedContent() {
 }
 
 export async function fetchResources() {
-  const featuredUrls = [
-    '/api/Media/FeaturedMediaGet/?format=json',
-    '/api/resource/FeaturedResourcesGet/?format=json',
-    '/api/Resource/FeaturedResourcesGet/?format=json',
-    '/api/download/FeaturedDownloadsGet/?format=json',
-    '/api/link/FeaturedLinksGet/?format=json',
-    '/api/content/FeaturedContentGet/?format=json',
-    '/api/datadirect/ResourceBoardGet/?format=json',
-    '/api/DataDirect/ResourceBoardGet/?format=json'
-  ];
-  const featuredHits = await Promise.all(featuredUrls.map(async (url) => ({
-    url,
-    hit: await blackbaudRequestSoft(url)
-  })));
-  if (featuredHits.some((row) => row.hit.expired)) {
-    return { connected: false, expired: true, items: [], endpoints: featuredUrls };
-  }
-
   const items = [];
   const used = [];
-  const kindFromUrl = (url) => {
-    if (/\/media\//i.test(url)) return 'media';
-    if (/\/link\//i.test(url)) return 'link';
-    if (/\/download\//i.test(url)) return 'download';
-    if (/\/content\//i.test(url)) return 'content';
-    return 'resource';
-  };
-  for (const { url, hit } of featuredHits) {
-    const list = asList(hit.data);
-    if (!list.length) continue;
+  const pushList = (url, kind, list) => {
+    const usable = list.filter(isUsableResource);
+    if (!usable.length) return;
     used.push(url);
-    list.forEach((item, index) => {
+    usable.forEach((item, index) => {
       items.push(normalizeResourceItem(item, items.length + index, {
-        kind: kindFromUrl(url),
-        type: resourceKindLabel(kindFromUrl(url)),
-        source: 'Resources'
+        kind,
+        type: resourceKindLabel(kind),
+        source: item.GroupName || 'Resources'
       }));
     });
-  }
+  };
 
-  const [ctxHit, schoolHit] = await Promise.all([
-    blackbaudRequestSoft('/api/webapp/context'),
-    blackbaudRequestSoft('/api/webapp/schoolcontext')
-  ]);
-  const sectionIds = [
-    ...collectResourceSectionIds(ctxHit.data),
-    ...collectResourceSectionIds(schoolHit.data)
-  ].slice(0, 8);
-  const kinds = ['resource', 'media', 'link', 'download', 'content'];
+  const mediaHit = await blackbaudRequestSoft('/api/Media/FeaturedMediaGet/?format=json');
+  if (mediaHit.expired) {
+    return { connected: false, expired: true, items: [], endpoints: [] };
+  }
+  pushList('/api/Media/FeaturedMediaGet/?format=json', 'media', asList(mediaHit.data));
+
+  const sections = await classLeadSectionIds();
+  if (sections.expired) {
+    return { connected: false, expired: true, items: uniqueArticles(items), endpoints: used };
+  }
+  const kinds = ['download', 'link'];
+  const labels = [2, 1];
   const jobs = [];
-  for (const id of sectionIds) {
+  for (const id of sections.ids) {
     for (const kind of kinds) {
-      jobs.push({
-        kind,
-        url: `/api/${kind}/forsection/${encodeURIComponent(id)}/?format=json&contextLabelId=1`
-      });
+      for (const label of labels) {
+        jobs.push({
+          kind,
+          url: `/api/${kind}/forsection/${encodeURIComponent(id)}/?format=json&contextLabelId=${label}`
+        });
+      }
     }
   }
   if (jobs.length) {
-    const sectionHits = await Promise.all(jobs.map(async (job) => ({
+    const hits = await Promise.all(jobs.map(async (job) => ({
       ...job,
       hit: await blackbaudRequestSoft(job.url)
     })));
-    for (const { kind, url, hit } of sectionHits) {
-      const list = asList(hit.data);
-      if (!list.length) continue;
-      used.push(url);
-      list.forEach((item, index) => {
-        items.push(normalizeResourceItem(item, items.length + index, {
-          kind,
-          type: resourceKindLabel(kind),
-          source: 'Resources'
-        }));
-      });
+    if (hits.some((row) => row.hit.expired) && !items.length) {
+      return { connected: false, expired: true, items: [], endpoints: used };
+    }
+    for (const { kind, url, hit } of hits) {
+      pushList(url, kind, asList(hit.data));
     }
   }
 
+  const mapped = uniqueArticles(items);
+  if (mapped.length) {
+    console.info(`[Blackbaud] Resources: ${mapped.length} item(s) from download/link forsection`);
+  }
   return {
     connected: true,
-    items: uniqueArticles(items),
+    items: mapped,
     endpoints: used
   };
 }

@@ -396,18 +396,48 @@ body {
 
 .ff-feed-row {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-start;
-  gap: 0.15rem;
+  gap: 0.75rem;
   width: 100%;
   min-height: 2.75rem;
-  padding: 0.5rem 0.625rem;
+  padding: 0.75rem 0.25rem;
   border: 0;
-  border-radius: 0.5rem;
+  border-bottom: 1px solid #27272a;
+  border-radius: 0;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.ff-feed-row-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+}
+
+.ff-feed-thumb {
+  width: 3.25rem;
+  height: 3.25rem;
+  object-fit: cover;
+  border-radius: 0.45rem;
+  background: transparent;
+  flex-shrink: 0;
+}
+
+.ff-feed-sheet-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ff-feed-sheet-filters {
+  padding: 0 0.75rem 0.5rem;
+  border-bottom: 1px solid #27272a;
 }
 
 .ff-feed-row:hover,
@@ -849,7 +879,7 @@ body {
 
 .ff-assign-row {
   display: grid;
-  grid-template-columns: 3.75rem minmax(0, 1fr) 2.75rem;
+  grid-template-columns: 4.5rem minmax(0, 1fr) 2.75rem;
   column-gap: 0.5rem;
   align-items: center;
   min-height: 2.75rem;
@@ -862,8 +892,8 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  width: 3.75rem;
-  min-width: 3.75rem;
+  width: 4.5rem;
+  min-width: 4.5rem;
   min-height: 2.75rem;
   padding: 0.25rem 0.2rem;
   border-radius: 0.45rem;
@@ -885,10 +915,10 @@ body {
 .ff-late-unit {
   margin-top: 0.12rem;
   font-size: 0.5rem;
-  letter-spacing: 0.05em;
-  line-height: 1;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
   text-align: center;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .ff-late-badge.is-mid {
@@ -899,6 +929,16 @@ body {
 .ff-late-badge.is-mild {
   background: #713f12;
   color: #fde68a;
+}
+
+.ff-late-badge.is-soon {
+  background: #713f12;
+  color: #fde68a;
+}
+
+.ff-late-badge.is-assigned {
+  background: #27272a;
+  color: #d4d4d8;
 }
 
 .ff-late-badge.is-empty {
@@ -1705,7 +1745,7 @@ body {
     height: auto;
     border-radius: 0.5rem;
     border: 1px solid #27272a;
-    background: #18181b;
+    background: transparent;
   }
 
   .modal-action {
@@ -2393,7 +2433,12 @@ body {
   max-height: 22rem;
   object-fit: cover;
   border-radius: 0.75rem;
-  background: #09090b;
+  background: transparent;
+}
+
+.post-detail-media img[hidden],
+.post-detail-html img[hidden] {
+  display: none !important;
 }
 
 .post-detail-media a {

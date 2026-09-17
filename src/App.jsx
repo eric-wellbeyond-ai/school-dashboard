@@ -47,6 +47,7 @@ import {
   formatAssignmentDate,
   fridayOfCurrentWeek,
   parsePortalDate,
+  dueDateFromAssignment,
   compareChecklistAssignments,
   isZeroCreditMissing
 } from './lib/assignmentBuckets.js';
@@ -179,7 +180,19 @@ function cleanDeep(obj) {
 }
 
 const GRADE_DISPLAY_KEY = 'school_dashboard_grade_display';
+const TASK_FILTER_KEY = 'school_dashboard_task_filter';
+const TASK_FILTERS = ['overdue', 'dueSoon', 'assigned', 'missing', 'done'];
 const CALENDAR_ACK_KEY = 'school_dashboard_calendar_acked';
+
+function readStoredTaskFilter() {
+  try {
+    const saved = localStorage.getItem(TASK_FILTER_KEY);
+    if (TASK_FILTERS.includes(saved)) return saved;
+  } catch {
+    /* ignore */
+  }
+  return 'overdue';
+}
 
 function isLiveCalendarId(eventId) {
   const id = String(eventId || '');
@@ -424,7 +437,7 @@ export default function App() {
     }
   });
   const [syncSource, setSyncSource] = useState(null);
-  const [taskFilter, setTaskFilter] = useState('overdue'); // overdue | dueSoon | assigned | missing | done
+  const [taskFilter, setTaskFilter] = useState(readStoredTaskFilter); // overdue | dueSoon | assigned | missing | done
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskStudent, setNewTaskStudent] = useState('Ben');
   const [newTaskCourse, setNewTaskCourse] = useState('Mathematics');
@@ -1608,6 +1621,16 @@ export default function App() {
     };
   }, [view, blackbaudStatus.connected, selectedStudent]);
 
+  useEffect(() => {
+    try {
+      if (TASK_FILTERS.includes(taskFilter)) {
+        localStorage.setItem(TASK_FILTER_KEY, taskFilter);
+      }
+    } catch {
+      /* ignore quota */
+    }
+  }, [taskFilter]);
+
   const loadReadState = async () => {
     try {
       const res = await fetch('/api/read-state', { credentials: 'include' });
@@ -1794,7 +1817,7 @@ export default function App() {
       if (on) return { ...next, status: 'done' };
       const status = classifyAssignment({
         assignedAt: parsePortalDate(next.assignedDateISO || next.assignedDate),
-        dueAt: parsePortalDate(next.dueDateISO || next.dueDate),
+        dueAt: dueDateFromAssignment(next),
         doneOverride: false,
         acknowledged: false,
         isMissing: next.isMissing === true,
@@ -2178,7 +2201,7 @@ export default function App() {
     const now = new Date();
     const fromPortal = (blackbaudAssignments || []).map((item) => {
       const assignedAt = parsePortalDate(item.assignedDateISO || item.assignedDate);
-      const dueAt = parsePortalDate(item.dueDateISO || item.dueDate);
+      const dueAt = dueDateFromAssignment(item);
       const familyDone = item.doneOverride === true || item.acknowledged === true;
       const status = classifyAssignment({
         assignedAt,
