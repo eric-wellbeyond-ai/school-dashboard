@@ -132,7 +132,8 @@ function AssignmentScoreChip({ earned, max, letter, status, className = '' }) {
   const score = formatAssignmentScore(earned, max);
   const letterText = String(letter || '').trim();
   const zeroMissing = isZeroCreditMissing({ pointsEarned: earned, maxPoints: max });
-  if (zeroMissing && status !== 'done') {
+  const showMissing = status === 'missing' || (zeroMissing && status !== 'done');
+  if (showMissing) {
     return (
       <span className={`inline-flex flex-col items-end gap-0.5 ${className}`}>
         <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass('missing')}`}>Missing</span>
@@ -143,17 +144,24 @@ function AssignmentScoreChip({ earned, max, letter, status, className = '' }) {
     );
   }
   if (score.percent == null && !letterText) return null;
-  const band = zeroMissing ? 'missing' : gradeBandFromLetterOrPercent(letterText, score.percent);
+  const band = gradeBandFromLetterOrPercent(letterText, score.percent);
   return (
     <span className={`inline-flex flex-col items-end gap-0.5 ${className}`}>
       <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass(band)}`}>
-        {zeroMissing ? (score.raw || '0') : (score.percentLabel || letterText)}
+        {score.percentLabel || letterText}
       </span>
-      {score.raw && !zeroMissing ? (
+      {score.raw ? (
         <span className="text-[11px] tabular-nums text-base-content/60">{score.raw}</span>
       ) : null}
     </span>
   );
+}
+
+function formatAckStamp(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function familyFirstName(name) {
@@ -213,7 +221,7 @@ function FamilyThread({
     <section className="family-thread" aria-labelledby="family-thread-title">
       <div className="family-thread-header">
         <div className="min-w-0">
-          <h3 id="family-thread-title" className="family-thread-title">Family comments</h3>
+          <h3 id="family-thread-title" className="family-thread-title">Family</h3>
           <p className="family-thread-kicker">
             Only Eric, Stefani, Ben, and Jade. Teachers never see this.
           </p>
@@ -1392,6 +1400,67 @@ export default function App() {
     });
   };
 
+  const applyMissingAckLocally = (taskId, ack) => {
+    const on = ack?.acknowledged === true;
+    const patch = {
+      doneOverride: on,
+      acknowledged: on,
+      acknowledgedAt: on ? ack.acknowledgedAt : null,
+      acknowledgedBy: on ? ack.acknowledgedBy : null,
+      acknowledgedByKey: on ? ack.acknowledgedByKey : null,
+      missingAck: ack
+    };
+    setBlackbaudAssignments((prev) => {
+      const next = (prev || []).map((a) => (a.id === taskId ? { ...a, ...patch } : a));
+      try {
+        localStorage.setItem('school_dashboard_blackbaud_assignments', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    setBlackbaudMissing((prev) => {
+      const next = on
+        ? (prev || []).filter((m) => m.id !== taskId)
+        : prev;
+      try {
+        localStorage.setItem('school_dashboard_blackbaud_missing', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    setSelectedTaskForModal((prev) => (prev && prev.id === taskId ? { ...prev, ...patch, status: on ? 'done' : 'missing' } : prev));
+  };
+
+  const handleMissingAck = async (task, acknowledged) => {
+    if (!task?.id) return;
+    const optimistic = {
+      assignmentId: task.id,
+      student: task.student || null,
+      acknowledged,
+      acknowledgedAt: acknowledged ? new Date().toISOString() : null,
+      acknowledgedBy: familyFirstName(blackbaudStatus.displayName || blackbaudStatus.accountName || blackbaudStatus.userKey),
+      acknowledgedByKey: blackbaudStatus.userKey || null
+    };
+    applyMissingAckLocally(task.id, optimistic);
+    try {
+      const res = await fetch(`/api/assignments/${encodeURIComponent(task.id)}/ack`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ acknowledged, student: task.student || null })
+      });
+      if (!res.ok) throw new Error('ack failed');
+      const data = await res.json();
+      if (data?.ack) applyMissingAckLocally(task.id, data.ack);
+    } catch (err) {
+      console.warn('Missing ack failed:', err.message);
+      applyMissingAckLocally(task.id, {
+        ...optimistic,
+        acknowledged: !acknowledged,
+        acknowledgedAt: acknowledged ? null : task.acknowledgedAt,
+        acknowledgedBy: acknowledged ? null : task.acknowledgedBy
+      });
+    }
+  };
+
   // Delete a task
   const deleteTask = (taskId, e) => {
     if (e) e.stopPropagation();
@@ -1732,14 +1801,16 @@ export default function App() {
     const fromPortal = (blackbaudAssignments || []).map((item) => {
       const assignedAt = parsePortalDate(item.assignedDateISO || item.assignedDate);
       const dueAt = parsePortalDate(item.dueDateISO || item.dueDate);
-      const familyDone = item.doneOverride === true;
+      const familyDone = item.doneOverride === true || item.acknowledged === true;
       const status = classifyAssignment({
         assignedAt,
         dueAt,
         now,
         doneOverride: familyDone,
+        acknowledged: familyDone,
         completed: familyDone,
         done: familyDone,
+        isMissing: item.isMissing === true,
         pointsEarned: item.pointsEarned ?? item.PointsEarned,
         maxPoints: item.maxPoints ?? item.MaxPoints,
         letter: item.letter || item.Letter || item.letterGrade,
@@ -1829,9 +1900,12 @@ export default function App() {
   const jadeOpenCount = checklistItems.filter((t) => t.student === 'Jade' && t.status !== 'done' && t.status !== 'upcoming').length;
   const pendingCount = checklistCounts.overdue + checklistCounts.dueSoon + checklistCounts.assigned + checklistCounts.missing;
   const completedCount = checklistCounts.done;
-  const visibleMissing = (blackbaudMissing || []).filter((m) => (
-    selectedStudent === 'All' || m.student === selectedStudent
-  ));
+  const visibleMissing = (blackbaudMissing || []).filter((m) => {
+    if (selectedStudent !== 'All' && m.student !== selectedStudent) return false;
+    const match = (blackbaudAssignments || []).find((a) => a.id === m.id);
+    if (match?.doneOverride || match?.acknowledged) return false;
+    return true;
+  });
   const allowedKeys = blackbaudStatus.allowedStudentKeys
     || (blackbaudStatus.role === 'student' ? [] : ['Ben', 'Jade']);
   const canSeeBen = allowedKeys.includes('Ben');
@@ -2415,6 +2489,19 @@ export default function App() {
                               )}
                             </button>
                           )}
+                          {task.status === 'missing' && !isCustom && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void handleMissingAck(task, true);
+                              }}
+                              className="mt-0.5 min-h-11 px-2 inline-flex items-center justify-center text-[12px] font-semibold text-base-content/80 shrink-0 rounded-md border border-base-300"
+                              aria-label={`Acknowledge missing: ${decodeHtmlEntities(task.title)}`}
+                            >
+                              Ack
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => handleOpenTaskModal(task)}
@@ -2474,7 +2561,7 @@ export default function App() {
                               <p className={`text-[13px] tabular-nums ${task.status === 'overdue' || task.status === 'missing' ? 'text-error' : 'text-base-content'}`}>
                                 {task.dueDate || 'No due date'}
                               </p>
-                              {task.status === 'missing' || isZeroCreditMissing(task)
+                              {task.status === 'missing' || task.isMissing || isZeroCreditMissing(task)
                                 || assignmentPercent(task.pointsEarned, task.maxPoints) != null
                                 || String(task.letter || task.letterGrade || '').trim() ? (
                                 <div className="mt-1">
@@ -2487,6 +2574,12 @@ export default function App() {
                                 </div>
                               ) : task.assignedDate ? (
                                 <p className="text-[12px] text-base-content/60">Assigned {task.assignedDate}</p>
+                              ) : null}
+                              {task.acknowledged && task.acknowledgedBy ? (
+                                <p className="mt-1 text-[11px] text-base-content/60">
+                                  Acked by {task.acknowledgedBy}
+                                  {task.acknowledgedAt ? ` · ${formatAckStamp(task.acknowledgedAt)}` : ''}
+                                </p>
                               ) : null}
                             </div>
                             <ChevronRight className="w-4 h-4 mt-1 text-base-content/60 shrink-0" aria-hidden="true" />
@@ -2930,10 +3023,10 @@ export default function App() {
             role="dialog"
             aria-modal="true"
             aria-labelledby="assignment-detail-title"
-            className="modal-box max-w-2xl p-6"
+            className="modal-box assignment-detail-modal"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-start justify-between gap-3 pb-4 border-b border-base-300 shrink-0">
+            <div className="assignment-detail-topbar">
               <button
                 type="button"
                 onClick={() => setSelectedTaskForModal(null)}
@@ -2965,8 +3058,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* Scrollable Modal Content */}
-            <div className="flex-1 overflow-y-auto pr-1 min-h-0 space-y-4 py-3">
+            <div className="assignment-detail-split">
+              <div className="assignment-detail-main">
               {/* Task Details Info */}
               <div className="space-y-3">
                 <div className="flex items-start justify-between gap-3">
@@ -3011,7 +3104,9 @@ export default function App() {
                     )}
                   </button>
                   ) : (
-                    (selectedTaskForModal.status === 'missing'
+                    <div className="flex flex-col items-end gap-2">
+                    {(selectedTaskForModal.status === 'missing'
+                      || selectedTaskForModal.isMissing
                       || isZeroCreditMissing(selectedTaskForModal)
                       || assignmentPercent(selectedTaskForModal.pointsEarned, selectedTaskForModal.maxPoints) != null
                       || String(selectedTaskForModal.letter || selectedTaskForModal.letterGrade || '').trim()) ? (
@@ -3033,7 +3128,35 @@ export default function App() {
                                 ? 'Missing'
                                 : 'Ungraded'}
                     </span>
-                    )
+                    )}
+                    {selectedTaskForModal.status === 'missing' && (
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline"
+                        onClick={() => void handleMissingAck(selectedTaskForModal, true)}
+                      >
+                        <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                        Acknowledge
+                      </button>
+                    )}
+                    {selectedTaskForModal.acknowledged && (
+                      <>
+                        <p className="text-[12px] text-base-content/70">
+                          Acked by {selectedTaskForModal.acknowledgedBy || 'family'}
+                          {selectedTaskForModal.acknowledgedAt
+                            ? ` · ${formatAckStamp(selectedTaskForModal.acknowledgedAt)}`
+                            : ''}
+                        </p>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs"
+                          onClick={() => void handleMissingAck(selectedTaskForModal, false)}
+                        >
+                          Undo acknowledge
+                        </button>
+                      </>
+                    )}
+                    </div>
                   )}
                 </div>
                 {(String(selectedTaskForModal.id || '').startsWith('bb_') || selectedTaskForModal.comment || selectedTaskForModal.longDescription) && (
@@ -3152,8 +3275,9 @@ export default function App() {
                   )}
                 </div>
               )}
+            </div>
 
-              {/* Family comments — not Blackbaud, not teachers */}
+            <aside className="assignment-detail-sidebar" aria-label="Family comments">
               <FamilyThread
                 comments={selectedTaskForModal.comments || []}
                 status={blackbaudStatus}
@@ -3167,17 +3291,7 @@ export default function App() {
                   n.assignmentId === selectedTaskForModal.id && !n.read
                 )).length}
               />
-            </div>
-
-            {/* Modal Footer */}
-            <div className="pt-3 border-t border-base-300 flex items-center justify-end shrink-0">
-              <button
-                type="button"
-                onClick={() => setSelectedTaskForModal(null)}
-                className="btn btn-ghost btn-sm"
-              >
-                Close
-              </button>
+            </aside>
             </div>
           </div>
         </div>

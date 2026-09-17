@@ -491,6 +491,17 @@ body {
     flex-direction: column;
   }
 
+  .modal-box.assignment-detail-modal {
+    max-width: 64rem;
+    width: min(64rem, calc(100vw - 2.5rem));
+    max-height: 90vh;
+    height: min(90vh, 52rem);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+  }
+
   .class-detail-panel {
     max-height: min(56vh, 36rem);
     overflow-y: auto;
@@ -965,4 +976,89 @@ body {
 
 .family-thread-send:disabled {
   opacity: 0.4;
+}
+
+.assignment-detail-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  padding: 0.75rem 1rem 0.75rem 0.75rem;
+  border-bottom: 1px solid #27272a;
+}
+
+.assignment-detail-topbar .btn-circle {
+  min-height: var(--wla-control);
+  min-width: var(--wla-control);
+  width: var(--wla-control);
+}
+
+.assignment-detail-split {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.assignment-detail-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.25rem 1.5rem 1.5rem;
+  -webkit-overflow-scrolling: touch;
+}
+
+.assignment-detail-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 16rem;
+  max-height: 48vh;
+  border-top: 1px solid #27272a;
+  background: var(--wla-bg);
+}
+
+.assignment-detail-sidebar .family-thread {
+  flex: 1;
+  min-height: 0;
+  padding: 0.875rem 0.875rem 1rem;
+}
+
+.assignment-detail-sidebar .family-thread-kicker {
+  font-size: 0.75rem;
+}
+
+.assignment-detail-sidebar .family-thread-list {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+.assignment-detail-sidebar .family-thread-composer {
+  flex-shrink: 0;
+}
+
+.assignment-detail-sidebar .family-thread-input {
+  font-size: 0.875rem;
+}
+
+@media (min-width: 768px) {
+  .assignment-detail-split {
+    flex-direction: row;
+    align-items: stretch;
+  }
+
+  .assignment-detail-sidebar {
+    width: 19rem;
+    min-width: 17.5rem;
+    max-width: 20rem;
+    min-height: 0;
+    max-height: none;
+    border-top: 0;
+    border-left: 1px solid #27272a;
+  }
 }
