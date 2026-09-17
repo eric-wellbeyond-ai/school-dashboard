@@ -35,6 +35,18 @@ import {
   filterPayloadForIdentity,
   mergeStudentWrite
 } from './services/sessionStore.js';
+import {
+  overlayFamilyComments,
+  ingestClientComments,
+  getComments,
+  addComment as addFamilyComment,
+  deleteComment as deleteFamilyComment,
+  notifyForFamilyComment,
+  getNotifications,
+  markNotificationRead,
+  markNotificationsForAssignment,
+  markAllNotificationsRead
+} from './services/familyStore.js';
 
 dotenv.config();
 
@@ -104,25 +116,27 @@ async function mergeSyncIntoStore(result, identity) {
   const keepAssignments = identity?.role === 'student'
     ? (stored.assignments || []).filter((a) => !allowedKeys.has(a.student))
     : [];
-  const commentsById = new Map((stored.assignments || []).map((a) => [a.id, a.comments || []]));
   const newAssignments = (result.assignments || [])
     .filter((a) => (
       identity?.role !== 'student' || allowedKeys.has(a.student)
     ))
-    .map((a) => ({
-      ...a,
-      comments: (a.comments && a.comments.length) ? a.comments : (commentsById.get(a.id) || [])
-    }));
+    .map((a) => {
+      const { comments: _ignored, ...rest } = a;
+      return rest;
+    });
+  const assignments = overlayFamilyComments([...keepAssignments, ...newAssignments]);
+  const tasks = overlayFamilyComments(stored.tasks || []);
   await saveDashboardData({
     grades,
-    assignments: [...keepAssignments, ...newAssignments],
+    assignments,
     missingAssignments: [...keepMissing, ...newMissing],
     lastSyncedAt: result.lastSyncedAt || new Date().toISOString()
   });
   return filterPayloadForIdentity({
     ...stored,
     grades,
-    assignments: [...keepAssignments, ...newAssignments],
+    assignments,
+    tasks,
     missingAssignments: [...keepMissing, ...newMissing],
     lastSyncedAt: result.lastSyncedAt
   }, identity);
@@ -706,7 +720,12 @@ app.get('/api/calendar/sportsyou', async (req, res) => {
 app.get('/api/dashboard/state', async (req, res) => {
   try {
     const data = await getDashboardData();
-    res.json(filterPayloadForIdentity(data, req.wla));
+    const overlaid = {
+      ...data,
+      assignments: overlayFamilyComments(data.assignments || []),
+      tasks: overlayFamilyComments(data.tasks || [])
+    };
+    res.json(filterPayloadForIdentity(overlaid, req.wla));
   } catch (err) {
     console.error('Failed to load dashboard state:', err);
     res.status(500).json({ error: 'Failed to load state' });
@@ -723,8 +742,12 @@ app.post('/api/dashboard/state', async (req, res) => {
     const existing = await getDashboardData();
     const identity = req.wla;
 
+    ingestClientComments([tasks, assignments]);
+
     if (identity?.role === 'student') {
       const merged = mergeStudentWrite(existing, { tasks, events, deletedEventKeys, assignments }, identity);
+      merged.assignments = overlayFamilyComments(merged.assignments || []);
+      merged.tasks = overlayFamilyComments(merged.tasks || []);
       const updated = await saveDashboardData(merged);
       return res.json({ success: true, data: filterPayloadForIdentity(updated, identity) });
     }
@@ -739,7 +762,7 @@ app.post('/api/dashboard/state', async (req, res) => {
           return {
             ...srvTask,
             completed: clientTask.completed !== undefined ? clientTask.completed : srvTask.completed,
-            comments: clientTask.comments || srvTask.comments || []
+            comments: clientTask.comments?.length ? clientTask.comments : (srvTask.comments || [])
           };
         }
         return srvTask;
@@ -756,15 +779,15 @@ app.post('/api/dashboard/state', async (req, res) => {
     }
 
     const updated = await saveDashboardData({
-      tasks: updatedTasks,
+      tasks: overlayFamilyComments(updatedTasks),
       events: events !== undefined ? events : existing.events,
       deletedEventKeys: deletedEventKeys !== undefined ? deletedEventKeys : existing.deletedEventKeys,
-      assignments: Array.isArray(assignments)
+      assignments: overlayFamilyComments(Array.isArray(assignments)
         ? (existing.assignments || []).map((a) => {
             const client = assignments.find((c) => c.id === a.id);
-            return client?.comments ? { ...a, comments: client.comments } : a;
+            return client?.comments?.length ? { ...a, comments: client.comments } : a;
           })
-        : existing.assignments
+        : existing.assignments)
     });
     res.json({ success: true, data: updated });
   } catch (err) {
@@ -1043,6 +1066,81 @@ app.post('/api/dashboard/sync', (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+function requireFamilySession(req, res) {
+  if (!req.wla) {
+    res.status(401).json({ error: 'Sign in first' });
+    return false;
+  }
+  return true;
+}
+
+app.get('/api/assignments/:id/comments', (req, res) => {
+  if (!requireFamilySession(req, res)) return;
+  res.json({ comments: getComments(req.params.id) });
+});
+
+app.post('/api/assignments/:id/comments', async (req, res) => {
+  if (!requireFamilySession(req, res)) return;
+  const text = String(req.body?.text || '').trim();
+  if (!text) return res.status(400).json({ error: 'Message required' });
+  const identity = req.wla;
+  const comment = addFamilyComment(req.params.id, {
+    author: identity.displayName || identity.accountName || 'Family',
+    authorKey: identity.userKey,
+    authorUserId: identity.userId,
+    authorPhoto: identity.photoUrl,
+    role: identity.role,
+    text
+  });
+  let assignment = {
+    id: req.params.id,
+    student: req.body?.student,
+    title: req.body?.title
+  };
+  try {
+    const stored = await getDashboardData();
+    const found = [...(stored.assignments || []), ...(stored.tasks || [])]
+      .find((item) => item.id === req.params.id);
+    if (found) assignment = found;
+  } catch {}
+  notifyForFamilyComment({
+    assignment,
+    comment,
+    authorKey: identity.userKey
+  });
+  res.json({ comment, comments: getComments(req.params.id) });
+});
+
+app.delete('/api/assignments/:id/comments/:commentId', (req, res) => {
+  if (!requireFamilySession(req, res)) return;
+  const result = deleteFamilyComment(req.params.id, req.params.commentId, req.wla);
+  if (!result.ok) {
+    return res.status(result.reason === 'forbidden' ? 403 : 404).json(result);
+  }
+  res.json({ ok: true, comments: getComments(req.params.id) });
+});
+
+app.get('/api/notifications', (req, res) => {
+  if (!requireFamilySession(req, res)) return;
+  const items = getNotifications(req.wla);
+  res.json({ items, notifications: items });
+});
+
+app.post('/api/notifications/read', (req, res) => {
+  if (!requireFamilySession(req, res)) return;
+  const { id, assignmentId, all } = req.body || {};
+  let notifications;
+  if (all) notifications = markAllNotificationsRead(req.wla);
+  else if (assignmentId) notifications = markNotificationsForAssignment(assignmentId, req.wla);
+  else if (id) {
+    markNotificationRead(id, req.wla);
+    notifications = getNotifications(req.wla);
+  } else {
+    notifications = getNotifications(req.wla);
+  }
+  res.json({ notifications });
 });
 
 // Health check endpoint

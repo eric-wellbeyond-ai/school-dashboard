@@ -544,6 +544,7 @@ body {
   .grade-c,
   .grade-d,
   .grade-f,
+  .grade-missing,
   .grade-none {
     border-width: 1px;
     border-style: solid;
@@ -579,12 +580,128 @@ body {
     background: #27272a;
     border-color: #3f3f46;
   }
+
+  .grade-missing {
+    color: #fca5a5;
+    background: #27272a;
+    border-color: #b91c1c;
+  }
 }
 
 @keyframes wla-spin {
   to {
     transform: rotate(360deg);
   }
+}
+
+@keyframes wla-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.wla-toasts {
+  position: fixed;
+  right: max(1rem, env(safe-area-inset-right));
+  bottom: max(1.25rem, env(safe-area-inset-bottom));
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: min(22.5rem, calc(100vw - 2rem));
+  pointer-events: none;
+}
+
+.wla-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.25rem;
+  min-height: 2.75rem;
+  padding: 0.25rem 0.25rem 0.25rem 0.25rem;
+  border-radius: 0.875rem;
+  border: 1px solid #3f3f46;
+  background: #18181b;
+  color: #fafafa;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.48);
+  animation: wla-toast-in 180ms ease-out;
+}
+
+.wla-toast-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.625rem;
+  margin: 0;
+  padding: 0.625rem 0.5rem 0.625rem 0.75rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: default;
+  border-radius: 0.75rem;
+}
+
+.wla-toast.is-action .wla-toast-body {
+  cursor: pointer;
+}
+
+.wla-toast-body:focus-visible,
+.wla-toast-close:focus-visible {
+  outline: 2px solid var(--wla-focus);
+  outline-offset: 2px;
+}
+
+.wla-toast-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  margin-top: 0.125rem;
+  flex-shrink: 0;
+  color: #a1a1aa;
+}
+
+.wla-toast-icon.is-success {
+  color: #4ade80;
+}
+
+.wla-toast-icon.is-error {
+  color: #f87171;
+}
+
+.wla-toast-icon.is-comment {
+  color: #93c5fd;
+}
+
+.wla-toast-message {
+  font-size: 0.9375rem;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  font-weight: 500;
+}
+
+.wla-toast-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 0.75rem;
+  background: transparent;
+  color: #a1a1aa;
+  cursor: pointer;
+}
+
+.wla-toast-close:hover {
+  color: #fafafa;
+  background: #27272a;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -608,7 +725,8 @@ body {
   .btn,
   .card,
   .modal-box,
-  .wla-calendar-board {
+  .wla-calendar-board,
+  .wla-toast {
     border-color: #52525b;
   }
 
@@ -642,4 +760,209 @@ body {
     background: #3f3f46;
     border-color: #a1a1aa;
   }
+
+  .grade-missing {
+    color: #fecaca;
+    background: #3f3f46;
+    border-color: #f87171;
+  }
+}
+
+/* Family comments thread (assignment modal) — not class bulletin */
+.family-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding-top: 0.25rem;
+}
+
+.family-thread-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.family-thread-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--wla-label);
+}
+
+.family-thread-kicker {
+  margin: 0.2rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.35;
+  color: var(--wla-secondary);
+}
+
+.family-thread-header-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.family-thread-count {
+  font-size: 0.8125rem;
+  color: var(--wla-secondary);
+}
+
+.family-thread-unread {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.25rem;
+  padding: 0 0.375rem;
+  border-radius: 9999px;
+  background: rgba(37, 99, 235, 0.22);
+  color: #bfdbfe;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.family-thread-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 6.5rem;
+  max-height: 16rem;
+  overflow-y: auto;
+  padding: 0.25rem 0.125rem;
+  -webkit-overflow-scrolling: touch;
+}
+
+.family-thread-empty {
+  margin: auto 0;
+  padding: 1.5rem 0.75rem;
+  text-align: center;
+}
+
+.family-thread-empty-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #e4e4e7;
+}
+
+.family-thread-empty-copy {
+  margin: 0.35rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--wla-secondary);
+}
+
+.family-thread-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  max-width: 92%;
+}
+
+.family-thread-row.is-own {
+  margin-left: auto;
+  flex-direction: row-reverse;
+}
+
+.family-thread-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.family-thread-row.is-own .family-thread-body {
+  align-items: flex-end;
+}
+
+.family-thread-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.family-thread-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #e4e4e7;
+}
+
+.family-thread-time {
+  font-size: 0.6875rem;
+  color: var(--wla-secondary);
+}
+
+.family-thread-bubble {
+  margin: 0;
+  max-width: 100%;
+  padding: 0.5rem 0.75rem;
+  border-radius: 1.125rem 1.125rem 1.125rem 0.35rem;
+  background: var(--wla-fill);
+  color: var(--wla-label);
+  font-size: 0.9375rem;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.family-thread-row.is-own .family-thread-bubble {
+  border-radius: 1.125rem 1.125rem 0.35rem 1.125rem;
+  background: var(--wla-accent);
+  color: #fff;
+}
+
+.family-thread-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0.75rem;
+  background: transparent;
+  color: var(--wla-secondary);
+  cursor: pointer;
+}
+
+.family-thread-delete:hover,
+.family-thread-delete:focus-visible {
+  color: #fca5a5;
+}
+
+.family-thread-delete:focus-visible {
+  outline: 2px solid var(--wla-focus);
+  outline-offset: 2px;
+}
+
+.family-thread-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #27272a;
+}
+
+.family-thread-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 2.75rem;
+  resize: none;
+}
+
+.family-thread-send {
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+  padding: 0;
+  border-radius: 9999px;
+}
+
+.family-thread-send:disabled {
+  opacity: 0.4;
 }

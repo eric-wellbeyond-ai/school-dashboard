@@ -31,6 +31,9 @@ server/.blackbaud_tokens.json
 server/.playwright-westlake/
 server/.playwright-login-*/
 server/data/user-sessions.json
+server/data/comments.json
+server/data/notifications.json
+server/data/completions.json
 .venv/
 server/mcp/
 

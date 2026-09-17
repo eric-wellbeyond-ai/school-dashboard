@@ -47,7 +47,8 @@ import {
   formatAssignmentDate,
   fridayOfCurrentWeek,
   parsePortalDate,
-  assignmentSortValue
+  assignmentSortValue,
+  isZeroCreditMissing
 } from './lib/assignmentBuckets.js';
 import { classifySportsYouEvent } from './lib/sportsyouClassify.js';
 import {
@@ -57,6 +58,12 @@ import {
 } from './lib/gradeColors.js';
 import { formatAssignmentScore } from './lib/assignmentScore.js';
 import MapsLocationLink from './lib/MapsLocationLink.jsx';
+import {
+  ToastViewport,
+  collectNewIncomingComments,
+  notificationToastMessage,
+  sentCommentToast
+} from './Toast.jsx';
 
 /**
  * Decode all HTML entities (named, decimal, hex) and strip raw HTML tags
@@ -121,20 +128,187 @@ function courseGradeValue(course, mode) {
 const GRADE_CHIP_CLASS =
   'inline-flex min-w-[2.75rem] justify-center tabular-nums font-semibold text-[13px] px-2 py-0.5 rounded-md border';
 
-function AssignmentScoreChip({ earned, max, letter, className = '' }) {
+function AssignmentScoreChip({ earned, max, letter, status, className = '' }) {
   const score = formatAssignmentScore(earned, max);
   const letterText = String(letter || '').trim();
+  const zeroMissing = isZeroCreditMissing({ pointsEarned: earned, maxPoints: max });
+  if (zeroMissing && status !== 'done') {
+    return (
+      <span className={`inline-flex flex-col items-end gap-0.5 ${className}`}>
+        <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass('missing')}`}>Missing</span>
+        {score.raw ? (
+          <span className="text-[11px] tabular-nums text-base-content/60">{score.raw}</span>
+        ) : null}
+      </span>
+    );
+  }
   if (score.percent == null && !letterText) return null;
-  const band = gradeBandFromLetterOrPercent(letterText, score.percent);
+  const band = zeroMissing ? 'missing' : gradeBandFromLetterOrPercent(letterText, score.percent);
   return (
     <span className={`inline-flex flex-col items-end gap-0.5 ${className}`}>
       <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass(band)}`}>
-        {score.percentLabel || letterText}
+        {zeroMissing ? (score.raw || '0') : (score.percentLabel || letterText)}
       </span>
-      {score.raw ? (
+      {score.raw && !zeroMissing ? (
         <span className="text-[11px] tabular-nums text-base-content/60">{score.raw}</span>
       ) : null}
     </span>
+  );
+}
+
+function familyFirstName(name) {
+  const n = String(name || '').trim();
+  if (!n) return 'Family';
+  return n.split(/\s+/)[0];
+}
+
+function isOwnFamilyComment(comment, status) {
+  if (!comment) return false;
+  if (comment.authorKey && status?.userKey
+    && String(comment.authorKey).toLowerCase() === String(status.userKey).toLowerCase()) {
+    return true;
+  }
+  if (comment.authorUserId && status?.userId
+    && Number(comment.authorUserId) === Number(status.userId)) {
+    return true;
+  }
+  const author = familyFirstName(comment.author).toLowerCase();
+  const me = familyFirstName(status?.displayName || status?.accountName).toLowerCase();
+  return Boolean(author && me && author !== 'family' && author === me);
+}
+
+function familyMessagePlaceholder(isParent, student) {
+  if (isParent && (student === 'Ben' || student === 'Jade')) return `Message ${student}…`;
+  return 'Message the family…';
+}
+
+function FamilyThread({
+  comments,
+  status,
+  isParent,
+  student,
+  commentText,
+  onCommentText,
+  onSend,
+  onDelete,
+  unreadCount = 0
+}) {
+  const listRef = useRef(null);
+  const signedName = familyFirstName(status?.displayName || status?.accountName || 'Family');
+  const placeholder = familyMessagePlaceholder(isParent, student);
+  const audience = isParent && (student === 'Ben' || student === 'Jade')
+    ? student
+    : 'the family';
+  const emptyHint = isParent && (student === 'Ben' || student === 'Jade')
+    ? `Message ${student} about this assignment.`
+    : 'Message Eric and Stefani about this assignment.';
+
+  useEffect(() => {
+    if (listRef.current) {
+      listRef.current.scrollTop = listRef.current.scrollHeight;
+    }
+  }, [comments?.length]);
+
+  return (
+    <section className="family-thread" aria-labelledby="family-thread-title">
+      <div className="family-thread-header">
+        <div className="min-w-0">
+          <h3 id="family-thread-title" className="family-thread-title">Family comments</h3>
+          <p className="family-thread-kicker">
+            Only Eric, Stefani, Ben, and Jade. Teachers never see this.
+          </p>
+        </div>
+        <div className="family-thread-header-meta">
+          {unreadCount > 0 ? (
+            <span className="family-thread-unread">{unreadCount} new</span>
+          ) : null}
+          <span className="family-thread-count tabular-nums">
+            {(comments || []).length}
+          </span>
+        </div>
+      </div>
+
+      <div ref={listRef} className="family-thread-list">
+        {(comments || []).length === 0 ? (
+          <div className="family-thread-empty">
+            <p className="family-thread-empty-title">No family comments yet</p>
+            <p className="family-thread-empty-copy">{emptyHint}</p>
+          </div>
+        ) : (
+          (comments || []).map((comment) => {
+            const mine = isOwnFamilyComment(comment, status);
+            const canDelete = mine || isParent;
+            const who = familyFirstName(comment.author);
+            return (
+              <article
+                key={comment.id}
+                className={`family-thread-row ${mine ? 'is-own' : 'is-other'}`}
+              >
+                <ProfileAvatar
+                  name={who}
+                  photoUrl={comment.authorPhoto}
+                  size={28}
+                  className="family-thread-avatar"
+                />
+                <div className="family-thread-body">
+                  <div className="family-thread-meta">
+                    <span className="family-thread-name">{who}</span>
+                    <span className="family-thread-time">{comment.timestamp}</span>
+                  </div>
+                  <p className="family-thread-bubble">
+                    {decodeHtmlEntities(comment.text)}
+                  </p>
+                  {canDelete ? (
+                    <button
+                      type="button"
+                      onClick={() => onDelete(comment.id)}
+                      className="family-thread-delete"
+                      aria-label={`Delete comment from ${who}`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
+                    </button>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })
+        )}
+      </div>
+
+      <form onSubmit={onSend} className="family-thread-composer">
+        <ProfileAvatar
+          name={signedName}
+          photoUrl={status?.photoUrl}
+          size={36}
+          className="family-thread-avatar"
+        />
+        <label className="sr-only" htmlFor="family-thread-input">
+          Message {audience}
+        </label>
+        <textarea
+          id="family-thread-input"
+          placeholder={placeholder}
+          value={commentText}
+          onChange={(e) => onCommentText(e.target.value)}
+          rows={2}
+          className="textarea family-thread-input"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              onSend(e);
+            }
+          }}
+        />
+        <button
+          type="submit"
+          disabled={!commentText.trim()}
+          className="btn btn-primary family-thread-send"
+          aria-label={`Send to ${audience}`}
+        >
+          <Send className="w-4 h-4" aria-hidden="true" />
+        </button>
+      </form>
+    </section>
   );
 }
 
@@ -188,7 +362,7 @@ export default function App() {
     }
   });
   const [syncSource, setSyncSource] = useState(null);
-  const [taskFilter, setTaskFilter] = useState('overdue'); // overdue | dueSoon | assigned | done
+  const [taskFilter, setTaskFilter] = useState('overdue'); // overdue | dueSoon | assigned | missing | done
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskStudent, setNewTaskStudent] = useState('Ben');
   const [newTaskCourse, setNewTaskCourse] = useState('Mathematics');
@@ -205,7 +379,52 @@ export default function App() {
     authenticated: false
   });
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authBanner, setAuthBanner] = useState(null);
+  const [toasts, setToasts] = useState([]);
+  const toastTimers = useRef(new Map());
+  const seenNotifIds = useRef(new Set());
+  const seenCommentToasts = useRef(new Set());
+  const knownCommentKeys = useRef(null);
+  const identityRef = useRef(null);
+
+  const dismissToast = (id) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+    const timer = toastTimers.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      toastTimers.current.delete(id);
+    }
+  };
+
+  const showToast = (input) => {
+    if (!input) return;
+    const message = typeof input === 'string' ? input : input.message;
+    if (!message) return;
+    const toast = {
+      id: (typeof input === 'object' && input.id) || `toast_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: (typeof input === 'object' && input.type) || 'info',
+      message,
+      assignmentId: typeof input === 'object' ? (input.assignmentId || null) : null,
+      notificationId: typeof input === 'object' ? (input.notificationId || null) : null
+    };
+    const existingTimer = toastTimers.current.get(toast.id);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      toastTimers.current.delete(toast.id);
+    }
+    setToasts((prev) => [...prev.filter((row) => row.id !== toast.id), toast].slice(-4));
+    const duration = typeof input === 'object' && input.duration != null ? input.duration : 4000;
+    if (duration > 0) {
+      toastTimers.current.set(toast.id, setTimeout(() => dismissToast(toast.id), duration));
+    }
+  };
+
+  const setAuthBanner = (banner) => {
+    if (!banner || typeof banner === 'function' || !banner.message) return;
+    showToast({
+      type: banner.type === 'success' ? 'success' : banner.type === 'error' ? 'error' : 'info',
+      message: banner.message
+    });
+  };
 
   // Blackbaud Portal (myschoolapp.com) state
   const [blackbaudStatus, setBlackbaudStatus] = useState({
@@ -260,6 +479,7 @@ export default function App() {
   const [assignmentDetailLoading, setAssignmentDetailLoading] = useState(false);
   const [assignmentDetailError, setAssignmentDetailError] = useState(false);
   const [commentText, setCommentText] = useState('');
+  const [familyNotifications, setFamilyNotifications] = useState([]);
   const [gradeDisplay, setGradeDisplay] = useState(() => {
     try {
       return localStorage.getItem(GRADE_DISPLAY_KEY) === 'percent' ? 'percent' : 'letter';
@@ -304,6 +524,7 @@ export default function App() {
   const [eventFilter, setEventFilter] = useState('active'); // 'active' | 'acknowledged'
   const [eventSource, setEventSource] = useState('calendar'); // 'calendar' | 'inbox' | 'all'
   const [calendarEvents, setCalendarEvents] = useState([]);
+  identityRef.current = blackbaudStatus;
 
   // Persist state to both localStorage and backend Express API only on deliberate user actions
   const persistDashboardState = (newTasks, newEvents, newDeletedKeys, newAssignments) => {
@@ -442,6 +663,49 @@ export default function App() {
     }
   };
 
+  const toastCommentOnce = (message, assignmentId, notificationId) => {
+    if (!message) return;
+    const key = `${assignmentId || ''}:${message}`;
+    if (seenCommentToasts.current.has(key)) return;
+    seenCommentToasts.current.add(key);
+    showToast({
+      type: 'comment',
+      message,
+      assignmentId: assignmentId || null,
+      notificationId: notificationId || null
+    });
+  };
+
+  const noteIncomingComments = (assignments, extraTasks) => {
+    const { keys, toasts: incoming } = collectNewIncomingComments(
+      [...(assignments || []), ...(extraTasks || [])],
+      knownCommentKeys.current,
+      identityRef.current
+    );
+    knownCommentKeys.current = keys;
+    incoming.forEach((row) => toastCommentOnce(row.message, row.assignmentId));
+  };
+
+  const loadFamilyNotifications = async () => {
+    try {
+      const res = await fetch('/api/notifications');
+      if (!res.ok) return;
+      const data = await res.json();
+      const list = data.notifications || data.items || [];
+      setFamilyNotifications(list);
+      list.filter((item) => !item.read && item.id && !seenNotifIds.current.has(item.id)).forEach((item) => {
+        seenNotifIds.current.add(item.id);
+        toastCommentOnce(
+          notificationToastMessage(item) || item.message,
+          item.assignmentId,
+          item.id
+        );
+      });
+    } catch {
+      /* notifications are optional */
+    }
+  };
+
   // Load persisted state from server on startup
   const loadDashboardState = async () => {
     try {
@@ -485,6 +749,7 @@ export default function App() {
             localStorage.setItem('school_dashboard_blackbaud_assignments', JSON.stringify(data.assignments));
           } catch {}
         }
+        noteIncomingComments(data.assignments || [], data.tasks || []);
         if (data.lastSyncedAt) {
           const timeStr = new Date(data.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
           setLastSynced(timeStr);
@@ -492,6 +757,7 @@ export default function App() {
             localStorage.setItem('school_dashboard_last_synced', timeStr);
           } catch {}
         }
+        loadFamilyNotifications();
       }
     } catch (err) {
       console.warn('Failed to load dashboard state:', err.message);
@@ -574,6 +840,15 @@ export default function App() {
     }, 4000);
     return () => clearInterval(id);
   }, [showBlackbaudModal]);
+
+  useEffect(() => {
+    if (view !== 'dashboard' || !blackbaudStatus.connected) return undefined;
+    void loadFamilyNotifications();
+    const id = setInterval(() => {
+      void loadFamilyNotifications();
+    }, 20000);
+    return () => clearInterval(id);
+  }, [view, blackbaudStatus.connected]);
 
   const fetchBlackbaudStatus = async () => {
     try {
@@ -891,6 +1166,7 @@ export default function App() {
         setNewTaskStudent(data.allowedStudentKeys[0]);
       }
     }
+    loadFamilyNotifications();
     return data;
   };
 
@@ -1019,6 +1295,12 @@ export default function App() {
       return;
     }
     setIsSyncingBlackbaud(true);
+    showToast({
+      id: 'blackbaud-refresh',
+      type: 'info',
+      message: 'Refreshing from Blackbaud...',
+      duration: 12000
+    });
     try {
       const res = await fetch('/api/blackbaud/sync');
       let data = {};
@@ -1028,23 +1310,43 @@ export default function App() {
         data = {};
       }
       const msg = String(data.error || data.message || '');
-      const needsReauth =
+      const tokenExpired =
         res.status === 401
         || res.status === 403
         || data.needsReauth === true
-        || data.connected === false
-        || /SESSION_EXPIRED|token t is not valid|not connected|re-authenticate|re-run the bookmarklet/i.test(msg);
+        || /SESSION_EXPIRED|token t is not valid|re-authenticate|re-run the bookmarklet/i.test(msg);
+      const needsReauth = tokenExpired || data.connected === false || /not connected/i.test(msg);
       if (needsReauth) {
-        await promptBlackbaudReauth();
+        showToast({
+          id: 'blackbaud-refresh',
+          type: 'error',
+          message: "Couldn't refresh — sign in again"
+        });
+        return;
+      }
+      if (!res.ok) {
+        showToast({
+          id: 'blackbaud-refresh',
+          type: 'error',
+          message: "Couldn't refresh from Blackbaud"
+        });
         return;
       }
       data = applyBlackbaudSync(data);
-      if (gradeCountFrom(data) > 0) {
-        finishMacSignIn(data, { closePopup: false });
-      }
+      noteIncomingComments(data.assignments || [], data.tasks || []);
+      showToast({
+        id: 'blackbaud-refresh',
+        type: 'success',
+        message: 'Grades and assignments updated'
+      });
+      void loadFamilyNotifications();
     } catch (err) {
       console.error('Failed to sync Blackbaud:', err);
-      await promptBlackbaudReauth();
+      showToast({
+        id: 'blackbaud-refresh',
+        type: 'error',
+        message: "Couldn't refresh from Blackbaud"
+      });
     } finally {
       setIsSyncingBlackbaud(false);
     }
@@ -1112,13 +1414,69 @@ export default function App() {
     }
   };
 
+  const patchTaskComments = (taskId, comments) => {
+    const apply = (list) => list.map((item) => {
+      if (item.id !== taskId) return item;
+      const u = { ...item, comments };
+      setSelectedTaskForModal((prev) => (prev && prev.id === taskId ? { ...prev, comments } : prev));
+      return u;
+    });
+    if (String(taskId || '').startsWith('bb_')) {
+      setBlackbaudAssignments((prev) => {
+        const updated = apply(prev);
+        persistDashboardState(undefined, undefined, undefined, updated);
+        return updated;
+      });
+    } else {
+      setTasks((prev) => {
+        const updated = apply(prev);
+        persistDashboardState(updated);
+        return updated;
+      });
+    }
+  };
+
   // Open task detail & collaboration modal
   const handleOpenTaskModal = async (task) => {
     const fromPortal = (blackbaudAssignments || []).find((t) => t.id === task.id);
     const fromCustom = (tasks || []).find((t) => t.id === task.id);
     const current = fromPortal || fromCustom || task;
     setSelectedTaskForModal(current);
+    setCommentText('');
     setAssignmentDetailError(false);
+    setFamilyNotifications((prev) => prev.map((item) => (
+      item.assignmentId === current.id ? { ...item, read: true } : item
+    )));
+
+    fetch(`/api/assignments/${encodeURIComponent(current.id)}/comments`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!Array.isArray(data?.comments)) return;
+        setSelectedTaskForModal((prev) => (
+          prev && prev.id === current.id ? { ...prev, comments: data.comments } : prev
+        ));
+        const apply = (list) => list.map((item) => (
+          item.id === current.id ? { ...item, comments: data.comments } : item
+        ));
+        if (String(current.id || '').startsWith('bb_')) {
+          setBlackbaudAssignments((prev) => apply(prev));
+        } else {
+          setTasks((prev) => apply(prev));
+        }
+      })
+      .catch(() => {});
+
+    fetch('/api/notifications/read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assignmentId: current.id })
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (Array.isArray(data?.notifications)) setFamilyNotifications(data.notifications);
+      })
+      .catch(() => {});
+
     if (!current.assignmentId) {
       setAssignmentDetailLoading(false);
       return;
@@ -1150,71 +1508,91 @@ export default function App() {
     }
   };
 
-  const handleAddComment = (e) => {
-    e.preventDefault();
-    if (!commentText.trim() || !selectedTaskForModal) return;
-    const profile = {
-      name: blackbaudStatus.displayName || blackbaudStatus.accountName || 'Family',
-      userId: blackbaudStatus.userId || null,
-      photoUrl: blackbaudStatus.photoUrl || null
-    };
-    const newComment = {
-      id: `comm_${Date.now()}`,
-      author: profile.name,
-      authorUserId: profile.userId,
-      authorPhoto: profile.photoUrl,
-      text: commentText.trim(),
-      timestamp: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' at ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
-
-    const apply = (list) => list.map((item) => {
-      if (item.id !== selectedTaskForModal.id) return item;
-      const u = { ...item, comments: [...(item.comments || []), newComment] };
-      setSelectedTaskForModal(u);
-      return u;
-    });
-
-    if (String(selectedTaskForModal.id || '').startsWith('bb_')) {
-      setBlackbaudAssignments((prev) => {
-        const updated = apply(prev);
-        persistDashboardState(undefined, undefined, undefined, updated);
-        return updated;
-      });
-    } else {
-      setTasks((prev) => {
-        const updated = apply(prev);
-        persistDashboardState(updated);
-        return updated;
-      });
-    }
-
-    setCommentText('');
+  const handleToastActivate = (toast) => {
+    dismissToast(toast.id);
+    if (!toast.assignmentId) return;
+    const task = (blackbaudAssignments || []).find((item) => item.id === toast.assignmentId)
+      || (tasks || []).find((item) => item.id === toast.assignmentId)
+      || { id: toast.assignmentId, title: toast.message };
+    void handleOpenTaskModal(task);
+    void fetch('/api/notifications/read', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: toast.notificationId || undefined,
+        assignmentId: toast.assignmentId
+      })
+    }).catch(() => {});
   };
 
-  const handleDeleteComment = (taskId, commentId) => {
-    const apply = (list) => list.map((item) => {
-      if (item.id !== taskId) return item;
-      const u = {
-        ...item,
-        comments: (item.comments || []).filter((c) => c.id !== commentId)
-      };
-      if (selectedTaskForModal && selectedTaskForModal.id === taskId) {
-        setSelectedTaskForModal(u);
-      }
-      return u;
+  const handleAddComment = async (e) => {
+    e.preventDefault();
+    if (!commentText.trim() || !selectedTaskForModal) return;
+    const text = commentText.trim();
+    const profileName = familyFirstName(
+      blackbaudStatus.displayName || blackbaudStatus.accountName || 'Family'
+    );
+    const optimistic = {
+      id: `comm_${Date.now()}`,
+      author: profileName,
+      authorKey: blackbaudStatus.userKey || null,
+      authorUserId: blackbaudStatus.userId || null,
+      authorPhoto: blackbaudStatus.photoUrl || null,
+      role: blackbaudStatus.role || null,
+      text,
+      timestamp: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        + ' at '
+        + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    const next = [...(selectedTaskForModal.comments || []), optimistic];
+    patchTaskComments(selectedTaskForModal.id, next);
+    setCommentText('');
+    if (knownCommentKeys.current) {
+      knownCommentKeys.current.add(`${selectedTaskForModal.id}:${optimistic.id}`);
+    }
+    showToast({
+      type: 'success',
+      message: sentCommentToast(blackbaudStatus.userKey, blackbaudStatus.role, selectedTaskForModal.student)
     });
-    if (String(taskId || '').startsWith('bb_')) {
-      setBlackbaudAssignments((prev) => {
-        const updated = apply(prev);
-        persistDashboardState(undefined, undefined, undefined, updated);
-        return updated;
+
+    try {
+      const res = await fetch(`/api/assignments/${encodeURIComponent(selectedTaskForModal.id)}/comments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          student: selectedTaskForModal.student,
+          title: selectedTaskForModal.title
+        })
       });
-    } else {
-      setTasks((prev) => {
-        const updated = apply(prev);
-        persistDashboardState(updated);
-        return updated;
-      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data.comments)) {
+        patchTaskComments(selectedTaskForModal.id, data.comments);
+      } else if (data.comment) {
+        const swapped = next.map((c) => (c.id === optimistic.id ? data.comment : c));
+        patchTaskComments(selectedTaskForModal.id, swapped);
+      }
+    } catch (err) {
+      console.warn('Family comment save failed:', err.message);
+    }
+  };
+
+  const handleDeleteComment = async (taskId, commentId) => {
+    const current = (String(taskId || '').startsWith('bb_')
+      ? blackbaudAssignments
+      : tasks
+    ).find((item) => item.id === taskId) || selectedTaskForModal;
+    const next = (current?.comments || []).filter((c) => c.id !== commentId);
+    patchTaskComments(taskId, next);
+
+    try {
+      await fetch(
+        `/api/assignments/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}`,
+        { method: 'DELETE' }
+      );
+    } catch (err) {
+      console.warn('Family comment delete failed:', err.message);
     }
   };
 
@@ -1354,12 +1732,23 @@ export default function App() {
     const fromPortal = (blackbaudAssignments || []).map((item) => {
       const assignedAt = parsePortalDate(item.assignedDateISO || item.assignedDate);
       const dueAt = parsePortalDate(item.dueDateISO || item.dueDate);
-      const done = Boolean(item.done || item.completed);
-      const status = classifyAssignment({ assignedAt, dueAt, done, now });
+      const familyDone = item.doneOverride === true;
+      const status = classifyAssignment({
+        assignedAt,
+        dueAt,
+        now,
+        doneOverride: familyDone,
+        completed: familyDone,
+        done: familyDone,
+        pointsEarned: item.pointsEarned ?? item.PointsEarned,
+        maxPoints: item.maxPoints ?? item.MaxPoints,
+        letter: item.letter || item.Letter || item.letterGrade,
+        grade: item
+      });
       return {
         ...item,
         status,
-        completed: done,
+        completed: familyDone || Boolean(item.completed),
         dueDate: item.dueDate || formatAssignmentDate(dueAt),
         assignedDate: item.assignedDate || formatAssignmentDate(assignedAt)
       };
@@ -1382,6 +1771,7 @@ export default function App() {
     overdue: scopedChecklist.filter((i) => i.status === 'overdue').length,
     dueSoon: scopedChecklist.filter((i) => i.status === 'dueSoon').length,
     assigned: scopedChecklist.filter((i) => i.status === 'assigned').length,
+    missing: scopedChecklist.filter((i) => i.status === 'missing').length,
     done: scopedChecklist.filter((i) => i.status === 'done').length
   };
 
@@ -1437,7 +1827,7 @@ export default function App() {
 
   const benOpenCount = checklistItems.filter((t) => t.student === 'Ben' && t.status !== 'done' && t.status !== 'upcoming').length;
   const jadeOpenCount = checklistItems.filter((t) => t.student === 'Jade' && t.status !== 'done' && t.status !== 'upcoming').length;
-  const pendingCount = checklistCounts.overdue + checklistCounts.dueSoon + checklistCounts.assigned;
+  const pendingCount = checklistCounts.overdue + checklistCounts.dueSoon + checklistCounts.assigned + checklistCounts.missing;
   const completedCount = checklistCounts.done;
   const visibleMissing = (blackbaudMissing || []).filter((m) => (
     selectedStudent === 'All' || m.student === selectedStudent
@@ -1447,6 +1837,13 @@ export default function App() {
   const canSeeBen = allowedKeys.includes('Ben');
   const canSeeJade = allowedKeys.includes('Jade');
   const isParentViewer = blackbaudStatus.role !== 'student';
+  const unreadByAssignment = useMemo(() => {
+    const ids = new Set();
+    for (const item of familyNotifications) {
+      if (!item?.read && item.assignmentId) ids.add(item.assignmentId);
+    }
+    return ids;
+  }, [familyNotifications]);
   const signedInName = blackbaudStatus.displayName || blackbaudStatus.accountName || '';
   const studentPhoto = (name) => photoForStudent(
     blackbaudStatus.students,
@@ -1478,6 +1875,11 @@ export default function App() {
       ? 'wla-app min-h-dvh w-full flex items-center justify-center bg-zinc-950 text-zinc-100'
       : 'wla-app wla-shell min-h-dvh bg-base-200 text-base-content flex flex-col md:flex-row'
     }>
+      <ToastViewport
+        toasts={toasts}
+        onDismiss={dismissToast}
+        onActivate={handleToastActivate}
+      />
       {view !== 'landing' && (
       <a href="#wla-main" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 btn btn-sm">
         Skip to content
@@ -1699,16 +2101,6 @@ export default function App() {
           </div>
         </header>
 
-        {/* OAuth Feedback Banner */}
-        {authBanner && (
-          <div className="px-4 pt-4">
-            <div role="alert" className={`alert ${authBanner.type === 'success' ? 'alert-success' : authBanner.type === 'error' ? 'alert-error' : 'alert-info'}`}>
-              <span>{authBanner.message}</span>
-              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setAuthBanner(null)} aria-label="Dismiss">Close</button>
-            </div>
-          </div>
-        )}
-
         {/* Dashboard Body */}
         <div className="p-6 space-y-6 max-w-7xl w-full mx-auto">
           {/* Top Controls: Student View Toggles & Summary Metrics */}
@@ -1757,9 +2149,9 @@ export default function App() {
             </div>
           </div>
 
-          {/* Assignments on top; classes and calendar side by side below */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-            <section className="order-2 lg:col-start-1 lg:row-start-2 min-w-0 card bg-base-100 border border-base-300 shadow-sm">
+          {/* Classes left; assignments over calendar on the right */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 lg:grid-rows-[auto_auto] gap-6 items-start">
+            <section className="order-1 lg:col-start-1 lg:row-start-1 lg:row-span-2 min-w-0 card bg-base-100 border border-base-300 shadow-sm">
               <div className="card-body p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -1849,9 +2241,9 @@ export default function App() {
             </section>
 
             {/* ---------------------------------------------------- */}
-            {/* Assignments stacked beside classes                   */}
+            {/* Assignments next to classes; calendar below */}
             {/* ---------------------------------------------------- */}
-            <section className="order-1 lg:col-span-2 lg:row-start-1 card bg-base-100 border border-base-300 shadow-sm flex flex-col">
+            <section className="order-2 lg:col-start-2 lg:row-start-1 min-w-0 card bg-base-100 border border-base-300 shadow-sm flex flex-col">
               <div className="card-body p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -1883,6 +2275,7 @@ export default function App() {
                   { id: 'overdue', label: 'Overdue', count: checklistCounts.overdue },
                   { id: 'dueSoon', label: 'Due Soon', count: checklistCounts.dueSoon },
                   { id: 'assigned', label: 'Assigned', count: checklistCounts.assigned },
+                  { id: 'missing', label: 'Missing', count: checklistCounts.missing },
                   { id: 'done', label: 'Done', count: checklistCounts.done }
                 ].map((tab) => (
                   <button
@@ -1987,6 +2380,7 @@ export default function App() {
                           {taskFilter === 'overdue' && `No overdue work for ${childLabel}`}
                           {taskFilter === 'dueSoon' && `Nothing due through ${fridayLabel}`}
                           {taskFilter === 'assigned' && `No assigned work in range`}
+                          {taskFilter === 'missing' && `No missing work for ${childLabel}`}
                           {taskFilter === 'done' && `No graded assignments yet`}
                         </p>
                         <p className="text-[13px] text-base-content/60 mt-1 max-w-sm mx-auto">
@@ -2031,9 +2425,11 @@ export default function App() {
                               <span className="mt-2 w-2 h-2 rounded-full shrink-0" style={{
                                 background: task.status === 'overdue'
                                   ? '#ef4444'
-                                  : task.status === 'dueSoon'
-                                    ? '#f59e0b'
-                                    : '#71717a'
+                                  : task.status === 'missing'
+                                    ? '#b91c1c'
+                                    : task.status === 'dueSoon'
+                                      ? '#f59e0b'
+                                      : '#71717a'
                               }} aria-hidden="true" />
                             )}
 
@@ -2058,27 +2454,40 @@ export default function App() {
                                   Teacher note: {decodeHtmlEntities(task.comment)}
                                 </p>
                               )}
+                              {(task.comments || []).length > 0 && (
+                                <p className="mt-1 text-[12px] text-base-content/70 inline-flex items-center gap-1.5">
+                                  <MessageCircle className="w-3.5 h-3.5" aria-hidden="true" />
+                                  Family comments · {(task.comments || []).length}
+                                  {unreadByAssignment.has(task.id) ? (
+                                    <span className="family-thread-unread">New</span>
+                                  ) : null}
+                                </p>
+                              )}
+                              {unreadByAssignment.has(task.id) && !(task.comments || []).length ? (
+                                <p className="mt-1 text-[12px] text-base-content/70 inline-flex items-center gap-1.5">
+                                  <span className="family-thread-unread">New family comment</span>
+                                </p>
+                              ) : null}
                             </div>
 
                             <div className="shrink-0 text-right">
-                              <p className={`text-[13px] tabular-nums ${task.status === 'overdue' ? 'text-error' : 'text-base-content'}`}>
+                              <p className={`text-[13px] tabular-nums ${task.status === 'overdue' || task.status === 'missing' ? 'text-error' : 'text-base-content'}`}>
                                 {task.dueDate || 'No due date'}
                               </p>
-                              {assignmentPercent(task.pointsEarned, task.maxPoints) != null
+                              {task.status === 'missing' || isZeroCreditMissing(task)
+                                || assignmentPercent(task.pointsEarned, task.maxPoints) != null
                                 || String(task.letter || task.letterGrade || '').trim() ? (
                                 <div className="mt-1">
                                   <AssignmentScoreChip
                                     earned={task.pointsEarned}
                                     max={task.maxPoints}
                                     letter={task.letter || task.letterGrade}
+                                    status={task.status}
                                   />
                                 </div>
                               ) : task.assignedDate ? (
                                 <p className="text-[12px] text-base-content/60">Assigned {task.assignedDate}</p>
                               ) : null}
-                              {task.isMissing && (
-                                <p className="text-[12px] text-error">Missing</p>
-                              )}
                             </div>
                             <ChevronRight className="w-4 h-4 mt-1 text-base-content/60 shrink-0" aria-hidden="true" />
                           </button>
@@ -2091,7 +2500,7 @@ export default function App() {
               </div>
             </section>
 
-            <section className="order-3 lg:col-start-2 lg:row-start-2 min-w-0 min-h-[36rem] overflow-visible card bg-base-100 border border-base-300 shadow-sm">
+            <section className="order-3 lg:col-start-2 lg:row-start-2 min-w-0 min-h-[36rem] overflow-visible relative z-0 card bg-base-100 border border-base-300 shadow-sm">
               <div className="card-body p-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
@@ -2510,7 +2919,7 @@ export default function App() {
       )}
 
       {/* ---------------------------------------------------- */}
-      {/* Assignment Detail & Collaboration Comments Modal     */}
+      {/* Assignment Detail & Family Comments Modal     */}
       {/* ---------------------------------------------------- */}
       {selectedTaskForModal && (
         <div
@@ -2602,12 +3011,15 @@ export default function App() {
                     )}
                   </button>
                   ) : (
-                    (assignmentPercent(selectedTaskForModal.pointsEarned, selectedTaskForModal.maxPoints) != null
+                    (selectedTaskForModal.status === 'missing'
+                      || isZeroCreditMissing(selectedTaskForModal)
+                      || assignmentPercent(selectedTaskForModal.pointsEarned, selectedTaskForModal.maxPoints) != null
                       || String(selectedTaskForModal.letter || selectedTaskForModal.letterGrade || '').trim()) ? (
                       <AssignmentScoreChip
                         earned={selectedTaskForModal.pointsEarned}
                         max={selectedTaskForModal.maxPoints}
                         letter={selectedTaskForModal.letter || selectedTaskForModal.letterGrade}
+                        status={selectedTaskForModal.status}
                       />
                     ) : (
                     <span className={`text-[13px] ${gradeToneClass('none')} rounded-md border px-2 py-0.5`}>
@@ -2617,7 +3029,9 @@ export default function App() {
                             ? 'Due soon'
                             : selectedTaskForModal.status === 'assigned'
                               ? 'Assigned'
-                              : 'Ungraded'}
+                              : selectedTaskForModal.status === 'missing'
+                                ? 'Missing'
+                                : 'Ungraded'}
                     </span>
                     )
                   )}
@@ -2739,92 +3153,20 @@ export default function App() {
                 </div>
               )}
 
-              {/* Collaboration & Comments Thread */}
-              <div className="pt-2">
-                <div className="flex items-center justify-between pb-3">
-                  <h3 className="text-[13px] font-semibold text-base-content">Notes</h3>
-                  <span className="text-[13px] tabular-nums text-base-content/60">
-                    {(selectedTaskForModal.comments || []).length}
-                  </span>
-                </div>
-
-                <div className="space-y-2.5 min-h-[90px] max-h-[200px] overflow-y-auto pr-1">
-                  {(selectedTaskForModal.comments || []).length === 0 ? (
-                    <div className="text-center py-6 px-4 rounded-xl border border-dashed border-base-300 text-base-content/60">
-                      <p className="text-[13px] font-medium text-base-content/70">No notes yet</p>
-                      <p className="text-[13px] text-base-content/60 mt-0.5">Add a note as {blackbaudStatus.displayName || blackbaudStatus.accountName || 'the signed-in account'}.</p>
-                    </div>
-                  ) : (
-                    (selectedTaskForModal.comments || []).map(comment => (
-                      <div
-                        key={comment.id}
-                        className="p-3 rounded-xl bg-base-200 border border-base-300"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <ProfileAvatar name={comment.author} photoUrl={comment.authorPhoto} size={28} />
-                            <span className="text-[13px] font-semibold text-base-content truncate">{comment.author}</span>
-                            <span className="text-[12px] text-base-content/60 shrink-0">{comment.timestamp}</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteComment(selectedTaskForModal.id, comment.id)}
-                            className="min-h-11 min-w-11 inline-flex items-center justify-center text-base-content/60 hover:text-error"
-                            aria-label="Delete note"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                        <p className="text-[13px] text-base-content mt-2 leading-relaxed whitespace-pre-wrap pl-9">
-                          {decodeHtmlEntities(comment.text)}
-                        </p>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                <form onSubmit={handleAddComment} className="pt-3 mt-3 border-t border-base-300">
-                  <div className="flex items-start gap-2">
-                    <ProfileAvatar
-                      name={blackbaudStatus.displayName || blackbaudStatus.accountName || 'Family'}
-                      photoUrl={blackbaudStatus.photoUrl}
-                      size={36}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-[13px] font-medium text-base-content">
-                        {blackbaudStatus.displayName || blackbaudStatus.accountName || 'Family'}
-                      </p>
-                      {blackbaudStatus.email && (
-                        <p className="text-[12px] text-base-content/60 truncate">{blackbaudStatus.email}</p>
-                      )}
-                      <div className="mt-2 flex gap-2">
-                        <textarea
-                          placeholder="Add a note"
-                          value={commentText}
-                          onChange={(e) => setCommentText(e.target.value)}
-                          rows={2}
-                          aria-label="Assignment note"
-                          className="textarea textarea-bordered textarea-sm flex-1"
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
-                              e.preventDefault();
-                              handleAddComment(e);
-                            }
-                          }}
-                        />
-                        <button
-                          type="submit"
-                          disabled={!commentText.trim()}
-                          className="btn btn-primary btn-sm shrink-0"
-                        >
-                          <Send className="w-3.5 h-3.5" />
-                          Post
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </form>
-              </div>
+              {/* Family comments — not Blackbaud, not teachers */}
+              <FamilyThread
+                comments={selectedTaskForModal.comments || []}
+                status={blackbaudStatus}
+                isParent={isParentViewer}
+                student={selectedTaskForModal.student}
+                commentText={commentText}
+                onCommentText={setCommentText}
+                onSend={handleAddComment}
+                onDelete={(commentId) => handleDeleteComment(selectedTaskForModal.id, commentId)}
+                unreadCount={(familyNotifications || []).filter((n) => (
+                  n.assignmentId === selectedTaskForModal.id && !n.read
+                )).length}
+              />
             </div>
 
             {/* Modal Footer */}
