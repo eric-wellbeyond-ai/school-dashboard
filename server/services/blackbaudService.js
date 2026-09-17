@@ -11,12 +11,10 @@
  * - Discovers Ben's and Jade's student IDs automatically
  * 
  * Storage:
- * - Persists session token to Upstash Redis (production) and server/.blackbaud_tokens.json (local).
+ * - Portal cookie `t` lives only on the request's ALS `wlaContext` / HttpOnly `wla_session`.
+ * - Never a process-global cachedSession or shared KV `blackbaud_session`.
  */
 
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { decodeHtmlEntities } from './parserService.js';
 import { currentWlaSession } from './wlaContext.js';
 import { identifyUser, BEN_ID, JADE_ID } from './sessionStore.js';
@@ -31,14 +29,10 @@ import {
 } from '../../src/lib/assignmentBuckets.js';
 import { assignmentPercent } from '../../src/lib/gradeColors.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const SUBDOMAIN = process.env.BLACKBAUD_SUBDOMAIN || 'westlakelutheran';
 const BASE_URL = `https://${SUBDOMAIN}.myschoolapp.com`;
 const CDN_HOST = 'https://bbk12e1-cdn.myschoolcdn.com';
 const SCHOOL_FTP_PREFIX = '/ftpimages/2274/user';
-const TOKENS_PATH = path.join(__dirname, '..', '.blackbaud_tokens.json');
 const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
 
 function isAllowedPhotoHost(hostname) {
@@ -160,66 +154,13 @@ function htmlAttr(tag, name) {
   return match ? (match[1] || match[2] || match[3] || '').trim() : '';
 }
 
-// Memory cache
-let cachedSession = null;
-
-function getKvConfig() {
-  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-  return { url, token };
-}
-
 /**
- * Retrieve saved Blackbaud session info (cookie, student IDs, last verified)
+ * Request-scoped Blackbaud session (cookie `t`) from ALS. Never a process global.
  */
 export async function getBlackbaudSession() {
   const live = currentWlaSession();
   if (live?.cookie) return live;
   return null;
-}
-
-/**
- * Save Blackbaud session
- */
-export async function saveBlackbaudSession(sessionData) {
-  cachedSession = sessionData;
-
-  // Persist to Upstash / Vercel KV
-  const { url: kvUrl, token: kvToken } = getKvConfig();
-  if (kvUrl && kvToken) {
-    try {
-      if (sessionData) {
-        await fetch(`${kvUrl}/set/blackbaud_session`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${kvToken}`,
-            'Content-Type': 'application/json'
-          },
-          body: typeof sessionData === 'string' ? sessionData : JSON.stringify(sessionData)
-        });
-      } else {
-        await fetch(`${kvUrl}/del/blackbaud_session`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${kvToken}` }
-        });
-      }
-    } catch (kvErr) {
-      console.warn('[Blackbaud] Upstash/KV save failed:', kvErr.message);
-    }
-  }
-
-  // Persist locally
-  try {
-    if (sessionData) {
-      fs.writeFileSync(TOKENS_PATH, JSON.stringify(sessionData, null, 2), 'utf-8');
-    } else if (fs.existsSync(TOKENS_PATH)) {
-      fs.unlinkSync(TOKENS_PATH);
-    }
-  } catch (fsErr) {
-    console.warn('[Blackbaud] Local token write failed:', fsErr.message);
-  }
-
-  return sessionData;
 }
 
 /**

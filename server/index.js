@@ -574,15 +574,17 @@ app.post('/api/blackbaud/mac-webview/start', async (req, res) => {
     return res.status(500).json({ error: `Missing ${MAC_AGENT}` });
   }
   const port = Number(process.env.MAC_WEBVIEW_PORT || 5055);
-  const existing = await readMacWebviewSnapshot();
-  if (existing.chromeRunning && existing.running) {
-    return res.json({
-      ok: true,
-      running: true,
-      starting: false,
-      reused: true,
-      port
-    });
+  if (requesterOwnsPortalLogin(req)) {
+    const existing = await readMacWebviewSnapshot();
+    if (existing.chromeRunning && existing.running) {
+      return res.json({
+        ok: true,
+        running: true,
+        starting: false,
+        reused: true,
+        port
+      });
+    }
   }
   killMacWebview();
   await new Promise((resolve) => setTimeout(resolve, 400));
