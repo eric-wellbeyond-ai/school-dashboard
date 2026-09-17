@@ -33,8 +33,11 @@ import {
   Key,
   Mail,
   Copy,
-  FileText
+  FileText,
+  Bookmark
 } from 'lucide-react';
+import { buildBlackbaudBookmarklet } from './blackbaudBookmarklet.js';
+import LandingPage from './LandingPage.jsx';
 
 /**
  * Decode all HTML entities (named, decimal, hex) and strip raw HTML tags
@@ -146,6 +149,16 @@ export default function App() {
   const [blackbaudJadeId, setBlackbaudJadeId] = useState('');
   const [isConnectingBlackbaud, setIsConnectingBlackbaud] = useState(false);
   const [isSyncingBlackbaud, setIsSyncingBlackbaud] = useState(false);
+  const [bookmarkletCopied, setBookmarkletCopied] = useState(false);
+  const [macWebview, setMacWebview] = useState({ port: 5055, running: false, canStart: false });
+  const [macWebviewStarting, setMacWebviewStarting] = useState(false);
+  const consumedBbHash = useRef(false);
+  const portalSyncPoll = useRef(null);
+  const macKeysRef = useRef(null);
+  const macFrameRef = useRef(null);
+  const closedAuthPopup = useRef(false);
+  const claimedMacToken = useRef(null);
+  const [view, setView] = useState('landing');
   // Task collaboration & comment modal state
   const [selectedTaskForModal, setSelectedTaskForModal] = useState(null);
   const [commentAuthor, setCommentAuthor] = useState(() => {
@@ -340,9 +353,17 @@ export default function App() {
   };
 
   useEffect(() => {
+    window.name = 'school-dashboard';
     fetchAuthStatus();
-    fetchBlackbaudStatus();
-    loadDashboardState();
+    (async () => {
+      const status = await fetchBlackbaudStatus();
+      if (status?.connected) {
+        await loadDashboardState();
+      } else {
+        setBlackbaudGrades({ Ben: [], Jade: [] });
+        setBlackbaudMissing([]);
+      }
+    })();
 
     // Check OAuth return params
     const params = new URLSearchParams(window.location.search);
@@ -362,6 +383,13 @@ export default function App() {
       });
       window.history.replaceState({}, document.title, window.location.pathname);
     }
+
+    return () => {
+      if (portalSyncPoll.current) {
+        clearInterval(portalSyncPoll.current);
+        portalSyncPoll.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -376,28 +404,49 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedEventForModal, selectedTaskForModal, showBlackbaudModal]);
 
+  useEffect(() => {
+    if (!showBlackbaudModal) return undefined;
+    refreshMacWebview();
+    const id = setInterval(() => {
+      refreshMacWebview();
+      fetchBlackbaudStatus();
+      loadDashboardState();
+    }, 4000);
+    return () => clearInterval(id);
+  }, [showBlackbaudModal]);
+
   const fetchBlackbaudStatus = async () => {
     try {
       const res = await fetch('/api/blackbaud/status');
       if (res.ok) {
         const data = await res.json();
         setBlackbaudStatus(data);
+        if (data.role === 'student' && Array.isArray(data.allowedStudentKeys) && data.allowedStudentKeys.length === 1) {
+          setSelectedStudent(data.allowedStudentKeys[0]);
+          setNewTaskStudent(data.allowedStudentKeys[0]);
+        }
+        if (!data.connected) {
+          setBlackbaudGrades({ Ben: [], Jade: [] });
+          setBlackbaudMissing([]);
+        }
+        return data;
       }
     } catch (err) {
       console.warn('Blackbaud status check unavailable:', err.message);
     }
+    return null;
   };
 
-  const handleConnectBlackbaud = async (e) => {
-    if (e) e.preventDefault();
-    if (!blackbaudCookieInput.trim()) return;
+  const connectBlackbaudCookie = async (rawCookie) => {
+    const cookie = (rawCookie || '').trim();
+    if (!cookie) return false;
     setIsConnectingBlackbaud(true);
     try {
       const res = await fetch('/api/blackbaud/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          cookie: blackbaudCookieInput.trim(),
+          cookie,
           benStudentId: blackbaudBenId.trim() || undefined,
           jadeStudentId: blackbaudJadeId.trim() || undefined
         })
@@ -416,28 +465,197 @@ export default function App() {
           type: 'success',
           message: 'Blackbaud Portal linked! Fetching live course grades & assignments...'
         });
-        await handleSyncBlackbaud();
-      } else {
-        setAuthBanner({
-          type: 'error',
-          message: data.error || data.note || 'Failed to connect Blackbaud. Please verify session cookie.'
-        });
+        await handleSyncBlackbaud({ openPortal: false });
+        return true;
       }
+      setAuthBanner({
+        type: 'error',
+        message: data.error || data.note || 'Failed to connect Blackbaud. Please verify session cookie.'
+      });
+      return false;
     } catch (err) {
       console.error('Error connecting Blackbaud:', err);
       setAuthBanner({
         type: 'error',
         message: 'Connection failed: ' + err.message
       });
+      return false;
     } finally {
       setIsConnectingBlackbaud(false);
     }
   };
 
+  const handleConnectBlackbaud = async (e) => {
+    if (e) e.preventDefault();
+    await connectBlackbaudCookie(blackbaudCookieInput);
+  };
+
+  const copyBlackbaudBookmarklet = async () => {
+    const href = buildBlackbaudBookmarklet(window.location.origin);
+    try {
+      await navigator.clipboard.writeText(href);
+      setBookmarkletCopied(true);
+      setTimeout(() => setBookmarkletCopied(false), 2000);
+    } catch {
+      setAuthBanner({
+        type: 'error',
+        message: 'Could not copy the bookmarklet. Drag the bookmark link to your bookmarks bar instead.'
+      });
+    }
+  };
+
+  const refreshMacWebview = async () => {
+    try {
+      const res = await fetch('/api/blackbaud/mac-webview');
+      if (res.ok) {
+        setMacWebview(await res.json());
+      }
+    } catch {}
+  };
+
+  const startMacWebview = async () => {
+    setMacWebviewStarting(true);
+    try {
+      await fetch('/api/blackbaud/mac-webview/start', { method: 'POST' });
+      for (let i = 0; i < 30; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        const res = await fetch('/api/blackbaud/mac-webview');
+        if (!res.ok) continue;
+        const data = await res.json();
+        setMacWebview(data);
+        if (data.running) break;
+      }
+    } catch (err) {
+      setAuthBanner({
+        type: 'error',
+        message: 'Could not start the Mac webview: ' + err.message
+      });
+    } finally {
+      setMacWebviewStarting(false);
+    }
+  };
+
+  const macWebviewOrigin = () => {
+    const port = macWebview.port || 5055;
+    if (typeof window === 'undefined') return `http://127.0.0.1:${port}`;
+    return `${window.location.protocol}//${window.location.hostname}:${port}`;
+  };
+
+  const sendMacWebviewInput = (payload) => {
+    void fetch(`${macWebviewOrigin()}/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  };
+
+  const focusMacKeys = () => {
+    window.setTimeout(() => macKeysRef.current?.focus(), 120);
+  };
+
+  const handleMacWebviewKeyDown = (event) => {
+    const fromBridge = event.target === macKeysRef.current;
+    if (!fromBridge && event.target && event.target.closest && event.target.closest('input, textarea, select, button')) {
+      return;
+    }
+    const special = ['Enter', 'Backspace', 'Tab', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Delete', 'Home', 'End'];
+    if (event.metaKey || event.ctrlKey || event.altKey || special.includes(event.key)) {
+      event.preventDefault();
+      sendMacWebviewInput({
+        action: 'key',
+        type: 'down',
+        key: event.key,
+        code: event.code,
+        alt: event.altKey,
+        ctrl: event.ctrlKey,
+        meta: event.metaKey,
+        shift: event.shiftKey
+      });
+    }
+  };
+
+  const handleMacWebviewKeyUp = (event) => {
+    const fromBridge = event.target === macKeysRef.current;
+    if (!fromBridge && event.target && event.target.closest && event.target.closest('input, textarea, select, button')) {
+      return;
+    }
+    const special = ['Enter', 'Backspace', 'Tab', 'Escape', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Delete', 'Home', 'End'];
+    if (event.metaKey || event.ctrlKey || event.altKey || special.includes(event.key)) {
+      event.preventDefault();
+      sendMacWebviewInput({
+        action: 'key',
+        type: 'up',
+        key: event.key,
+        code: event.code,
+        alt: event.altKey,
+        ctrl: event.ctrlKey,
+        meta: event.metaKey,
+        shift: event.shiftKey
+      });
+    }
+  };
+
+  const handleMacWebviewChange = (event) => {
+    const text = event.target.value;
+    if (!text) return;
+    event.target.value = '';
+    sendMacWebviewInput({ action: 'type', text });
+  };
+
+  const handleMacWebviewPaste = (event) => {
+    const text = event.clipboardData?.getData('text');
+    if (!text) return;
+    event.preventDefault();
+    sendMacWebviewInput({ action: 'type', text });
+  };
+
+  useEffect(() => {
+    if (!showBlackbaudModal || !macWebview.running) return;
+    focusMacKeys();
+  }, [showBlackbaudModal, macWebview.running]);
+
+  useEffect(() => {
+    if (consumedBbHash.current) return;
+    const hash = window.location.hash || '';
+    const ingested = hash.includes('bb_ingested=1') || new URLSearchParams(window.location.search).get('bb_ingested') === '1';
+    const ingestFailed = hash.includes('bb_ingested=0');
+    if (ingested || ingestFailed) {
+      consumedBbHash.current = true;
+      window.history.replaceState({}, document.title, window.location.pathname);
+      if (ingestFailed) {
+        setAuthBanner({
+          type: 'error',
+          message: 'Could not pull grades. Keep the Westlake portal tab open and signed in, then click the bookmark again.'
+        });
+        return;
+      }
+      setAuthBanner({
+        type: 'success',
+        message: 'Pulled live grades from the Westlake portal.'
+      });
+      fetchBlackbaudStatus();
+      loadDashboardState();
+      return;
+    }
+
+    const fromHash = hash.match(/bb_t=([^&]+)/);
+    const fromQuery = new URLSearchParams(window.location.search).get('bb_t');
+    const raw = fromHash ? fromHash[1] : fromQuery;
+    if (!raw) return;
+    consumedBbHash.current = true;
+    const token = decodeURIComponent(raw);
+    window.history.replaceState({}, document.title, window.location.pathname);
+    setAuthBanner({
+      type: 'info',
+      message: 'Got session token t from the parent portal. Connecting…'
+    });
+    connectBlackbaudCookie(token);
+  }, []);
+
   const handleDisconnectBlackbaud = async () => {
     try {
       await fetch('/api/blackbaud/disconnect', { method: 'POST' });
-      setBlackbaudStatus({ connected: false, students: [] });
+      setBlackbaudStatus({ connected: false, students: [], role: null, displayName: null, allowedStudentKeys: [] });
       setBlackbaudGrades({ Ben: [], Jade: [] });
       setBlackbaudMissing([]);
       try {
@@ -446,56 +664,169 @@ export default function App() {
       } catch {}
       setAuthBanner({
         type: 'info',
-        message: 'Disconnected Westlake Blackbaud Portal.'
+        message: 'Signed out of this device. Other people on the network keep their own sessions.'
       });
       setShowBlackbaudModal(false);
+      setView('landing');
     } catch (err) {
       console.error('Error disconnecting Blackbaud:', err);
     }
   };
 
-  const handleSyncBlackbaud = async () => {
+  const applyBlackbaudSync = (rawData) => {
+    const data = cleanDeep(rawData || {});
+    if (data.grades) {
+      setBlackbaudGrades(data.grades);
+      try {
+        localStorage.setItem('school_dashboard_blackbaud_grades', JSON.stringify(data.grades));
+      } catch {}
+    }
+    if (data.missingAssignments && Array.isArray(data.missingAssignments)) {
+      setBlackbaudMissing(data.missingAssignments);
+      try {
+        localStorage.setItem('school_dashboard_blackbaud_missing', JSON.stringify(data.missingAssignments));
+      } catch {}
+    }
+    if (Array.isArray(data.tasks)) {
+      setTasks(data.tasks);
+      try {
+        localStorage.setItem('school_dashboard_tasks', JSON.stringify(data.tasks));
+      } catch {}
+    }
+    if (data.connected) {
+      setBlackbaudStatus(prev => ({
+        ...prev,
+        connected: true,
+        students: data.students || prev.students || [],
+        role: data.role || prev.role,
+        userKey: data.userKey || prev.userKey,
+        displayName: data.displayName || prev.displayName,
+        accountName: data.accountName || prev.accountName,
+        allowedStudentKeys: data.allowedStudentKeys || prev.allowedStudentKeys,
+        verifiedAt: data.lastSyncedAt || new Date().toISOString()
+      }));
+      if (data.role === 'student' && Array.isArray(data.allowedStudentKeys) && data.allowedStudentKeys.length === 1) {
+        setSelectedStudent(data.allowedStudentKeys[0]);
+        setNewTaskStudent(data.allowedStudentKeys[0]);
+      }
+    }
+    return data;
+  };
+
+  const gradeCountFrom = (data) => Object.values(data?.grades || {}).reduce(
+    (sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0),
+    0
+  );
+
+  const finishMacSignIn = (data, { closePopup = true } = {}) => {
+    const gradeCount = gradeCountFrom(data);
+    const studentCount = Array.isArray(data?.students) ? data.students.length : 0;
+    if (closePopup) {
+      closedAuthPopup.current = true;
+      setShowBlackbaudModal(false);
+      setView('dashboard');
+    }
+    if (portalSyncPoll.current) {
+      clearInterval(portalSyncPoll.current);
+      portalSyncPoll.current = null;
+    }
+    if (gradeCount > 0) {
+      setAuthBanner({
+        type: 'success',
+        message: `Signed in. Loaded live grades${studentCount ? ` for ${studentCount} students` : ' for Ben and Jade'}. Chromium stays running on this Mac.`
+      });
+    } else {
+      setAuthBanner({
+        type: 'success',
+        message: 'Signed in. Chromium stays running on this Mac so the session remains live.'
+      });
+    }
+  };
+
+  const startPortalGradePoll = () => {
+    if (portalSyncPoll.current) clearInterval(portalSyncPoll.current);
+    closedAuthPopup.current = false;
+    const started = Date.now();
+    portalSyncPoll.current = setInterval(async () => {
+      if (closedAuthPopup.current) {
+        clearInterval(portalSyncPoll.current);
+        portalSyncPoll.current = null;
+        return;
+      }
+      if (Date.now() - started > 5 * 60 * 1000) {
+        clearInterval(portalSyncPoll.current);
+        portalSyncPoll.current = null;
+        return;
+      }
+      try {
+        const wvRes = await fetch('/api/blackbaud/mac-webview');
+        if (wvRes.ok) {
+          const wv = await wvRes.json();
+          setMacWebview(wv);
+          if (wv.posted && (wv.homeReady || /\/app\/(parent|student)(?:\/|\?|#|$)/i.test(wv.url || ''))) {
+            if (wv.claimToken && claimedMacToken.current !== wv.claimToken) {
+              claimedMacToken.current = wv.claimToken;
+              const claimRes = await fetch('/api/blackbaud/claim', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ claimToken: wv.claimToken })
+              });
+              if (claimRes.ok) {
+                const claimed = await claimRes.json();
+                setBlackbaudStatus({ connected: true, ...(claimed.data || {}) });
+              }
+            }
+            const syncRes = await fetch('/api/blackbaud/sync');
+            const data = applyBlackbaudSync(await syncRes.json());
+            await fetchBlackbaudStatus();
+            await loadDashboardState();
+            finishMacSignIn(data, { closePopup: true });
+            return;
+          }
+        }
+      } catch {}
+    }, 1500);
+  };
+
+  const handleLoginWithBlackbaud = () => {
+    claimedMacToken.current = null;
+    void handleSyncBlackbaud({ openPortal: true });
+  };
+
+  const handleSyncBlackbaud = async ({ openPortal = false } = {}) => {
+    if (openPortal) {
+      closedAuthPopup.current = false;
+      setShowBlackbaudModal(true);
+      startPortalGradePoll();
+      setAuthBanner({
+        type: 'info',
+        message: 'Opening the Mac sign-in. It stays open through redirects and closes once /app/parent or /app/student loads.'
+      });
+      void startMacWebview();
+      return;
+    }
     setIsSyncingBlackbaud(true);
     try {
       const res = await fetch('/api/blackbaud/sync');
-      const rawData = await res.json();
-      const data = cleanDeep(rawData);
-      if (data.grades) {
-        setBlackbaudGrades(data.grades);
-        try {
-          localStorage.setItem('school_dashboard_blackbaud_grades', JSON.stringify(data.grades));
-        } catch {}
-      }
-      if (data.missingAssignments && Array.isArray(data.missingAssignments)) {
-        setBlackbaudMissing(data.missingAssignments);
-        try {
-          localStorage.setItem('school_dashboard_blackbaud_missing', JSON.stringify(data.missingAssignments));
-        } catch {}
-      }
-      if (Array.isArray(data.tasks)) {
-        setTasks(data.tasks);
-        try {
-          localStorage.setItem('school_dashboard_tasks', JSON.stringify(data.tasks));
-        } catch {}
-      }
+      const data = applyBlackbaudSync(await res.json());
       if (data.connected) {
-        setBlackbaudStatus(prev => ({
-          ...prev,
-          connected: true,
-          verifiedAt: data.lastSyncedAt || new Date().toISOString()
-        }));
-        setAuthBanner({
-          type: 'success',
-          message: 'Synchronized live grades and portal assignments from Westlake Blackbaud!'
-        });
-      } else {
+        const gradeCount = gradeCountFrom(data);
+        if (gradeCount === 0 && openPortal) {
+          setAuthBanner({
+            type: 'info',
+            message: 'Sign in inside the Mac window. It stays open through the white redirect screens and closes on the parent or student home.'
+          });
+        } else if (gradeCount > 0 && !openPortal) {
+          finishMacSignIn(data, { closePopup: false });
+        }
+      } else if (openPortal) {
         setShowBlackbaudModal(true);
       }
     } catch (err) {
       console.error('Failed to sync Blackbaud:', err);
       setAuthBanner({
-        type: 'error',
-        message: 'Failed to sync with Blackbaud Portal. Verify your session cookie.'
+        type: 'info',
+        message: 'Could not refresh grades yet. Sign in inside the Mac Playwright window.'
       });
     } finally {
       setIsSyncingBlackbaud(false);
@@ -765,31 +1096,56 @@ export default function App() {
   const pendingCount = tasks.filter(t => !t.completed).length;
   const completedCount = tasks.filter(t => t.completed).length;
   const completionPercentage = tasks.length > 0 ? Math.round((completedCount / tasks.length) * 100) : 0;
+  const allowedKeys = blackbaudStatus.allowedStudentKeys
+    || (blackbaudStatus.role === 'student' ? [] : ['Ben', 'Jade']);
+  const canSeeBen = allowedKeys.includes('Ben');
+  const canSeeJade = allowedKeys.includes('Jade');
+  const isParentViewer = blackbaudStatus.role !== 'student';
+  const signedInName = blackbaudStatus.displayName || blackbaudStatus.accountName || '';
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col md:flex-row antialiased font-sans selection:bg-indigo-500 selection:text-white">
+    <div className="wla-app min-h-screen bg-slate-900 text-slate-100 flex flex-col md:flex-row antialiased font-sans">
+      {view !== 'landing' && (
+      <a href="#wla-main" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-slate-100 focus:px-3 focus:py-2 focus:text-sm focus:text-[rgb(var(--wla-on-ink))]">
+        Skip to content
+      </a>
+      )}
+      {view === 'landing' && (
+        <LandingPage
+          onLogin={handleLoginWithBlackbaud}
+          onOpenDashboard={() => setView('dashboard')}
+          connected={Boolean(blackbaudStatus.connected)}
+          account={blackbaudStatus}
+          signingIn={macWebviewStarting || showBlackbaudModal}
+        />
+      )}
+      <div
+        className={view === 'landing' ? 'hidden' : 'flex-1 flex flex-col md:flex-row min-h-0 w-full'}
+        aria-hidden={view === 'landing' ? 'true' : undefined}
+      >
       {/* ---------------------------------------------------- */}
       {/* Sidebar: Navigation & Launch Portals                 */}
       {/* ---------------------------------------------------- */}
-      <aside className="w-full md:w-72 bg-slate-950 border-r border-slate-800 flex flex-col justify-between p-5 shrink-0">
+      <aside className="w-full md:w-72 bg-slate-950 border-r border-slate-800 flex flex-col justify-between p-5 shrink-0 wla-rule">
         <div>
-          {/* School Brand Header */}
-          <div className="flex items-center gap-3 pb-6 border-b border-slate-800/80">
-            <div className="h-11 w-11 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-amber-500 flex items-center justify-center shadow-lg shadow-indigo-600/20 ring-1 ring-white/20">
-              <Shield className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <h1 className="font-bold text-base tracking-tight text-white flex items-center gap-1.5">
-                Westlake Hub
-              </h1>
-              <p className="text-xs text-slate-400 font-medium">Lutheran Academy</p>
-            </div>
+          <div className="pb-6 border-b border-slate-800/80">
+            <p className="font-serif text-[11px] tracking-[0.16em] uppercase text-indigo-400">
+              Westlake Lutheran Academy
+            </p>
+            <h1 className="mt-1 font-serif text-xl font-semibold tracking-tight text-slate-100">
+              Family folder
+            </h1>
+            <p className="mt-1 text-[13px] text-slate-400">
+              {signedInName
+                ? `${signedInName}${blackbaudStatus.role ? ` · ${blackbaudStatus.role}` : ''}`
+                : 'Sign in to see grades'}
+            </p>
           </div>
 
           {/* Direct Launch Portals */}
           <div className="mt-6">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 px-2 mb-3">
-              Direct Portals
+            <h2 className="text-[13px] font-semibold text-slate-400 px-1 mb-3">
+              Portals
             </h2>
             <div className="space-y-2">
               {/* Blackbaud Parent Portal */}
@@ -798,7 +1154,7 @@ export default function App() {
                 target="_blank"
                 rel="noopener noreferrer"
                 id="link-blackbaud"
-                className="group flex items-center justify-between p-3 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-indigo-500/60 hover:bg-slate-800/80 transition-all duration-200 shadow-sm"
+                className="group flex items-center justify-between min-h-11 p-3 rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-600 transition-colors"
               >
                 <div className="flex items-center gap-3">
                   <div className="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-400 flex items-center justify-center group-hover:bg-blue-500 group-hover:text-white transition-colors">
@@ -825,7 +1181,7 @@ export default function App() {
                 target="_blank"
                 rel="noopener noreferrer"
                 id="link-classlink"
-                className="group flex items-center justify-between p-3 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-emerald-500/60 hover:bg-slate-800/80 transition-all duration-200 shadow-sm"
+                className="group flex items-center justify-between min-h-11 p-3 rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-600 transition-colors"
               >
                 <div className="flex items-center gap-3">
                   <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center group-hover:bg-emerald-500 group-hover:text-white transition-colors">
@@ -845,7 +1201,7 @@ export default function App() {
                 target="_blank"
                 rel="noopener noreferrer"
                 id="link-sportsyou"
-                className="group flex items-center justify-between p-3 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-amber-500/60 hover:bg-slate-800/80 transition-all duration-200 shadow-sm"
+                className="group flex items-center justify-between min-h-11 p-3 rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-600 transition-colors"
               >
                 <div className="flex items-center gap-3">
                   <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center group-hover:bg-amber-500 group-hover:text-white transition-colors">
@@ -863,55 +1219,51 @@ export default function App() {
 
           {/* Student Overview Cards in Sidebar */}
           <div className="mt-8">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400 px-2 mb-3">
-              Students Summary
+            <h2 className="text-[13px] font-semibold text-slate-400 px-1 mb-3">
+              Students
             </h2>
-            <div className="space-y-2.5">
-              {/* Ben Summary */}
+            <div className="space-y-2">
+              {canSeeBen && (
               <button
+                type="button"
+                aria-pressed={selectedStudent === 'Ben'}
                 onClick={() => setSelectedStudent('Ben')}
-                className={`w-full text-left p-3 rounded-xl border transition-all duration-200 flex items-center justify-between ${
+                className={`wla-tab w-full min-h-11 text-left px-3 py-2.5 rounded-lg border transition-colors flex items-center justify-between ${
                   selectedStudent === 'Ben'
-                    ? 'bg-blue-600/20 border-blue-500/70 text-white shadow-md shadow-blue-900/20 ring-1 ring-blue-500/30'
+                    ? 'border-slate-700 text-slate-100'
                     : 'bg-slate-900/60 border-slate-800/80 text-slate-300 hover:border-slate-700 hover:bg-slate-900'
                 }`}
               >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-blue-500/20 border border-blue-400/40 text-blue-300 flex items-center justify-center text-xs font-bold">
-                    B
-                  </div>
-                  <div>
-                    <div className="text-sm font-semibold text-slate-100">Ben</div>
-                    <div className="text-[11px] text-slate-400">High School &bull; Athletics</div>
-                  </div>
+                <div>
+                    <div className="text-[15px] font-semibold text-slate-100">Ben</div>
+                    <div className="text-[13px] text-slate-400">High school</div>
                 </div>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-blue-950/80 border border-blue-800/60 text-blue-300 font-mono">
+                <span className="text-[13px] tabular-nums text-slate-400">
                   {benTasks.filter(t => !t.completed).length} open
                 </span>
               </button>
+              )}
 
-              {/* Jade Summary */}
+              {canSeeJade && (
               <button
+                type="button"
+                aria-pressed={selectedStudent === 'Jade'}
                 onClick={() => setSelectedStudent('Jade')}
-                className={`w-full text-left p-3 rounded-xl border transition-all duration-200 flex items-center justify-between ${
+                className={`wla-tab w-full min-h-11 text-left px-3 py-2.5 rounded-lg border transition-colors flex items-center justify-between ${
                   selectedStudent === 'Jade'
-                    ? 'bg-purple-600/20 border-purple-500/70 text-white shadow-md shadow-purple-900/20 ring-1 ring-purple-500/30'
+                    ? 'border-slate-700 text-slate-100'
                     : 'bg-slate-900/60 border-slate-800/80 text-slate-300 hover:border-slate-700 hover:bg-slate-900'
                 }`}
               >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-purple-500/20 border border-purple-400/40 text-purple-300 flex items-center justify-center text-xs font-bold">
-                    J
-                  </div>
-                  <div>
-                    <div className="text-sm font-semibold text-slate-100">Jade</div>
-                    <div className="text-[11px] text-slate-400">Middle School &bull; Volleyball</div>
-                  </div>
+                <div>
+                    <div className="text-[15px] font-semibold text-slate-100">Jade</div>
+                    <div className="text-[13px] text-slate-400">Middle school</div>
                 </div>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-purple-950/80 border border-purple-800/60 text-purple-300 font-mono">
+                <span className="text-[13px] tabular-nums text-slate-400">
                   {jadeTasks.filter(t => !t.completed).length} open
                 </span>
               </button>
+              )}
             </div>
           </div>
         </div>
@@ -929,7 +1281,7 @@ export default function App() {
             </div>
             <button
               onClick={handleConnectGoogle}
-              className="w-full py-1.5 px-2.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white text-[11px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              className="w-full min-h-11 py-2 px-2.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 text-[13px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
             >
               <Shield className="w-3.5 h-3.5 text-indigo-400" />
               <span>{authStatus.authenticated ? 'Gmail Connected' : 'Connect Google Inbox'}</span>
@@ -946,12 +1298,27 @@ export default function App() {
               <span className="text-[10px] text-amber-400/80 font-mono">myschoolapp</span>
             </div>
             <button
-              onClick={() => setShowBlackbaudModal(true)}
-              className="w-full py-1.5 px-2.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-indigo-500/40 text-slate-300 hover:text-white text-[11px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              onClick={() => (blackbaudStatus.connected ? setShowBlackbaudModal(true) : setView('landing'))}
+              className="w-full min-h-11 py-2 px-2.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 text-[13px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
             >
               <GraduationCap className="w-3.5 h-3.5 text-amber-400" />
               <span>{blackbaudStatus.connected ? 'Blackbaud Settings' : 'Connect Blackbaud'}</span>
             </button>
+            {blackbaudStatus.connected && (
+              <div className="pt-2 text-center space-y-1.5">
+                <p className="text-[11px] text-slate-400">
+                  Signed in as {signedInName || 'family member'}
+                  {blackbaudStatus.role ? ` · ${blackbaudStatus.role}` : ''}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleDisconnectBlackbaud}
+                  className="text-[11px] text-slate-500 hover:text-white underline cursor-pointer"
+                >
+                  Sign out
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </aside>
@@ -959,13 +1326,11 @@ export default function App() {
       {/* ---------------------------------------------------- */}
       {/* Main Content Area                                    */}
       {/* ---------------------------------------------------- */}
-      <main className="flex-1 flex flex-col min-w-0 overflow-y-auto">
-        {/* Top Navigation Bar */}
-        <header className="sticky top-0 z-20 backdrop-blur-md bg-slate-900/85 border-b border-slate-800 px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div>
+      <main id="wla-main" className="flex-1 flex flex-col min-w-0 overflow-y-auto">
+        <header className="sticky top-0 z-20 backdrop-blur-md bg-slate-900/90 border-b border-slate-800 px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-bold text-white tracking-tight">Family School Dashboard</h2>
+                <h2 className="font-serif text-xl font-semibold text-slate-100 tracking-tight">Grades and schoolwork</h2>
                 <span className="text-xs px-2 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-medium">
                   Fall 2026
                 </span>
@@ -973,7 +1338,6 @@ export default function App() {
               <p className="text-xs text-slate-400">
                 {lastSynced ? `Inbox synced at ${lastSynced}` : 'Ready to sync with school inbox & sportsYou'}
               </p>
-            </div>
           </div>
 
           <div className="flex items-center gap-3">
@@ -1076,7 +1440,7 @@ export default function App() {
                       <GraduationCap className="w-3.5 h-3.5" />
                       Sync Blackbaud Portal
                     </span>
-                    <span className="text-slate-400 text-[11px]">Pulls live grades, report cards & portal tasks</span>
+                    <span className="text-slate-400 text-[11px]">Opens the Mac Playwright sign-in and pulls live grades</span>
                   </button>
                 </div>
               )}
@@ -1124,41 +1488,51 @@ export default function App() {
                 <Users className="w-3.5 h-3.5" /> View:
               </span>
               <div className="inline-flex p-1 bg-slate-900 rounded-xl border border-slate-800" role="group">
+                {isParentViewer && (
                 <button
                   id="toggle-all"
+                  type="button"
+                  aria-pressed={selectedStudent === 'All'}
                   onClick={() => setSelectedStudent('All')}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 cursor-pointer ${
+                  className={`px-3.5 py-2 min-h-11 rounded-lg text-[13px] font-semibold transition-colors cursor-pointer ${
                     selectedStudent === 'All'
                       ? 'bg-indigo-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                      : 'text-slate-400 hover:bg-slate-800'
                   }`}
                 >
-                  All Students
+                  All
                 </button>
+                )}
+                {canSeeBen && (
                 <button
                   id="toggle-ben"
+                  type="button"
+                  aria-pressed={selectedStudent === 'Ben'}
                   onClick={() => setSelectedStudent('Ben')}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 flex items-center gap-1.5 cursor-pointer ${
+                  className={`px-3.5 py-2 min-h-11 rounded-lg text-[13px] font-semibold transition-colors cursor-pointer ${
                     selectedStudent === 'Ben'
                       ? 'bg-blue-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                      : 'text-slate-400 hover:bg-slate-800'
                   }`}
                 >
-                  <span className="w-2 h-2 rounded-full bg-blue-300"></span>
                   Ben
                 </button>
+                )}
+                {canSeeJade && (
                 <button
                   id="toggle-jade"
+                  type="button"
+                  aria-pressed={selectedStudent === 'Jade'}
                   onClick={() => setSelectedStudent('Jade')}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 flex items-center gap-1.5 cursor-pointer ${
+                  className={`px-3.5 py-2 min-h-11 rounded-lg text-[13px] font-semibold transition-colors cursor-pointer ${
                     selectedStudent === 'Jade'
                       ? 'bg-purple-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                      : 'text-slate-400 hover:bg-slate-800'
                   }`}
                 >
-                  <span className="w-2 h-2 rounded-full bg-purple-300"></span>
                   Jade
                 </button>
+                )}
               </div>
             </div>
 
@@ -1233,12 +1607,12 @@ export default function App() {
                     </button>
                   </>
                 ) : (
-                  <button
-                    onClick={() => setShowBlackbaudModal(true)}
-                    className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-900/20 flex items-center gap-1.5 transition-all cursor-pointer"
-                  >
+                    <button
+                      onClick={() => setView('landing')}
+                      className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-900/20 flex items-center gap-1.5 transition-all cursor-pointer"
+                    >
                     <Key className="w-3.5 h-3.5" />
-                    <span>Connect Blackbaud</span>
+                    <span>Log in with Blackbaud</span>
                   </button>
                 )}
               </div>
@@ -1272,7 +1646,8 @@ export default function App() {
 
             {/* Grades View */}
             <div className="mt-4">
-              {(!blackbaudGrades.Ben || blackbaudGrades.Ben.length === 0) && (!blackbaudGrades.Jade || blackbaudGrades.Jade.length === 0) ? (
+              {(!blackbaudGrades.Ben || blackbaudGrades.Ben.length === 0) && (!blackbaudGrades.Jade || blackbaudGrades.Jade.length === 0) &&
+              !Object.entries(blackbaudGrades).some(([key, rows]) => key !== 'Ben' && key !== 'Jade' && Array.isArray(rows) && rows.length > 0) ? (
                 /* Unconnected / Empty State Card */
                 <div className="p-6 rounded-xl bg-slate-900/40 border border-dashed border-slate-800 text-center flex flex-col items-center justify-center">
                   <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mb-3">
@@ -1283,33 +1658,23 @@ export default function App() {
                   </h3>
                   <p className="text-xs text-slate-400 max-w-lg mb-4 leading-relaxed">
                     {blackbaudStatus.connected
-                      ? 'Blackbaud session is configured. Click "Sync Grades" to query active classes and report card percentages from the portal.'
-                      : 'Connect your Westlake Lutheran Academy Blackbaud Portal account to monitor current course letter grades, cumulative percentages, teacher gradebooks, and missing assignments for Ben (High School) and Jade (Middle School).'}
+                      ? 'Click Sync Grades to refresh this account from Westlake.'
+                      : 'Use Log in with Blackbaud on the landing page. Chrome opens only after you click that button.'}
                   </p>
-                  {blackbaudStatus.connected ? (
-                    <button
-                      onClick={handleSyncBlackbaud}
-                      disabled={isSyncingBlackbaud}
-                      className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingBlackbaud ? 'animate-spin' : ''}`} />
-                      <span>{isSyncingBlackbaud ? 'Fetching...' : 'Sync Now'}</span>
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => setShowBlackbaudModal(true)}
-                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-lg shadow-indigo-600/20 flex items-center gap-2 transition-all cursor-pointer"
-                    >
-                      <GraduationCap className="w-4 h-4" />
-                      <span>Connect Westlake Blackbaud Portal</span>
-                    </button>
-                  )}
+                  <button
+                    onClick={() => (blackbaudStatus.connected ? handleSyncBlackbaud({ openPortal: false }) : setView('landing'))}
+                    disabled={isSyncingBlackbaud || macWebviewStarting}
+                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingBlackbaud || macWebviewStarting ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingBlackbaud ? 'Syncing…' : (blackbaudStatus.connected ? 'Sync Grades' : 'Log in with Blackbaud')}</span>
+                  </button>
                 </div>
               ) : (
                 /* Course Cards Grid */
                 <div className="space-y-6">
                   {/* Ben's Course Grades */}
-                  {(selectedStudent === 'All' || selectedStudent === 'Ben') && (
+                  {(selectedStudent === 'All' || selectedStudent === 'Ben') && canSeeBen && (blackbaudGrades.Ben || []).length > 0 && (
                     <div>
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
@@ -1375,7 +1740,7 @@ export default function App() {
                   )}
 
                   {/* Jade's Course Grades */}
-                  {(selectedStudent === 'All' || selectedStudent === 'Jade') && (
+                  {(selectedStudent === 'All' || selectedStudent === 'Jade') && canSeeJade && (blackbaudGrades.Jade || []).length > 0 && (
                     <div className={selectedStudent === 'All' ? 'pt-4 border-t border-slate-800/80' : ''}>
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
@@ -1952,6 +2317,7 @@ export default function App() {
           </div>
         </div>
       </main>
+      </div>
 
       {/* ---------------------------------------------------- */}
       {/* Google Cloud & OAuth Setup Modal                     */}
@@ -2069,9 +2435,73 @@ export default function App() {
       )}
 
       {/* ---------------------------------------------------- */}
+      {/* Blackbaud Chromium (vertical auth VM)                */}
+      {/* ---------------------------------------------------- */}
+      {showBlackbaudModal && (macWebview.running || macWebviewStarting) && (
+        <div
+          className="fixed inset-0 z-50 bg-[rgb(var(--wla-ink)/0.45)] flex items-center justify-center p-4"
+          onClick={() => setShowBlackbaudModal(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mac-auth-title"
+            className="relative w-[min(100%,400px)] h-[min(90dvh,720px)] overflow-hidden border border-slate-800 bg-slate-900 shadow-xl wla-rule"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="absolute top-3 left-3 right-3 z-10 flex items-center justify-between pointer-events-none">
+              <h3 id="mac-auth-title" className="text-[13px] font-semibold text-slate-100 bg-slate-900/90 rounded-full px-3 py-1.5">
+                Sign in to Westlake
+              </h3>
+              <button
+                type="button"
+                aria-label="Close sign-in"
+                onClick={() => setShowBlackbaudModal(false)}
+                className="pointer-events-auto min-h-11 px-3 rounded-lg bg-slate-900/95 text-[13px] font-semibold text-slate-100 hover:bg-slate-800"
+              >
+                Close
+              </button>
+            </div>
+            {macWebview.running ? (
+              <>
+                <iframe
+                  ref={macFrameRef}
+                  title="Westlake Chromium on this Mac"
+                  src={`${typeof window !== 'undefined' ? window.location.protocol : 'http:'}//${typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1'}:${macWebview.port || 5055}`}
+                  className="absolute inset-0 z-0 w-full h-full border-0 bg-slate-900"
+                  allow="clipboard-read; clipboard-write"
+                  tabIndex={-1}
+                  onLoad={focusMacKeys}
+                  onPointerUp={focusMacKeys}
+                />
+                <textarea
+                  ref={macKeysRef}
+                  id="mac-webview-keys"
+                  aria-label="Type into the Westlake sign-in window"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="absolute inset-0 z-[5] w-full h-full resize-none border-0 bg-transparent text-transparent caret-transparent opacity-0"
+                  style={{ pointerEvents: 'none' }}
+                  onKeyDown={handleMacWebviewKeyDown}
+                  onKeyUp={handleMacWebviewKeyUp}
+                  onChange={handleMacWebviewChange}
+                  onPaste={handleMacWebviewPaste}
+                />
+              </>
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm">
+                Starting Chromium…
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ---------------------------------------------------- */}
       {/* Blackbaud Portal Connection Modal                    */}
       {/* ---------------------------------------------------- */}
-      {showBlackbaudModal && (
+      {showBlackbaudModal && !(macWebview.running || macWebviewStarting) && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
             {/* Header */}
@@ -2093,37 +2523,80 @@ export default function App() {
               </button>
             </div>
 
-            {/* Explanatory Steps */}
-            <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2 text-xs">
+            <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-3 text-xs">
               <span className="font-semibold text-slate-200 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                How to retrieve your session token:
+                <GraduationCap className="w-3.5 h-3.5 text-amber-400" />
+                Sign in on this Mac
               </span>
-              <ol className="list-decimal list-inside space-y-1 text-slate-400 text-[11px] leading-relaxed">
-                <li>
-                  Open <a href="https://westlakelutheran.myschoolapp.com" target="_blank" rel="noopener noreferrer" className="text-indigo-400 underline font-medium">westlakelutheran.myschoolapp.com</a> and sign in.
-                </li>
-                <li>
-                  Press <kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-slate-300 font-mono text-[10px]">F12</kbd> (or <kbd className="bg-slate-800 px-1.5 py-0.5 rounded text-slate-300 font-mono text-[10px]">Cmd+Opt+I</kbd>) &gt; Application / Storage &gt; Cookies.
-                </li>
-                <li>
-                  Copy the cookie string or the <code className="bg-slate-800 px-1 py-0.5 rounded text-amber-300 font-mono">t</code> token value and paste it below.
-                </li>
-              </ol>
+              <p className="text-slate-400 text-[11px] leading-relaxed">
+                Chrome on this Mac opens only when someone clicks Log in with Blackbaud.
+                Each person gets their own dashboard session. Eric and Stefani see Ben and Jade;
+                Ben and Jade only see their own grades and tasks.
+              </p>
+              {macWebview.canStart && !macWebview.running && (
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  Use Log in with Blackbaud on the landing page to start sign-in.
+                </p>
+              )}
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Sync Grades refreshes this signed-in account. Log in with Blackbaud is the only
+                control that starts Chromium. Phones on Wi‑Fi use{' '}
+                <code className="bg-slate-800 px-1 py-0.5 rounded font-mono">http://&lt;this-mac&gt;:5173</code>.
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-3 text-xs">
+              <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                <Bookmark className="w-3.5 h-3.5 text-indigo-400" />
+                Send grades from the portal
+              </span>
+              <p className="text-slate-400 text-[11px] leading-relaxed">
+                Sign in at the Westlake portal, then click this bookmark. It keeps that tab
+                open, pulls grades there, and opens the dashboard in a new tab.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <a
+                  href={typeof window !== 'undefined' ? buildBlackbaudBookmarklet(window.location.origin) : '#'}
+                  onClick={(e) => {
+                    e.preventDefault();
+                  }}
+                  draggable
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600/20 border border-indigo-500/40 text-indigo-200 font-semibold cursor-grab active:cursor-grabbing"
+                >
+                  <Bookmark className="w-3.5 h-3.5" />
+                  Send t to dashboard
+                </a>
+                <button
+                  type="button"
+                  onClick={copyBlackbaudBookmarklet}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold cursor-pointer"
+                >
+                  {bookmarkletCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {bookmarkletCopied ? 'Copied' : 'Copy bookmarklet'}
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Drag the purple chip onto your bookmarks bar. Click it on the signed-in portal — it will not leave that tab.
+              </p>
             </div>
 
             {/* Connect Form */}
             <form onSubmit={handleConnectBlackbaud} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold text-slate-200 mb-1">
-                  Session Cookie or Token <span className="text-rose-400">*</span>
+                  Cookie t value from Web Inspector
                 </label>
+                <p className="text-[11px] text-slate-500 mb-1.5 leading-relaxed">
+                  Safari: Storage → Cookies → westlakelutheran.myschoolapp.com → cookie
+                  {' '}<code className="bg-slate-800 px-1 py-0.5 rounded text-amber-300 font-mono">t</code>.
+                  It is HttpOnly (scripts cannot read it). Copy the Value column and paste it here.
+                </p>
                 <textarea
                   required
                   rows={3}
                   value={blackbaudCookieInput}
                   onChange={(e) => setBlackbaudCookieInput(e.target.value)}
-                  placeholder="Paste cookie string (e.g., t=...; ASP.NET_SessionId=... or just token value)"
+                  placeholder="Paste the t cookie value (GUID)"
                   className="w-full px-3 py-2 bg-slate-950 rounded-xl border border-slate-700 text-slate-100 placeholder-slate-500 font-mono text-[11px] focus:outline-none focus:border-indigo-500 resize-none"
                 />
               </div>

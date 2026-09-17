@@ -3,16 +3,31 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
+import { spawn, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { google } from 'googleapis';
 import { parseEmailPayloads } from './services/parserService.js';
 import { getDashboardData, saveDashboardData } from './services/storageService.js';
 import {
-  getBlackbaudSession,
-  saveBlackbaudSession,
   verifyAndDiscoverProfiles,
-  syncBlackbaudData
+  syncBlackbaudData,
+  studentsFromContext
 } from './services/blackbaudService.js';
+import { runWithWlaSession } from './services/wlaContext.js';
+import {
+  SESSION_COOKIE,
+  parseCookies,
+  sessionCookieHeader,
+  identifyUser,
+  publicIdentity,
+  stageLogin,
+  takeClaim,
+  createSession,
+  getSession,
+  deleteSession,
+  filterPayloadForIdentity,
+  mergeStudentWrite
+} from './services/sessionStore.js';
 
 dotenv.config();
 
@@ -22,13 +37,94 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// CORS configuration for local React Vite development
+// CORS: local dashboard plus myschoolapp so the bookmarklet can POST while
+// the Westlake portal tab stays open.
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://127.0.0.1:5173', `http://localhost:${PORT}`],
+  origin: true,
   credentials: true
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
+
+app.use((req, res, next) => {
+  const cookies = parseCookies(req);
+  const session = getSession(cookies[SESSION_COOKIE]);
+  req.wla = session;
+  runWithWlaSession(session, () => next());
+});
+
+function killMacWebview() {
+  if (macWebviewProc) {
+    try { macWebviewProc.kill('SIGTERM'); } catch {}
+    macWebviewProc = null;
+  }
+  try {
+    execSync('pkill -f mac_portal_agent.py', { stdio: 'ignore' });
+  } catch {}
+}
+
+function isPythonAgent(req) {
+  return /python-requests|python-urllib/i.test(req.headers['user-agent'] || '');
+}
+
+async function attachIdentifiedSession(discovered, req, res) {
+  const identity = identifyUser(discovered);
+  const record = { ...discovered, ...identity };
+  const { claimToken } = stageLogin(record);
+  const syncResult = await runWithWlaSession(record, () => syncBlackbaudData());
+  if (!isPythonAgent(req)) {
+    const id = createSession(record);
+    res.setHeader('Set-Cookie', sessionCookieHeader(id));
+  }
+  return { record, claimToken, syncResult, identity: publicIdentity(record) };
+}
+
+async function mergeSyncIntoStore(result, identity) {
+  const stored = await getDashboardData();
+  const grades = { ...(stored.grades || {}) };
+  const allowedKeys = new Set(identity?.allowedStudentKeys || Object.keys(result.grades || {}));
+  for (const [key, rows] of Object.entries(result.grades || {})) {
+    if (identity?.role !== 'student' || allowedKeys.has(key)) {
+      grades[key] = rows;
+    }
+  }
+  const keepMissing = identity?.role === 'student'
+    ? (stored.missingAssignments || []).filter((m) => !allowedKeys.has(m.student))
+    : [];
+  const newMissing = (result.missingAssignments || []).filter((m) => (
+    identity?.role !== 'student' || allowedKeys.has(m.student)
+  ));
+  const existing = stored.tasks || [];
+  const seenIds = new Set(existing.map((t) => t.id));
+  const newItems = (result.assignments || []).filter((a) => !seenIds.has(a.id));
+  const mergedTasks = newItems.length > 0 ? [...newItems, ...existing] : existing;
+  await saveDashboardData({
+    grades,
+    missingAssignments: [...keepMissing, ...newMissing],
+    tasks: mergedTasks,
+    lastSyncedAt: result.lastSyncedAt || new Date().toISOString()
+  });
+  return filterPayloadForIdentity({
+    ...stored,
+    grades,
+    missingAssignments: [...keepMissing, ...newMissing],
+    tasks: mergedTasks,
+    lastSyncedAt: result.lastSyncedAt
+  }, identity);
+}
+const SCHOOL_APP_ROOT = path.resolve(__dirname, '..', '..');
+const MAC_AGENT = path.join(SCHOOL_APP_ROOT, 'mac_portal_agent.py');
+const MAC_WEBVIEW_LOCAL = `http://127.0.0.1:${process.env.MAC_WEBVIEW_PORT || '5055'}`;
+let macWebviewProc = null;
+
+async function macWebviewHealth(url = MAC_WEBVIEW_LOCAL) {
+  try {
+    const res = await fetch(`${url.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(800) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
 
 // Google OAuth2 setup
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
@@ -262,19 +358,83 @@ app.post('/api/auth/disconnect', async (req, res) => {
 // ----------------------------------------------------
 
 /**
+ * Route: GET /api/blackbaud/mac-webview
+ * Status of the Mac Chromium login window. Does not start Chrome.
+ */
+app.get('/api/blackbaud/mac-webview', async (req, res) => {
+  const port = Number(process.env.MAC_WEBVIEW_PORT || 5055);
+  const up = await macWebviewHealth();
+  const payload = {
+    port,
+    running: up,
+    canStart: !process.env.VERCEL,
+    posted: false,
+    tokenValid: false,
+    homeReady: false,
+    claimToken: null,
+    students: [],
+    gradeCount: 0
+  };
+  if (up) {
+    try {
+      const agentRes = await fetch(`http://127.0.0.1:${port}/status`, {
+        signal: AbortSignal.timeout(1500)
+      });
+      if (agentRes.ok) {
+        const agent = await agentRes.json();
+        payload.posted = Boolean(agent.posted);
+        payload.tokenValid = Boolean(agent.tokenValid);
+        payload.homeReady = Boolean(agent.homeReady);
+        payload.claimToken = agent.claimToken || null;
+        payload.url = agent.url || '';
+        payload.students = agent.students || [];
+        payload.gradeCount = Number(agent.gradeCount || 0);
+        payload.error = agent.error || null;
+      }
+    } catch {}
+  }
+  res.json(payload);
+});
+
+app.post('/api/blackbaud/mac-webview/start', async (req, res) => {
+  if (process.env.VERCEL) {
+    return res.status(400).json({
+      error: 'Mac webview only runs with the local dashboard on this Mac.'
+    });
+  }
+  if (!fs.existsSync(MAC_AGENT)) {
+    return res.status(500).json({ error: `Missing ${MAC_AGENT}` });
+  }
+  killMacWebview();
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  try {
+    const profile = path.join(__dirname, `.playwright-login-${Date.now()}`);
+    macWebviewProc = spawn('python3', [MAC_AGENT], {
+      cwd: SCHOOL_APP_ROOT,
+      env: {
+        ...process.env,
+        DASHBOARD_API: 'http://127.0.0.1:5001',
+        MAC_WEBVIEW_PROFILE: profile
+      },
+      stdio: 'inherit'
+    });
+    macWebviewProc.on('exit', (code) => {
+      console.warn('[Mac webview] exited', code);
+      macWebviewProc = null;
+    });
+    res.json({ ok: true, running: false, starting: true, port: Number(process.env.MAC_WEBVIEW_PORT || 5055) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * Route: GET /api/blackbaud/status
  * Returns connection status and discovered student IDs
  */
 app.get('/api/blackbaud/status', async (req, res) => {
   try {
-    const session = await getBlackbaudSession();
-    const isConnected = Boolean(session && session.cookie);
-    res.json({
-      connected: isConnected,
-      subdomain: session?.subdomain || 'westlakelutheran',
-      students: session?.students || [],
-      verifiedAt: session?.verifiedAt || null
-    });
+    res.json(publicIdentity(req.wla));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -286,35 +446,93 @@ app.get('/api/blackbaud/status', async (req, res) => {
  */
 app.post('/api/blackbaud/connect', async (req, res) => {
   try {
-    const { cookie, benStudentId, jadeStudentId } = req.body;
+    const { cookie, benStudentId, jadeStudentId, homeUrl } = req.body;
     if (!cookie) {
       return res.status(400).json({ error: 'Session cookie or token is required' });
     }
 
     try {
-      const discovered = await verifyAndDiscoverProfiles(cookie);
+      const discovered = await verifyAndDiscoverProfiles(cookie, { homeUrl });
       if (benStudentId) discovered.benStudentId = benStudentId;
       if (jadeStudentId) discovered.jadeStudentId = jadeStudentId;
-      await saveBlackbaudSession(discovered);
-      res.json({ success: true, message: 'Connected to Blackbaud Portal successfully', data: discovered });
+      const attached = await attachIdentifiedSession(discovered, req, res);
+      if (attached.syncResult?.connected) {
+        await mergeSyncIntoStore(attached.syncResult, attached.record);
+      }
+      res.json({
+        success: true,
+        message: 'Connected to Blackbaud Portal successfully',
+        claimToken: attached.claimToken,
+        data: attached.identity,
+        grades: attached.syncResult?.grades || {},
+        students: attached.identity.students
+      });
     } catch (verifyErr) {
-      // Fallback: save session and manual student IDs
-      const sessionObj = {
-        cookie: cookie.trim(),
-        subdomain: 'westlakelutheran',
-        benStudentId: benStudentId || null,
-        jadeStudentId: jadeStudentId || null,
-        students: [
-          { student: 'Ben', id: benStudentId },
-          { student: 'Jade', id: jadeStudentId }
-        ].filter(s => Boolean(s.id)),
-        verifiedAt: new Date().toISOString()
-      };
-      await saveBlackbaudSession(sessionObj);
-      res.json({ success: true, message: 'Saved Blackbaud session', data: sessionObj, note: verifyErr.message });
+      return res.status(401).json({
+        success: false,
+        error: verifyErr.message || 'Blackbaud session token t is not valid.'
+      });
     }
   } catch (err) {
     console.error('Blackbaud connection failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/blackbaud/claim', async (req, res) => {
+  try {
+    const record = takeClaim(req.body?.claimToken);
+    if (!record?.cookie) {
+      return res.status(401).json({ success: false, error: 'Sign-in expired. Use Log in with Blackbaud again.' });
+    }
+    const id = createSession(record);
+    res.setHeader('Set-Cookie', sessionCookieHeader(id));
+    res.json({ success: true, data: publicIdentity(record) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Route: POST /api/blackbaud/ingest
+ * Bookmarklet posts grades fetched in the still-open myschoolapp tab.
+ */
+app.post('/api/blackbaud/ingest', async (req, res) => {
+  try {
+    const { cookie, context, students: postedStudents, grades } = req.body || {};
+    const mappedGrades = {
+      Ben: Array.isArray(grades?.Ben) ? grades.Ben : [],
+      Jade: Array.isArray(grades?.Jade) ? grades.Jade : []
+    };
+    Object.entries(grades || {}).forEach(([key, rows]) => {
+      if (key === 'Ben' || key === 'Jade') return;
+      if (Array.isArray(rows) && rows.length) mappedGrades[key] = rows;
+    });
+
+    const hasRows = Object.values(mappedGrades).some((rows) => Array.isArray(rows) && rows.length > 0);
+    if (!hasRows) {
+      return res.status(400).json({
+        success: false,
+        error: 'No course grades were found on this portal session.'
+      });
+    }
+
+    const students = Array.isArray(postedStudents) && postedStudents.length
+      ? postedStudents
+      : studentsFromContext(context || {});
+
+    await saveDashboardData({
+      grades: mappedGrades,
+      lastSyncedAt: new Date().toISOString()
+    });
+
+    res.json({
+      success: true,
+      message: 'Ingested portal grades',
+      data: { students, grades: mappedGrades }
+    });
+  } catch (err) {
+    console.error('Blackbaud ingest failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -324,7 +542,9 @@ app.post('/api/blackbaud/connect', async (req, res) => {
  */
 app.post('/api/blackbaud/disconnect', async (req, res) => {
   try {
-    await saveBlackbaudSession(null);
+    const cookies = parseCookies(req);
+    deleteSession(cookies[SESSION_COOKIE]);
+    res.setHeader('Set-Cookie', sessionCookieHeader('', { clear: true }));
     res.json({ success: true, message: 'Disconnected Blackbaud Portal' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -338,24 +558,15 @@ app.post('/api/blackbaud/disconnect', async (req, res) => {
 app.get('/api/blackbaud/sync', async (req, res) => {
   try {
     const result = await syncBlackbaudData();
-    
-    // Save grades and missing assignments, and merge new portal assignments into dashboard tasks
-    const stored = await getDashboardData();
-    const existing = stored.tasks || [];
-    const seenIds = new Set(existing.map(t => t.id));
-    
-    const newItems = (result.assignments || []).filter(a => !seenIds.has(a.id));
-    const mergedTasks = newItems.length > 0 ? [...newItems, ...existing] : existing;
-
-    await saveDashboardData({
-      tasks: mergedTasks,
-      grades: result.grades || stored.grades,
-      missingAssignments: result.missingAssignments || stored.missingAssignments
-    });
-
+    if (!result.connected) {
+      return res.json(result);
+    }
+    const identity = req.wla || result;
+    const filtered = await mergeSyncIntoStore(result, identity);
     res.json({
       ...result,
-      tasks: mergedTasks
+      ...filtered,
+      connected: result.connected
     });
   } catch (err) {
     console.error('Blackbaud sync error:', err);
@@ -374,7 +585,7 @@ app.get('/api/blackbaud/sync', async (req, res) => {
 app.get('/api/dashboard/state', async (req, res) => {
   try {
     const data = await getDashboardData();
-    res.json(data);
+    res.json(filterPayloadForIdentity(data, req.wla));
   } catch (err) {
     console.error('Failed to load dashboard state:', err);
     res.status(500).json({ error: 'Failed to load state' });
@@ -389,6 +600,13 @@ app.post('/api/dashboard/state', async (req, res) => {
   try {
     const { tasks, events, deletedEventKeys } = req.body;
     const existing = await getDashboardData();
+    const identity = req.wla;
+
+    if (identity?.role === 'student') {
+      const merged = mergeStudentWrite(existing, { tasks, events, deletedEventKeys }, identity);
+      const updated = await saveDashboardData(merged);
+      return res.json({ success: true, data: filterPayloadForIdentity(updated, identity) });
+    }
 
     let updatedTasks = existing.tasks || [];
     if (Array.isArray(tasks) && tasks.length > 0) {
@@ -488,7 +706,7 @@ app.get('/api/dashboard/sync', async (req, res) => {
       if (messages.length === 0) {
         const nowIso = new Date().toISOString();
         await saveDashboardData({ lastSyncedAt: nowIso });
-        return res.json({
+        return res.json(filterPayloadForIdentity({
           success: true,
           source: 'gmail_api',
           isLiveGmail: true,
@@ -499,7 +717,7 @@ app.get('/api/dashboard/sync', async (req, res) => {
           events: storedData.events || [],
           emails: [],
           stats: { totalProcessed: 0, matchedEmails: 0, tasksFound: (storedData.tasks || []).length, eventsFound: (storedData.events || []).length }
-        });
+        }, req.wla));
       }
 
       // Fetch message contents with safe pause to stay well within per-minute quota
@@ -632,7 +850,7 @@ app.get('/api/dashboard/sync', async (req, res) => {
         lastSyncStats: parsed.stats
       });
 
-      return res.json({
+      return res.json(filterPayloadForIdentity({
         success: true,
         source: 'gmail_api',
         isLiveGmail: true,
@@ -643,7 +861,7 @@ app.get('/api/dashboard/sync', async (req, res) => {
         events: updatedStorage.events,
         emails: parsed.emails,
         stats: parsed.stats
-      });
+      }, req.wla));
     } catch (gmailErr) {
       console.error('[Gmail Sync] Gmail API fetch failed:', gmailErr.message);
       return res.status(500).json({
@@ -720,8 +938,8 @@ app.get('/', (req, res) => {
 });
 
 if (!process.env.VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`School Dashboard backend server running on http://localhost:${PORT}`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`School Dashboard backend server running on http://0.0.0.0:${PORT}`);
   });
 }
 

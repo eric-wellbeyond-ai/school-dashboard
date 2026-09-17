@@ -18,6 +18,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { decodeHtmlEntities } from './parserService.js';
+import { currentWlaSession } from './wlaContext.js';
+import { identifyUser, BEN_ID, JADE_ID } from './sessionStore.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,56 +41,8 @@ function getKvConfig() {
  * Retrieve saved Blackbaud session info (cookie, student IDs, last verified)
  */
 export async function getBlackbaudSession() {
-  if (cachedSession) {
-    return cachedSession;
-  }
-
-  // 1. Check environment variable
-  if (process.env.BLACKBAUD_COOKIE) {
-    cachedSession = {
-      cookie: process.env.BLACKBAUD_COOKIE.trim(),
-      subdomain: SUBDOMAIN,
-      source: 'env'
-    };
-    return cachedSession;
-  }
-
-  // 2. Check Upstash Redis / Vercel KV
-  const { url: kvUrl, token: kvToken } = getKvConfig();
-  if (kvUrl && kvToken) {
-    try {
-      const res = await fetch(`${kvUrl}/get/blackbaud_session`, {
-        headers: { Authorization: `Bearer ${kvToken}` }
-      });
-      if (res.ok) {
-        const json = await res.json();
-        if (json && json.result) {
-          let parsed = json.result;
-          if (typeof parsed === 'string') {
-            try { parsed = JSON.parse(parsed); } catch (e) {}
-          }
-          if (typeof parsed === 'string') {
-            try { parsed = JSON.parse(parsed); } catch (e) {}
-          }
-          if (parsed && typeof parsed === 'object') {
-            cachedSession = parsed;
-            return cachedSession;
-          }
-        }
-      }
-    } catch (kvErr) {
-      console.warn('[Blackbaud] Upstash/KV read failed:', kvErr.message);
-    }
-  }
-
-  // 3. Local filesystem
-  if (fs.existsSync(TOKENS_PATH)) {
-    try {
-      cachedSession = JSON.parse(fs.readFileSync(TOKENS_PATH, 'utf-8'));
-      return cachedSession;
-    } catch (e) {}
-  }
-
+  const live = currentWlaSession();
+  if (live?.cookie) return live;
   return null;
 }
 
@@ -153,7 +107,7 @@ export function formatCookieString(rawCookie) {
  * Make authenticated request to Blackbaud myschoolapp API
  */
 async function blackbaudRequest(endpoint, options = {}) {
-  const session = await getBlackbaudSession();
+  const session = options.session || await getBlackbaudSession();
   if (!session || !session.cookie) {
     throw new Error('No active Blackbaud session. Please connect your Westlake account.');
   }
@@ -196,18 +150,115 @@ async function blackbaudRequest(endpoint, options = {}) {
 }
 
 /**
- * Verify session and discover student profiles (Ben and Jade)
+ * Map a Blackbaud user/child record onto Ben / Jade / first name.
  */
-export async function verifyAndDiscoverProfiles(rawCookie) {
+export function labelStudent(item = {}) {
+  const id = item.id || item.Id || item.UserId;
+  const first = String(item.FirstName || item.first || '').trim();
+  const nick = String(item.NickName || item.nick || '').trim();
+  if (id === 5662183 || /ben/i.test(first) || /ben/i.test(nick)) return 'Ben';
+  if (id === 5819113 || /jade/i.test(first) || /jade/i.test(nick)) return 'Jade';
+  return first || nick || 'Student';
+}
+
+/**
+ * Parent sessions expose Children[]; student sessions are UserInfo only.
+ */
+export function studentsFromContext(data = {}) {
+  const studentsMap = new Map();
+  const childrenList = data.Children || data.Students || [];
+  if (Array.isArray(childrenList)) {
+    childrenList.forEach((item) => {
+      const id = item.Id || item.UserId;
+      if (!id || id < 1 || studentsMap.has(id)) return;
+      const first = (item.FirstName || '').trim();
+      const nick = (item.NickName || '').trim();
+      const last = (item.LastName || '').trim();
+      const student = labelStudent(item);
+      studentsMap.set(id, {
+        id,
+        name: `${first || nick} ${last}`.trim(),
+        student,
+        gradYear: item.GradYear || null,
+        schoolLevel: student === 'Ben' ? 'High School' : student === 'Jade' ? 'Middle School' : 'Academy'
+      });
+    });
+  }
+
+  const ui = data.UserInfo || {};
+  const userId = ui.UserId || ui.Id;
+  if (studentsMap.size === 0 && userId && userId > 0) {
+    const student = labelStudent(ui);
+    studentsMap.set(userId, {
+      id: userId,
+      name: `${ui.FirstName || ''} ${ui.LastName || ''}`.trim(),
+      student,
+      schoolLevel: student === 'Ben' ? 'High School' : student === 'Jade' ? 'Middle School' : 'Academy'
+    });
+  }
+
+  return Array.from(studentsMap.values());
+}
+
+export function accountFromContext(data = {}, status = {}, homeUrl = '') {
+  const ui = data.UserInfo || {};
+  const children = Array.isArray(data.Children) ? data.Children : [];
+  const personas = Array.isArray(data.Personas) ? data.Personas : [];
+  const url = String(homeUrl || '').toLowerCase();
+  const personaNames = personas.map((p) => String(p.Name || p.description || p.Id || '')).join(' ');
+
+  let role = 'parent';
+  if (url.includes('/app/student')) role = 'student';
+  else if (url.includes('/app/parent')) role = 'parent';
+  else if (children.length > 0) role = 'parent';
+  else if (/student/i.test(personaNames) && !/parent/i.test(personaNames)) role = 'student';
+  else if (children.length === 0 && (ui.UserId || status.UserId)) role = 'student';
+
+  const personaId = role === 'student' ? 2 : 1;
+  const accountName = `${ui.FirstName || ''} ${ui.LastName || ''}`.trim()
+    || status.FirstName
+    || null;
+
+  return {
+    role,
+    personaId,
+    userId: ui.UserId || status.UserId || null,
+    accountName,
+    parentName: role === 'parent' ? accountName : null
+  };
+}
+
+/**
+ * Verify session and discover parent or student profiles
+ */
+export async function verifyAndDiscoverProfiles(rawCookie, options = {}) {
   const cleanCookie = formatCookieString(rawCookie);
-  
-  // Call /api/webapp/context to retrieve user info and linked children
+  const homeUrl = options.homeUrl || '';
+
+  const statusRes = await fetch(`${BASE_URL}/api/webapp/userstatus`, {
+    headers: {
+      'Accept': 'application/json',
+      'Referer': `${BASE_URL}/`,
+      'X-Requested-With': 'XMLHttpRequest',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+      'Cookie': cleanCookie
+    }
+  });
+  if (!statusRes.ok || (statusRes.headers.get('content-type') || '').includes('text/html')) {
+    throw new Error('Invalid Blackbaud session cookie. Please ensure you are logged into westlakelutheran.myschoolapp.com.');
+  }
+  const status = await statusRes.json();
+  if (status.TokenValid === false || !(status.UserId > 0)) {
+    throw new Error('Blackbaud session token t is not valid. Stay on the signed-in portal tab and use the bookmarklet again.');
+  }
+
   const url = `${BASE_URL}/api/webapp/context`;
   const res = await fetch(url, {
     headers: {
       'Accept': 'application/json',
       'Referer': `${BASE_URL}/`,
       'X-Requested-With': 'XMLHttpRequest',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
       'Cookie': cleanCookie
     }
   });
@@ -217,53 +268,32 @@ export async function verifyAndDiscoverProfiles(rawCookie) {
   }
 
   const data = await res.json();
-  const studentsMap = new Map();
-
-  // Parse children attached to parent account
-  const childrenList = data.Children || data.Students || [];
-  if (Array.isArray(childrenList)) {
-    childrenList.forEach(item => {
-      const id = item.Id || item.UserId;
-      if (!id || studentsMap.has(id)) return;
-
-      const first = (item.FirstName || '').trim();
-      const nick = (item.NickName || '').trim();
-      const last = (item.LastName || '').trim();
-      const isBen = first.toLowerCase().includes('ben') || nick.toLowerCase().includes('ben') || id === 5662183;
-      const isJade = first.toLowerCase().includes('jade') || id === 5819113;
-
-      studentsMap.set(id, {
-        id,
-        name: `${first || nick} ${last}`.trim(),
-        student: isBen ? 'Ben' : isJade ? 'Jade' : (first || nick || 'Student'),
-        gradYear: item.GradYear || null,
-        schoolLevel: isBen ? 'High School' : isJade ? 'Middle School' : 'Academy'
-      });
-    });
+  const students = studentsFromContext(data);
+  if (!students.length) {
+    throw new Error('Logged in, but no student or parent profile was found on this session.');
   }
 
-  // Fallback if specific children array was omitted in response
-  if (studentsMap.size === 0) {
-    studentsMap.set(5662183, { id: 5662183, student: 'Ben', name: 'Ben Smith', schoolLevel: 'High School' });
-    studentsMap.set(5819113, { id: 5819113, student: 'Jade', name: 'Jade Smith', schoolLevel: 'Middle School' });
-  }
-
-  const students = Array.from(studentsMap.values());
+  const account = accountFromContext(data, status, homeUrl);
   const benObj = students.find(s => s.student === 'Ben');
   const jadeObj = students.find(s => s.student === 'Jade');
 
   const sessionObj = {
     cookie: cleanCookie,
     subdomain: SUBDOMAIN,
-    parentUserId: data.UserInfo?.UserId || null,
-    parentName: data.UserInfo ? `${data.UserInfo.FirstName} ${data.UserInfo.LastName}` : null,
-    benStudentId: benObj?.id || 5662183,
-    jadeStudentId: jadeObj?.id || 5819113,
+    source: 'cookie',
+    role: account.role,
+    personaId: account.personaId,
+    userId: account.userId,
+    accountName: account.accountName,
+    parentUserId: account.role === 'parent' ? account.userId : null,
+    parentName: account.parentName,
+    homeUrl: homeUrl || null,
+    benStudentId: benObj?.id || null,
+    jadeStudentId: jadeObj?.id || null,
     students,
     verifiedAt: new Date().toISOString()
   };
 
-  await saveBlackbaudSession(sessionObj);
   return sessionObj;
 }
 
@@ -287,47 +317,48 @@ function toLetterGrade(num) {
 /**
  * Get current academic courses and grades for a student
  */
-export async function getStudentClassesAndGrades(studentId) {
+export async function getStudentClassesAndGrades(studentId, personaId = 1) {
+  const schoolYear = '2026 - 2027';
+  const personas = personaId === 2 ? [2, 1] : [1, 2];
+
   try {
-    const schoolYear = '2026 - 2027';
+    for (const persona of personas) {
+      const termEndpoint = `/api/DataDirect/StudentGroupTermList/?studentUserId=${studentId}&schoolYearLabel=${encodeURIComponent(schoolYear)}&personaId=${persona}`;
+      const terms = await blackbaudRequest(termEndpoint);
+      const activeTerm = Array.isArray(terms) ? (terms.find(t => t.CurrentInd === 1 && t.OfferingType === 1) || terms[0]) : null;
+      const durationId = activeTerm ? activeTerm.DurationId : 0;
 
-    // 1. Get student terms to find active duration ID
-    const termEndpoint = `/api/DataDirect/StudentGroupTermList/?studentUserId=${studentId}&schoolYearLabel=${encodeURIComponent(schoolYear)}&personaId=1`;
-    const terms = await blackbaudRequest(termEndpoint);
-    const activeTerm = Array.isArray(terms) ? (terms.find(t => t.CurrentInd === 1 && t.OfferingType === 1) || terms[0]) : null;
-    const durationId = activeTerm ? activeTerm.DurationId : 0;
+      const classEndpoint = `/api/datadirect/ParentStudentUserClassesGet?userId=${studentId}&schoolYearLabel=${encodeURIComponent(schoolYear)}&memberLevel=3&persona=${persona}&durationList=${durationId}`;
+      const classes = await blackbaudRequest(classEndpoint);
+      if (!Array.isArray(classes) || classes.length === 0) continue;
 
-    // 2. Fetch classes with grades
-    const classEndpoint = `/api/datadirect/ParentStudentUserClassesGet?userId=${studentId}&schoolYearLabel=${encodeURIComponent(schoolYear)}&memberLevel=3&persona=1&durationList=${durationId}`;
-    const classes = await blackbaudRequest(classEndpoint);
-    
-    if (!Array.isArray(classes)) return [];
+      return classes.map((c) => {
+        const title = decodeHtmlEntities(c.sectionidentifier || c.course_title || c.GroupName || 'Course');
+        const teacher = decodeHtmlEntities(c.groupownername || c.Owner || '');
+        const teacherEmail = c.groupowneremail || null;
+        const rawGrade = c.cumgrade;
+        const numGrade = (rawGrade !== null && rawGrade !== undefined && rawGrade !== '') ? parseFloat(rawGrade) : null;
+        const letterGrade = toLetterGrade(numGrade);
 
-    return classes.map(c => {
-      const title = decodeHtmlEntities(c.sectionidentifier || c.course_title || c.GroupName || 'Course');
-      const teacher = decodeHtmlEntities(c.groupownername || c.Owner || '');
-      const teacherEmail = c.groupowneremail || null;
-      const rawGrade = c.cumgrade;
-      const numGrade = (rawGrade !== null && rawGrade !== undefined && rawGrade !== '') ? parseFloat(rawGrade) : null;
-      const letterGrade = toLetterGrade(numGrade);
-
-      return {
-        id: c.sectionid || `cls_${Math.random()}`,
-        course: title,
-        teacher: teacher,
-        teacherEmail: teacherEmail,
-        letterGrade: letterGrade,
-        percentage: (numGrade !== null && !isNaN(numGrade)) ? `${Math.round(numGrade)}%` : (c.CumulativeDisplay || null),
-        numericGrade: numGrade,
-        room: c.room || null,
-        schoolLevel: c.schoollevel || null,
-        currentTerm: c.currentterm || activeTerm?.DurationDescription || 'Current Term',
-        sectionId: c.sectionid,
-        markingPeriodId: c.markingperiodid,
-        overdueCount: c.OverdueCount || 0,
-        upcomingCount: c.UpcomingCount || 0
-      };
-    });
+        return {
+          id: c.sectionid || `cls_${Math.random()}`,
+          course: title,
+          teacher: teacher,
+          teacherEmail: teacherEmail,
+          letterGrade: letterGrade,
+          percentage: (numGrade !== null && !isNaN(numGrade)) ? `${Math.round(numGrade)}%` : (c.CumulativeDisplay || null),
+          numericGrade: numGrade,
+          room: c.room || null,
+          schoolLevel: c.schoollevel || null,
+          currentTerm: c.currentterm || activeTerm?.DurationDescription || 'Current Term',
+          sectionId: c.sectionid,
+          markingPeriodId: c.markingperiodid,
+          overdueCount: c.OverdueCount || 0,
+          upcomingCount: c.UpcomingCount || 0
+        };
+      });
+    }
+    return [];
   } catch (err) {
     console.warn(`[Blackbaud] Failed to fetch grades for student ${studentId}:`, err.message);
     return [];
@@ -386,47 +417,74 @@ export async function getStudentMissingAssignments(studentId, studentName, class
  */
 export async function syncBlackbaudData() {
   let session = await getBlackbaudSession();
-  if (!session || !session.cookie) {
+  if (!session || (!session.cookie && session.source !== 'bookmarklet')) {
     return {
       connected: false,
       message: 'Blackbaud portal is not connected. Enter your session cookie to sync grades and assignments.',
       students: [],
-      grades: { Ben: [], Jade: [] },
+      grades: null,
       assignments: [],
       missingAssignments: []
     };
   }
 
-  // Ensure students are discovered if session lacked them
+  if (!session.cookie && session.source === 'bookmarklet') {
+    return {
+      connected: true,
+      message: 'Re-run the bookmarklet from a signed-in Westlake tab to refresh grades.',
+      students: session.students || [],
+      grades: null,
+      assignments: [],
+      missingAssignments: []
+    };
+  }
+
   if (!session.students || session.students.length === 0) {
     try {
       session = await verifyAndDiscoverProfiles(session.cookie);
     } catch (e) {
-      console.warn('[Blackbaud] Auto-discovery during sync failed, using defaults:', e.message);
-      session.students = [
-        { student: 'Ben', id: 5662183, name: 'Ben Smith', schoolLevel: 'High School' },
-        { student: 'Jade', id: 5819113, name: 'Jade Smith', schoolLevel: 'Middle School' }
-      ];
-      await saveBlackbaudSession(session);
+      console.warn('[Blackbaud] Auto-discovery during sync failed:', e.message);
+      return {
+        connected: false,
+        message: e.message,
+        students: [],
+        grades: null,
+        assignments: [],
+        missingAssignments: []
+      };
     }
   }
+
+  const identity = session.userKey ? session : identifyUser(session);
+  let students = session.students || [];
+  if (identity.userKey === 'eric' || identity.userKey === 'stefani') {
+    const byId = new Map(students.map((s) => [s.id, s]));
+    if (!byId.has(BEN_ID)) students = [...students, { id: BEN_ID, student: 'Ben', name: 'Ben' }];
+    if (!byId.has(JADE_ID)) students = [...students, { id: JADE_ID, student: 'Jade', name: 'Jade' }];
+  }
+  const allowedIds = new Set(identity.allowedStudentIds || students.map((s) => s.id));
+  students = students.filter((s) => allowedIds.has(s.id));
 
   const results = {
     connected: true,
     lastSyncedAt: new Date().toISOString(),
-    grades: { Ben: [], Jade: [] },
+    students,
+    role: identity.role,
+    userKey: identity.userKey,
+    displayName: identity.displayName,
+    accountName: identity.accountName || session.accountName,
+    allowedStudentKeys: identity.allowedStudentKeys,
+    grades: {},
     assignments: [],
     missingAssignments: []
   };
 
-  const students = session.students || [
-    { student: 'Ben', id: session.benStudentId || 5662183 },
-    { student: 'Jade', id: session.jadeStudentId || 5819113 }
-  ];
-
   for (const s of students) {
     const stName = s.student || 'Ben';
-    const classes = await getStudentClassesAndGrades(s.id);
+    const classes = await getStudentClassesAndGrades(
+      s.id,
+      session.personaId || (identity.role === 'student' ? 2 : 1)
+    );
     results.grades[stName] = classes;
 
     // Discover missing assignments for this student
@@ -456,6 +514,15 @@ export async function syncBlackbaudData() {
         });
       });
     }
+  }
+
+  const gradeCount = Object.values(results.grades).reduce(
+    (n, rows) => n + (Array.isArray(rows) ? rows.length : 0),
+    0
+  );
+  if (gradeCount === 0) {
+    results.grades = null;
+    results.message = 'Could not read course grades with this session.';
   }
 
   return results;

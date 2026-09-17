@@ -21,24 +21,21 @@ class ErrorBoundary extends React.Component {
     if (this.state.hasError) {
       return (
         <div className="min-h-screen bg-slate-900 text-slate-100 flex items-center justify-center p-6">
-          <div className="max-w-md w-full bg-slate-800/90 border border-red-500/40 rounded-2xl p-6 shadow-2xl space-y-4">
-            <div className="w-12 h-12 rounded-xl bg-red-500/20 border border-red-500/30 flex items-center justify-center text-red-400 font-bold text-xl">
-              !
-            </div>
+          <div className="max-w-md w-full bg-slate-950 border border-slate-800 p-6 space-y-4 wla-rule">
             <div>
-              <h2 className="text-lg font-bold text-white">Something went wrong</h2>
-              <p className="text-xs text-slate-400 mt-1">
-                The application encountered an unexpected display error.
+              <h2 className="font-serif text-lg font-semibold text-slate-100">Unable to load the folder</h2>
+              <p className="text-[15px] text-slate-400 mt-1">
+                Reload this page. If it happens again, sign in again from the landing page.
               </p>
             </div>
-            <div className="p-3 bg-slate-950/80 rounded-lg text-xs font-mono text-red-300 overflow-x-auto border border-slate-800">
+            <div className="p-3 bg-slate-900 rounded-lg text-[13px] font-mono text-slate-400 overflow-x-auto border border-slate-800">
               {this.state.error?.message || 'Unknown error'}
             </div>
             <button
               onClick={() => window.location.reload()}
-              className="w-full py-2 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors cursor-pointer"
+              className="w-full min-h-11 py-2 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[15px] font-semibold cursor-pointer"
             >
-              Reload Application
+              Reload
             </button>
           </div>
         </div>

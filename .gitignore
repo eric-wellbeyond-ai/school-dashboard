@@ -28,6 +28,9 @@ build/
 server/.tokens.json
 .blackbaud_tokens.json
 server/.blackbaud_tokens.json
+server/.playwright-westlake/
+server/.playwright-login-*/
+server/data/user-sessions.json
 .venv/
 server/mcp/
 
