@@ -1348,7 +1348,10 @@ export default function App() {
   }, [blackbaudGrades, selectedStudent, canSeeBen, canSeeJade, allowedKeys]);
 
   return (
-    <div className={`wla-app min-h-dvh bg-base-200 text-base-content flex flex-col md:flex-row ${view === 'landing' ? '' : 'wla-shell'}`}>
+    <div className={view === 'landing'
+      ? 'wla-app min-h-dvh w-full flex items-center justify-center bg-zinc-950 text-zinc-100'
+      : 'wla-app wla-shell min-h-dvh bg-base-200 text-base-content flex flex-col md:flex-row'
+    }>
       {view !== 'landing' && (
       <a href="#wla-main" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 btn btn-sm">
         Skip to content
@@ -1620,11 +1623,9 @@ export default function App() {
             </div>
           </div>
 
-          {/* ---------------------------------------------------- */}
-          {/* Classes (left) and assignments (right)                 */}
-          {/* ---------------------------------------------------- */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            <section className="lg:col-span-4 card bg-base-100 border border-base-300 shadow-sm">
+          {/* Assignments on top; classes and calendar side by side below */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+            <section className="order-2 card bg-base-100 border border-base-300 shadow-sm">
               <div className="card-body p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -1721,7 +1722,7 @@ export default function App() {
             {/* ---------------------------------------------------- */}
             {/* Assignments stacked beside classes                   */}
             {/* ---------------------------------------------------- */}
-            <section className="lg:col-span-8 card bg-base-100 border border-base-300 shadow-sm flex flex-col">
+            <section className="order-1 lg:col-span-2 card bg-base-100 border border-base-300 shadow-sm flex flex-col">
               <div className="card-body p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -1956,12 +1957,8 @@ export default function App() {
               </div>
               </div>
             </section>
-          </div>
 
-          {/* ---------------------------------------------------- */}
-          {/* Calendar below classes and assignments               */}
-          {/* ---------------------------------------------------- */}
-          <section className="card bg-base-100 border border-base-300 shadow-sm">
+            <section className="order-3 card bg-base-100 border border-base-300 shadow-sm">
               <div className="card-body p-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
@@ -2150,6 +2147,7 @@ export default function App() {
               </div>
               </div>
             </section>
+          </div>
         </div>
       </main>
       </div>

@@ -22,14 +22,14 @@ export default function LandingPage({
       : null;
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-6">
+    <div className="relative w-full max-w-md px-6">
       <a
         href="#wla-login"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 btn btn-sm"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:-top-12 focus:z-50 btn btn-sm"
       >
         Skip to sign in
       </a>
-      <div className="w-full max-w-md rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-xl">
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-xl">
         <p className="text-sm uppercase tracking-wide text-zinc-500">
           Westlake Lutheran Academy
         </p>
