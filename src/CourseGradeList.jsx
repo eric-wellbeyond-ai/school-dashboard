@@ -31,7 +31,7 @@ function resolveTeacherPhoto(course) {
 const GRADE_CHIP_CLASS =
   'inline-flex min-w-[2.75rem] justify-center tabular-nums font-semibold text-[13px] px-2 py-0.5 rounded-md border';
 
-function TeacherAvatar({ name, photoUrl, size = 28 }) {
+function TeacherAvatar({ name, photoUrl, size = 20 }) {
   const [broken, setBroken] = useState(false);
   const initial = String(name || '?').trim().charAt(0).toUpperCase() || '?';
   const dim = `${size}px`;
@@ -59,68 +59,55 @@ function TeacherAvatar({ name, photoUrl, size = 28 }) {
   );
 }
 
+function studentTone(key) {
+  if (key === 'Jade') return 'is-jade';
+  if (key === 'Ben') return 'is-ben';
+  return '';
+}
+
 export default function CourseGradeList({ groups, mode, onSelectCourse }) {
   if (!groups.length) return null;
   return (
-    <div className="space-y-4">
+    <div className="ff-grades">
       {groups.map((group) => (
-        <div key={group.key} className="overflow-x-auto">
-          {groups.length > 1 && (
-            <h3 className="font-semibold text-sm mb-2">{group.title}</h3>
-          )}
-          <table className="table table-sm">
-            <thead>
-              <tr>
-                <th>Class</th>
-                <th>Teacher</th>
-                <th className="text-right">Grade</th>
-              </tr>
-            </thead>
-            <tbody>
-              {group.rows.map((c, idx) => {
-                const value = courseGradeValue(c, mode);
-                const band = gradeBandFromLetterOrPercent(c.letterGrade, c.percentage || c.numericGrade);
-                const label = decode(c.course) || 'Class';
-                const teacherName = decode(c.teacher || 'Teacher TBA');
-                const teacherPhoto = resolveTeacherPhoto(c);
-                return (
-                  <tr
-                    key={`${group.key}-${c.sectionId || c.course || idx}`}
-                    className={onSelectCourse ? 'cursor-pointer hover:bg-zinc-800/80' : undefined}
+        <div key={group.key} className="ff-grades-group">
+          <h3 className={`ff-grades-heading ${studentTone(group.key)}`}>
+            <span className="ff-student-pill" aria-hidden="true">
+              {String(group.key || '?').charAt(0)}
+            </span>
+            {group.title}
+          </h3>
+          <ul className="ff-grades-list">
+            {group.rows.map((c, idx) => {
+              const value = courseGradeValue(c, mode);
+              const band = gradeBandFromLetterOrPercent(c.letterGrade, c.percentage || c.numericGrade);
+              const label = decode(c.course) || 'Class';
+              const teacherName = decode(c.teacher || 'Teacher TBA');
+              const teacherPhoto = resolveTeacherPhoto(c);
+              const room = c.room ? ` · Rm ${c.room}` : '';
+              return (
+                <li key={`${group.key}-${c.sectionId || c.course || idx}`}>
+                  <button
+                    type="button"
+                    className="ff-grade-row"
                     onClick={() => onSelectCourse?.({ ...c, student: group.key })}
-                    onKeyDown={(e) => {
-                      if (!onSelectCourse) return;
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        onSelectCourse({ ...c, student: group.key });
-                      }
-                    }}
-                    tabIndex={onSelectCourse ? 0 : undefined}
                     aria-label={`Open ${label}`}
+                    title={`${teacherName}${room}`}
                   >
-                    <td className="font-medium">{label}</td>
-                    <td className="text-base-content/70">
-                      <span className="inline-flex items-center gap-2 min-w-0">
-                        <TeacherAvatar name={teacherName} photoUrl={teacherPhoto} />
-                        <span className="min-w-0">
-                          {teacherName}
-                          {c.room ? ` · Rm ${c.room}` : ''}
-                        </span>
-                      </span>
-                    </td>
-                    <td className="text-right">
-                      <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass(band)}`}>
-                        {value}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                    <span className="ff-grade-course">
+                      <TeacherAvatar name={teacherName} photoUrl={teacherPhoto} />
+                      <span className="min-w-0 truncate">{label}</span>
+                    </span>
+                    <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass(band)}`}>
+                      {value}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       ))}
     </div>
   );
 }
-

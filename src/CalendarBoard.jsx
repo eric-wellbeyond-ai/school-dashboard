@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import MapsLocationLink from './lib/MapsLocationLink.jsx';
 
@@ -149,10 +149,10 @@ function EventChip({ event, onSelect, compact = false }) {
         e.stopPropagation();
         onSelect(event);
       }}
-      className={`w-full text-left rounded-md px-1.5 ${compact ? 'py-0.5 text-[11px] min-h-6' : 'py-1 text-[12px] min-h-7'} font-medium truncate ${eventColor(event)}`}
+      className={`w-full text-left rounded-md px-1.5 ${compact ? 'py-0.5 text-[10px] min-h-5 leading-tight' : 'py-1 text-[12px] min-h-7'} font-medium truncate ${eventColor(event)}`}
       title={`${event.time || ''} ${decode(event.title)}`.trim()}
     >
-      {!compact && event.time && event.time !== 'All day' ? (
+      {event.time && event.time !== 'All day' ? (
         <span className="opacity-90 mr-1">{event.time}</span>
       ) : null}
       {decode(event.title)}
@@ -160,10 +160,18 @@ function EventChip({ event, onSelect, compact = false }) {
   );
 }
 
-export default function CalendarBoard({ events, onSelect }) {
-  const [mode, setMode] = useState('month');
-  const [cursor, setCursor] = useState(() => startOfDay(new Date()));
+export default function CalendarBoard({ events, onSelect, focusDate = null, focusMode = null, compact = false }) {
+  const [mode, setMode] = useState(focusMode || 'week');
+  const [cursor, setCursor] = useState(() => startOfDay(focusDate || new Date()));
   const today = startOfDay(new Date());
+
+  useEffect(() => {
+    if (focusDate) setCursor(startOfDay(focusDate));
+  }, [focusDate]);
+
+  useEffect(() => {
+    if (focusMode) setMode(focusMode);
+  }, [focusMode]);
   const grouped = useMemo(() => eventsByDay(events), [events]);
 
   const monthCells = useMemo(() => {
@@ -182,9 +190,9 @@ export default function CalendarBoard({ events, onSelect }) {
   const selectEvent = typeof onSelect === 'function' ? onSelect : () => {};
 
   return (
-    <div className="wla-calendar mt-4 min-h-[28rem]">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <div className="flex items-center gap-1">
+    <div className={`wla-calendar ${compact ? 'wla-calendar-compact mt-0' : 'mt-2'}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-1 min-w-0">
           <button type="button" className="btn btn-ghost btn-sm btn-square" aria-label="Previous" onClick={() => setCursor((d) => shiftCursor(mode, d, -1))}>
             <ChevronLeft className="w-4 h-4" aria-hidden="true" />
           </button>
@@ -194,29 +202,28 @@ export default function CalendarBoard({ events, onSelect }) {
           <button type="button" className="btn btn-ghost btn-sm btn-square" aria-label="Next" onClick={() => setCursor((d) => shiftCursor(mode, d, 1))}>
             <ChevronRight className="w-4 h-4" aria-hidden="true" />
           </button>
-          <h3 className="ml-2 text-[15px] font-semibold tracking-tight text-zinc-50">{rangeLabel(mode, cursor)}</h3>
+          <h3 className="ml-1 text-[13px] font-semibold tracking-tight text-zinc-50 truncate">{rangeLabel(mode, cursor)}</h3>
         </div>
-        <div className="join" role="radiogroup" aria-label="Calendar view">
-          {['month', 'week', 'day'].map((id) => (
-            <button
-              key={id}
-              type="button"
-              role="radio"
-              aria-checked={mode === id}
-              className={`btn btn-sm join-item ${mode === id ? 'btn-active' : ''}`}
-              onClick={() => setMode(id)}
-            >
-              {id[0].toUpperCase() + id.slice(1)}
-            </button>
-          ))}
-        </div>
+        <label className="ff-select-wrap">
+          <span className="sr-only">Calendar view</span>
+          <select
+            className="select select-bordered select-sm ff-select"
+            value={mode}
+            onChange={(e) => setMode(e.target.value)}
+            aria-label="Calendar view"
+          >
+            <option value="week">Week</option>
+            <option value="month">Month</option>
+            <option value="day">Day</option>
+          </select>
+        </label>
       </div>
 
       {mode === 'month' && (
         <div className="wla-calendar-board">
           <div className="grid grid-cols-7 bg-zinc-900 border-b border-zinc-800">
             {WEEKDAYS.map((day) => (
-              <div key={day} className="px-2 py-2.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-zinc-400 text-center">
+              <div key={day} className="px-1 py-1 text-[10px] font-semibold uppercase tracking-[0.06em] text-zinc-400 text-center">
                 {day}
               </div>
             ))}
@@ -226,15 +233,15 @@ export default function CalendarBoard({ events, onSelect }) {
               const inMonth = day.getMonth() === cursor.getMonth();
               const isToday = sameDay(day, today);
               const list = grouped.get(ymd(day)) || [];
-              const extra = list.length - 3;
+              const extra = list.length - (compact ? 2 : 3);
               return (
                 <div
                   key={ymd(day)}
-                  className={`min-h-[7.5rem] p-1.5 text-left border-t border-r border-zinc-800 ${inMonth ? 'bg-zinc-950' : 'bg-zinc-950/50'} ${isToday ? 'ring-1 ring-inset ring-blue-500' : ''}`}
+                  className={`min-h-[3.25rem] p-1 text-left border-t border-r border-zinc-800 ${inMonth ? 'bg-zinc-950' : 'bg-zinc-950/50'} ${isToday ? 'ring-1 ring-inset ring-blue-500' : ''}`}
                 >
                   <button
                     type="button"
-                    className={`inline-flex w-7 h-7 items-center justify-center rounded-full text-[13px] font-semibold ${isToday ? 'bg-blue-600 text-white' : inMonth ? 'text-zinc-200' : 'text-zinc-500'}`}
+                    className={`inline-flex w-6 h-6 items-center justify-center rounded-full text-[12px] font-semibold ${isToday ? 'bg-blue-600 text-white' : inMonth ? 'text-zinc-200' : 'text-zinc-500'}`}
                     aria-current={isToday ? 'date' : undefined}
                     aria-label={`Open ${day.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`}
                     onClick={() => {
@@ -245,13 +252,13 @@ export default function CalendarBoard({ events, onSelect }) {
                     {day.getDate()}
                   </button>
                   <div className="mt-1 space-y-0.5">
-                    {list.slice(0, 3).map((event) => (
+                    {list.slice(0, compact ? 2 : 3).map((event) => (
                       <EventChip key={event.id} event={event} onSelect={selectEvent} compact />
                     ))}
                     {extra > 0 && (
                       <button
                         type="button"
-                        className="block w-full text-left text-[11px] text-zinc-400 px-1 min-h-6"
+                        className="block w-full text-left text-[10px] text-zinc-400 px-1 min-h-5"
                         onClick={() => {
                           setCursor(startOfDay(day));
                           setMode('day');
@@ -275,10 +282,10 @@ export default function CalendarBoard({ events, onSelect }) {
               const isToday = sameDay(day, today);
               const list = grouped.get(ymd(day)) || [];
               return (
-                <div key={ymd(day)} className="border-r border-zinc-800 last:border-r-0 min-h-[22rem]">
+                <div key={ymd(day)} className="border-r border-zinc-800 last:border-r-0 min-h-[8.5rem]">
                   <button
                     type="button"
-                    className={`w-full px-2 py-2.5 border-b border-zinc-800 text-center ${isToday ? 'bg-blue-600/15' : 'bg-zinc-900'}`}
+                    className={`w-full px-1 py-1.5 border-b border-zinc-800 text-center ${isToday ? 'bg-blue-600/15' : 'bg-zinc-900'}`}
                     aria-current={isToday ? 'date' : undefined}
                     onClick={() => {
                       setCursor(startOfDay(day));
@@ -292,7 +299,7 @@ export default function CalendarBoard({ events, onSelect }) {
                     {list.length === 0 ? (
                       <p className="text-[11px] text-zinc-500 px-1 py-2">No events</p>
                     ) : list.map((event) => (
-                      <EventChip key={event.id} event={event} onSelect={selectEvent} />
+                      <EventChip key={event.id} event={event} onSelect={selectEvent} compact={compact} />
                     ))}
                   </div>
                 </div>
