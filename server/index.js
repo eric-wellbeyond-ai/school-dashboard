@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -7,7 +8,8 @@ import { spawn, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { google } from 'googleapis';
 import { fetchSportsYouCalendar } from './services/sportsyouCalendar.js';
-import { getDashboardData, saveDashboardData } from './services/storageService.js';
+import { fetchInstructionalCalendar } from './services/instructionalCalendar.js';
+import { getDashboardData, saveDashboardData, familyPersistence } from './services/storageService.js';
 import {
   verifyAndDiscoverProfiles,
   syncBlackbaudData,
@@ -21,7 +23,8 @@ import {
   fetchOfficialNotes,
   fetchOfficialNoteDetail,
   fetchFeaturedContent,
-  fetchNewsDetail
+  fetchNewsDetail,
+  fetchResources
 } from './services/blackbaudService.js';
 import { runWithWlaSession } from './services/wlaContext.js';
 import {
@@ -52,7 +55,12 @@ import {
   markAllNotificationsRead,
   annotateAssignments,
   setMissingAck,
-  isMissingAcked
+  overlayItemReadState,
+  setItemReadState,
+  getReadMap,
+  ingestDoneOverrides,
+  getMissingAcks,
+  missingAckKey
 } from './services/familyStore.js';
 
 dotenv.config();
@@ -131,11 +139,13 @@ async function mergeSyncIntoStore(result, identity) {
       const { comments: _ignored, ...rest } = a;
       return rest;
     });
-  const assignments = annotateAssignments([...keepAssignments, ...newAssignments]);
-  const tasks = overlayFamilyComments(stored.tasks || []);
-  const missingAssignments = [...keepMissing, ...newMissing].filter((m) => (
-    !isMissingAcked(m.id, m.student)
-  ));
+  const assignments = await annotateAssignments([...keepAssignments, ...newAssignments]);
+  const tasks = await overlayFamilyComments(stored.tasks || []);
+  const acks = await getMissingAcks();
+  const missingAssignments = [...keepMissing, ...newMissing].filter((m) => {
+    const ack = acks[missingAckKey(m.id, m.student)] || acks[m.id];
+    return ack?.acknowledged !== true;
+  });
   await saveDashboardData({
     grades,
     assignments,
@@ -634,7 +644,7 @@ app.get('/api/blackbaud/notes', async (req, res) => {
   }
   try {
     const result = await runWithWlaSession(req.wla, () => fetchOfficialNotes());
-    const notes = filterNotesForIdentity(result.notes, req.wla);
+    const notes = await overlayItemReadState(filterNotesForIdentity(result.notes, req.wla), req.wla);
     res.json({
       ...result,
       notes,
@@ -656,7 +666,8 @@ app.get('/api/blackbaud/notes/detail', async (req, res) => {
   try {
     const note = await runWithWlaSession(req.wla, () => fetchOfficialNoteDetail(req.query.id));
     if (!note) return res.status(404).json({ error: 'Note not found.' });
-    res.json({ note });
+    const [overlaid] = await overlayItemReadState([note], req.wla);
+    res.json({ note: overlaid });
   } catch (err) {
     console.warn('[Blackbaud] Official note detail failed:', err.message);
     res.status(502).json({ error: 'Could not load note.' });
@@ -669,7 +680,10 @@ app.get('/api/blackbaud/news', async (req, res) => {
   }
   try {
     const result = await runWithWlaSession(req.wla, () => fetchFeaturedContent());
-    res.json(result);
+    res.json({
+      ...result,
+      items: await overlayItemReadState(result.items, req.wla, { defaultUnread: true })
+    });
   } catch (err) {
     console.warn('[Blackbaud] Featured content failed:', err.message);
     if (isSessionExpiredError(err)) {
@@ -686,11 +700,48 @@ app.get('/api/blackbaud/news/detail', async (req, res) => {
   try {
     const item = await runWithWlaSession(req.wla, () => fetchNewsDetail(req.query.id));
     if (!item) return res.status(404).json({ error: 'Story not found.' });
-    res.json({ item });
+    const [overlaid] = await overlayItemReadState([item], req.wla, { defaultUnread: true });
+    res.json({ item: overlaid });
   } catch (err) {
     console.warn('[Blackbaud] News detail failed:', err.message);
     res.status(502).json({ error: 'Could not load story.' });
   }
+});
+
+app.get('/api/blackbaud/resources', async (req, res) => {
+  if (!req.wla?.cookie) {
+    return res.status(401).json({ error: 'Sign in with Blackbaud to view resources.', items: [] });
+  }
+  try {
+    const result = await runWithWlaSession(req.wla, () => fetchResources());
+    res.json({
+      ...result,
+      items: await overlayItemReadState(result.items, req.wla, { defaultUnread: true })
+    });
+  } catch (err) {
+    console.warn('[Blackbaud] Resources failed:', err.message);
+    if (isSessionExpiredError(err)) {
+      return res.status(401).json({ error: 'Blackbaud session expired. Sign in again.', needsReauth: true, items: [] });
+    }
+    res.status(502).json({ error: 'Could not load resources.', items: [] });
+  }
+});
+
+app.get('/api/read-state', async (req, res) => {
+  if (!requireFamilySession(req, res)) return;
+  res.json({ items: await getReadMap(req.wla) });
+});
+
+app.post('/api/read-state', async (req, res) => {
+  if (!requireFamilySession(req, res)) return;
+  const itemId = String(req.body?.itemId || req.body?.id || '').trim();
+  if (!itemId) return res.status(400).json({ error: 'itemId required' });
+  const row = await setItemReadState(req.wla, {
+    feed: req.body?.feed || req.body?.kind || 'post',
+    itemId,
+    read: req.body?.read !== false
+  });
+  res.json({ ok: true, item: row, items: await getReadMap(req.wla) });
 });
 
 app.get('/api/blackbaud/class/:sectionId', async (req, res) => {
@@ -704,7 +755,17 @@ app.get('/api/blackbaud/class/:sectionId', async (req, res) => {
       associationId: req.query.associationId,
       teacherUserId: req.query.teacherUserId
     }));
-    res.json(detail);
+    const bulletin = await overlayItemReadState(
+      (detail.bulletin || []).map((item) => ({ ...item, feed: item.feed || 'bulletin', viewed: item.viewed ?? false })),
+      req.wla,
+      { defaultUnread: true }
+    );
+    const topics = await overlayItemReadState(
+      (detail.topics || []).map((item) => ({ ...item, feed: item.feed || 'topics', viewed: item.viewed ?? false })),
+      req.wla,
+      { defaultUnread: true }
+    );
+    res.json({ ...detail, bulletin, topics });
   } catch (err) {
     console.warn('[Blackbaud] Class page failed:', err.message);
     if (isSessionExpiredError(err)) {
@@ -798,13 +859,23 @@ app.get('/api/calendar/sportsyou', async (req, res) => {
   }
 });
 
+app.get('/api/calendar/instructional', async (req, res) => {
+  try {
+    const events = await fetchInstructionalCalendar();
+    res.json({ events, source: 'instructional' });
+  } catch (err) {
+    console.error('instructional calendar failed:', err.message);
+    res.status(502).json({ error: 'Could not load instructional calendar', events: [] });
+  }
+});
+
 app.get('/api/dashboard/state', async (req, res) => {
   try {
     const data = await getDashboardData();
     const overlaid = {
       ...data,
-      assignments: annotateAssignments(data.assignments || []),
-      tasks: overlayFamilyComments(data.tasks || [])
+      assignments: await annotateAssignments(data.assignments || []),
+      tasks: await overlayFamilyComments(data.tasks || [])
     };
     res.json(filterPayloadForIdentity(overlaid, req.wla));
   } catch (err) {
@@ -823,12 +894,13 @@ app.post('/api/dashboard/state', async (req, res) => {
     const existing = await getDashboardData();
     const identity = req.wla;
 
-    ingestClientComments([tasks, assignments]);
+    await ingestClientComments([tasks, assignments]);
+    await ingestDoneOverrides([tasks, assignments], identity);
 
     if (identity?.role === 'student') {
       const merged = mergeStudentWrite(existing, { tasks, events, deletedEventKeys, assignments }, identity);
-      merged.assignments = annotateAssignments(merged.assignments || []);
-      merged.tasks = overlayFamilyComments(merged.tasks || []);
+      merged.assignments = await annotateAssignments(merged.assignments || []);
+      merged.tasks = await overlayFamilyComments(merged.tasks || []);
       const updated = await saveDashboardData(merged);
       return res.json({ success: true, data: filterPayloadForIdentity(updated, identity) });
     }
@@ -860,10 +932,10 @@ app.post('/api/dashboard/state', async (req, res) => {
     }
 
     const updated = await saveDashboardData({
-      tasks: overlayFamilyComments(updatedTasks),
+      tasks: await overlayFamilyComments(updatedTasks),
       events: events !== undefined ? events : existing.events,
       deletedEventKeys: deletedEventKeys !== undefined ? deletedEventKeys : existing.deletedEventKeys,
-      assignments: annotateAssignments(Array.isArray(assignments)
+      assignments: await annotateAssignments(Array.isArray(assignments)
         ? (existing.assignments || []).map((a) => {
             const client = assignments.find((c) => c.id === a.id);
             return client?.comments?.length ? { ...a, comments: client.comments } : a;
@@ -1157,9 +1229,9 @@ function requireFamilySession(req, res) {
   return true;
 }
 
-app.get('/api/assignments/:id/comments', (req, res) => {
+app.get('/api/assignments/:id/comments', async (req, res) => {
   if (!requireFamilySession(req, res)) return;
-  res.json({ comments: getComments(req.params.id) });
+  res.json({ comments: await getComments(req.params.id) });
 });
 
 app.post('/api/assignments/:id/comments', async (req, res) => {
@@ -1167,7 +1239,7 @@ app.post('/api/assignments/:id/comments', async (req, res) => {
   const text = String(req.body?.text || '').trim();
   if (!text) return res.status(400).json({ error: 'Message required' });
   const identity = req.wla;
-  const comment = addFamilyComment(req.params.id, {
+  const comment = await addFamilyComment(req.params.id, {
     author: identity.displayName || identity.accountName || 'Family',
     authorKey: identity.userKey,
     authorUserId: identity.userId,
@@ -1186,27 +1258,27 @@ app.post('/api/assignments/:id/comments', async (req, res) => {
       .find((item) => item.id === req.params.id);
     if (found) assignment = found;
   } catch {}
-  notifyForFamilyComment({
+  await notifyForFamilyComment({
     assignment,
     comment,
     authorKey: identity.userKey
   });
-  res.json({ comment, comments: getComments(req.params.id) });
+  res.json({ comment, comments: await getComments(req.params.id) });
 });
 
-app.delete('/api/assignments/:id/comments/:commentId', (req, res) => {
+app.delete('/api/assignments/:id/comments/:commentId', async (req, res) => {
   if (!requireFamilySession(req, res)) return;
-  const result = deleteFamilyComment(req.params.id, req.params.commentId, req.wla);
+  const result = await deleteFamilyComment(req.params.id, req.params.commentId, req.wla);
   if (!result.ok) {
     return res.status(result.reason === 'forbidden' ? 403 : 404).json(result);
   }
-  res.json({ ok: true, comments: getComments(req.params.id) });
+  res.json({ ok: true, comments: await getComments(req.params.id) });
 });
 
-app.post('/api/assignments/:id/ack', (req, res) => {
+app.post('/api/assignments/:id/ack', async (req, res) => {
   if (!requireFamilySession(req, res)) return;
   const acknowledged = req.body?.acknowledged !== false;
-  const ack = setMissingAck(req.params.id, acknowledged, req.wla, {
+  const ack = await setMissingAck(req.params.id, acknowledged, req.wla, {
     student: req.body?.student || null
   });
   res.json({
@@ -1220,9 +1292,9 @@ app.post('/api/assignments/:id/ack', (req, res) => {
   });
 });
 
-app.delete('/api/assignments/:id/ack', (req, res) => {
+app.delete('/api/assignments/:id/ack', async (req, res) => {
   if (!requireFamilySession(req, res)) return;
-  const ack = setMissingAck(req.params.id, false, req.wla, {
+  const ack = await setMissingAck(req.params.id, false, req.wla, {
     student: req.query?.student || req.body?.student || null
   });
   res.json({
@@ -1232,30 +1304,35 @@ app.delete('/api/assignments/:id/ack', (req, res) => {
   });
 });
 
-app.get('/api/notifications', (req, res) => {
+app.get('/api/notifications', async (req, res) => {
   if (!requireFamilySession(req, res)) return;
-  const items = getNotifications(req.wla);
+  const items = await getNotifications(req.wla);
   res.json({ items, notifications: items });
 });
 
-app.post('/api/notifications/read', (req, res) => {
+app.post('/api/notifications/read', async (req, res) => {
   if (!requireFamilySession(req, res)) return;
   const { id, assignmentId, all } = req.body || {};
   let notifications;
-  if (all) notifications = markAllNotificationsRead(req.wla);
-  else if (assignmentId) notifications = markNotificationsForAssignment(assignmentId, req.wla);
+  if (all) notifications = await markAllNotificationsRead(req.wla);
+  else if (assignmentId) notifications = await markNotificationsForAssignment(assignmentId, req.wla);
   else if (id) {
-    markNotificationRead(id, req.wla);
-    notifications = getNotifications(req.wla);
+    await markNotificationRead(id, req.wla);
+    notifications = await getNotifications(req.wla);
   } else {
-    notifications = getNotifications(req.wla);
+    notifications = await getNotifications(req.wla);
   }
   res.json({ notifications });
 });
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', service: 'school-dashboard-server', port: PORT });
+  res.json({
+    status: 'ok',
+    service: 'school-dashboard-server',
+    port: PORT,
+    familyStore: familyPersistence()
+  });
 });
 
 // Serve static frontend build if dist exists

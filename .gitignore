@@ -35,6 +35,8 @@ server/data/comments.json
 server/data/notifications.json
 server/data/completions.json
 server/data/missing-acks.json
+server/data/read-state.json
+server/data/dashboard-data.json
 .venv/
 server/mcp/
 

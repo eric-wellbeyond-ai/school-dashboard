@@ -107,6 +107,19 @@ export function proxiedPhotoSrc(absUrl) {
   }
 }
 
+function rewriteHtmlPhotos(html) {
+  return String(html || '').replace(/<img\b[^>]*>/gi, (tag) => {
+    const src = htmlAttr(tag, 'src');
+    const abs = resolvePortalUrl(src);
+    const proxied = abs ? (dashboardPhotoSrc(abs) || proxiedPhotoSrc(abs)) : null;
+    if (!proxied) return tag;
+    if (/\bsrc\s*=/i.test(tag)) {
+      return tag.replace(/\bsrc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i, `src="${proxied}"`);
+    }
+    return tag.replace(/<img\b/i, `<img src="${proxied}"`);
+  });
+}
+
 function resolvePortalUrl(value) {
   if (!value || typeof value !== 'string') return null;
   const raw = value.trim();
@@ -1656,8 +1669,34 @@ export function classifySchoolLevel(item = {}) {
   return 'All';
 }
 
+function htmlFromRecord(item = {}) {
+  return [
+    item.LongText,
+    item.LongDescription,
+    item.BriefDescription,
+    item.Body,
+    item.Message,
+    item.HtmlContent,
+    item.ContentBody,
+    item.RichText,
+    item.Comment,
+    item.Description
+  ].filter((value) => value && typeof value === 'string' && !isFlagDescription(value)).join('\n');
+}
+
+function articleMedia(item, html) {
+  const rich = extractRichContent(html, { attachments: attachmentsFromRecord(item) });
+  const cover = newsImageUrl(item);
+  if (cover && !(rich.images || []).some((image) => image.src === cover)) {
+    rich.images.unshift({ src: cover, alt: '', caption: '', href: cover });
+  }
+  return rich;
+}
+
 function normalizeOfficialNote(item, index) {
-  const body = pickText(item.Comment, item.LongDescription, item.Body);
+  const htmlRaw = htmlFromRecord(item);
+  const rich = articleMedia(item, htmlRaw);
+  const body = rich.text || pickText(item.Comment, item.LongDescription, item.Body);
   const title = pickText(
     item.SubjectLine,
     item.Title,
@@ -1679,8 +1718,12 @@ function normalizeOfficialNote(item, index) {
     source: 'Official Notes',
     snippet: snippetFrom(body),
     description: body,
+    html: rewriteHtmlPhotos(htmlRaw),
+    images: rich.images,
+    files: rich.files,
+    links: rich.links,
     viewed: item.Viewed !== false,
-    imageUrl: null,
+    imageUrl: rich.images[0]?.src || null,
     feed: 'notes'
   };
 }
@@ -1733,109 +1776,211 @@ function newsImageUrl(item) {
 }
 
 function normalizeFeaturedNews(item, index) {
-  const body = pickText(item.LongDescription, item.BriefDescription, item.Description);
-  const level = classifySchoolLevel(item);
+  const htmlRaw = htmlFromRecord(item);
+  const rich = articleMedia(item, htmlRaw);
+  const body = rich.text || pickText(item.LongDescription, item.BriefDescription, item.Description);
   return {
     id: String(item.Id || item.ContentItemId || `news_${index}`),
     kind: 'news',
-    title: pickText(item.Name, item.Headline, item.Title) || 'Featured story',
+    title: pickText(item.Name, item.Headline, item.Title) || 'School news',
     date: formatDisplayDate(item.PublishDate || item.PublishDateDisplay || item.FeatureDate)
       || pickText(item.PublishDateDisplay, item.PublishDate),
     time: null,
     student: 'All',
-    level,
-    author: pickText(item.Author) || null,
+    author: pickText(item.Author, item.CreateName, item.AuthorName) || null,
     type: 'News',
-    source: 'Featured Content',
+    source: 'School news',
     snippet: snippetFrom(body || item.BriefDescription),
     description: body,
-    viewed: true,
-    imageUrl: newsImageUrl(item),
+    html: rewriteHtmlPhotos(htmlRaw),
+    images: rich.images,
+    files: rich.files,
+    links: rich.links,
+    viewed: false,
+    imageUrl: rich.images[0]?.src || newsImageUrl(item),
     url: resolvePortalUrl(item.Url) || null,
     feed: 'news'
   };
 }
 
-function normalizeFeaturedEvent(item, index) {
-  const body = pickText(item.LongDescription, item.BriefDescription, item.Description);
-  const time = [item.StartTimeDisplay, item.EndTimeDisplay].filter(Boolean).join(' – ')
-    || (item.AllDay ? 'All day' : null);
-  const level = classifySchoolLevel(item);
-  return {
-    id: String(item.Id || `feat_ev_${index}`),
-    kind: 'news',
-    title: pickText(item.Name, item.Title) || 'Featured event',
-    date: formatDisplayDate(item.StartDate || item.StartDateDisplay || item.FeatureDate)
-      || pickText(item.StartDateDisplay, item.StartDate),
-    time,
-    location: pickText(item.Location) || null,
-    student: 'All',
-    level,
-    author: null,
-    type: 'Event',
-    source: 'Featured Content',
-    snippet: snippetFrom(body) || [item.StartDateDisplay, time].filter(Boolean).join(' · '),
-    description: body,
-    viewed: true,
-    imageUrl: null,
-    feed: 'news'
-  };
+function resourceKindLabel(kind) {
+  const key = String(kind || '').toLowerCase();
+  if (key === 'media') return 'Media';
+  if (key === 'link') return 'Link';
+  if (key === 'download') return 'Download';
+  if (key === 'content') return 'Content';
+  return 'Resource';
 }
 
-function normalizeFeaturedMedia(item, index) {
-  const body = pickText(item.LongDescription, item.BriefDescription, item.Description, item.Caption);
-  const level = classifySchoolLevel(item);
+function normalizeResourceItem(item, index, extra = {}) {
+  const mapped = normalizeBulletinItem(item, index);
+  const htmlRaw = htmlFromRecord(item);
+  const type = extra.type || resourceKindLabel(extra.kind);
+  const title = mapped.title || pickText(item.Name, item.Headline, item.Title, item.FriendlyFileName) || type;
+  const files = mapped.files || [];
+  const links = mapped.links || [];
+  const images = mapped.images || [];
   return {
-    id: String(item.Id || item.AlbumID || `media_${index}`),
-    kind: 'news',
-    title: pickText(item.Name, item.Title, item.Headline) || 'Featured media',
-    date: formatDisplayDate(item.PublishDate || item.FeatureDate) || null,
+    id: String(mapped.id || extra.id || `resource_${index}`),
+    kind: 'resource',
+    title,
+    date: mapped.date,
     time: null,
     student: 'All',
-    level,
-    type: 'Media',
-    source: 'Featured Content',
-    snippet: snippetFrom(body),
-    description: body,
-    viewed: true,
-    imageUrl: newsImageUrl(item),
-    feed: 'news'
+    author: mapped.author,
+    type,
+    source: extra.source || 'Resources',
+    snippet: snippetFrom(mapped.body || title),
+    description: mapped.body,
+    html: rewriteHtmlPhotos(htmlRaw),
+    images,
+    files,
+    links,
+    viewed: false,
+    imageUrl: images[0]?.src || newsImageUrl(item),
+    url: mapped.url,
+    feed: 'resources'
   };
 }
 
-export async function fetchFeaturedContent() {
-  const newsUrl = '/api/News/FeaturedNewsGet/?format=json';
-  const eventsUrl = '/api/Event/FeaturedEventsGet/?format=json';
-  const mediaUrl = '/api/Media/FeaturedMediaGet/?format=json';
-  const bulletinUrl = '/api/DataDirect/MainBulletinUser?personaId=1';
-  const [newsHit, eventsHit, mediaHit, bulletinHit] = await Promise.all([
-    blackbaudRequestSoft(newsUrl),
-    blackbaudRequestSoft(eventsUrl),
-    blackbaudRequestSoft(mediaUrl),
-    blackbaudRequestSoft(bulletinUrl)
-  ]);
-  if (newsHit.expired || eventsHit.expired) {
-    return { connected: false, expired: true, items: [], endpoints: [newsUrl, eventsUrl, mediaUrl, bulletinUrl] };
-  }
-  const items = [
-    ...asList(newsHit.data).map((item, index) => normalizeFeaturedNews(item, index)),
-    ...asList(eventsHit.data).map((item, index) => normalizeFeaturedEvent(item, index)),
-    ...asList(mediaHit.data).map((item, index) => normalizeFeaturedMedia(item, index)),
-    ...asList(bulletinHit.data).map((item, index) => normalizeFeaturedNews({ ...item, Name: item.Name || item.Headline || 'Bulletin' }, index))
-      .map((item) => ({ ...item, type: 'Bulletin' }))
-  ].filter((item) => item.title);
+function uniqueArticles(items) {
   const seen = new Set();
   const unique = [];
   for (const item of items) {
-    const key = `${item.type}:${item.id}:${item.title}`;
+    if (!item?.title && !item?.files?.length && !item?.links?.length && !item?.images?.length) continue;
+    const key = `${item.feed || item.kind}:${item.type}:${item.id}:${item.title}`;
     if (seen.has(key)) continue;
     seen.add(key);
     unique.push(item);
   }
+  return unique;
+}
+
+function collectResourceSectionIds(data, out = new Set(), depth = 0) {
+  if (!data || depth > 5) return out;
+  if (Array.isArray(data)) {
+    data.forEach((item) => collectResourceSectionIds(item, out, depth + 1));
+    return out;
+  }
+  if (typeof data !== 'object') return out;
+  for (const key of ['LeadSectionId', 'SectionId', 'GroupId', 'CommunityId', 'ResourceBoardId']) {
+    const value = data[key];
+    if (typeof value === 'number' && value > 0) out.add(String(value));
+    if (typeof value === 'string' && /^\d+$/.test(value) && Number(value) > 0) out.add(value);
+  }
+  for (const key of ['Groups', 'Communities', 'Activities', 'ResourceBoards', 'GroupList', 'Items']) {
+    if (data[key]) collectResourceSectionIds(data[key], out, depth + 1);
+  }
+  return out;
+}
+
+export async function fetchFeaturedContent() {
+  const newsUrl = '/api/News/FeaturedNewsGet/?format=json';
+  const bulletinUrl = '/api/DataDirect/MainBulletinUser?personaId=1';
+  const [newsHit, bulletinHit] = await Promise.all([
+    blackbaudRequestSoft(newsUrl),
+    blackbaudRequestSoft(bulletinUrl)
+  ]);
+  if (newsHit.expired) {
+    return { connected: false, expired: true, items: [], endpoints: [newsUrl, bulletinUrl] };
+  }
+  const items = [
+    ...asList(newsHit.data).map((item, index) => normalizeFeaturedNews(item, index)),
+    ...asList(bulletinHit.data).map((item, index) => ({
+      ...normalizeFeaturedNews({ ...item, Name: item.Name || item.Headline || 'Bulletin' }, index),
+      type: 'Bulletin',
+      source: 'Bulletin'
+    }))
+  ];
   return {
     connected: true,
-    items: unique,
-    endpoints: [newsUrl, eventsUrl, mediaUrl, bulletinUrl]
+    items: uniqueArticles(items),
+    endpoints: [newsUrl, bulletinUrl]
+  };
+}
+
+export async function fetchResources() {
+  const featuredUrls = [
+    '/api/Media/FeaturedMediaGet/?format=json',
+    '/api/resource/FeaturedResourcesGet/?format=json',
+    '/api/Resource/FeaturedResourcesGet/?format=json',
+    '/api/download/FeaturedDownloadsGet/?format=json',
+    '/api/link/FeaturedLinksGet/?format=json',
+    '/api/content/FeaturedContentGet/?format=json',
+    '/api/datadirect/ResourceBoardGet/?format=json',
+    '/api/DataDirect/ResourceBoardGet/?format=json'
+  ];
+  const featuredHits = await Promise.all(featuredUrls.map(async (url) => ({
+    url,
+    hit: await blackbaudRequestSoft(url)
+  })));
+  if (featuredHits.some((row) => row.hit.expired)) {
+    return { connected: false, expired: true, items: [], endpoints: featuredUrls };
+  }
+
+  const items = [];
+  const used = [];
+  const kindFromUrl = (url) => {
+    if (/\/media\//i.test(url)) return 'media';
+    if (/\/link\//i.test(url)) return 'link';
+    if (/\/download\//i.test(url)) return 'download';
+    if (/\/content\//i.test(url)) return 'content';
+    return 'resource';
+  };
+  for (const { url, hit } of featuredHits) {
+    const list = asList(hit.data);
+    if (!list.length) continue;
+    used.push(url);
+    list.forEach((item, index) => {
+      items.push(normalizeResourceItem(item, items.length + index, {
+        kind: kindFromUrl(url),
+        type: resourceKindLabel(kindFromUrl(url)),
+        source: 'Resources'
+      }));
+    });
+  }
+
+  const [ctxHit, schoolHit] = await Promise.all([
+    blackbaudRequestSoft('/api/webapp/context'),
+    blackbaudRequestSoft('/api/webapp/schoolcontext')
+  ]);
+  const sectionIds = [
+    ...collectResourceSectionIds(ctxHit.data),
+    ...collectResourceSectionIds(schoolHit.data)
+  ].slice(0, 8);
+  const kinds = ['resource', 'media', 'link', 'download', 'content'];
+  const jobs = [];
+  for (const id of sectionIds) {
+    for (const kind of kinds) {
+      jobs.push({
+        kind,
+        url: `/api/${kind}/forsection/${encodeURIComponent(id)}/?format=json&contextLabelId=1`
+      });
+    }
+  }
+  if (jobs.length) {
+    const sectionHits = await Promise.all(jobs.map(async (job) => ({
+      ...job,
+      hit: await blackbaudRequestSoft(job.url)
+    })));
+    for (const { kind, url, hit } of sectionHits) {
+      const list = asList(hit.data);
+      if (!list.length) continue;
+      used.push(url);
+      list.forEach((item, index) => {
+        items.push(normalizeResourceItem(item, items.length + index, {
+          kind,
+          type: resourceKindLabel(kind),
+          source: 'Resources'
+        }));
+      });
+    }
+  }
+
+  return {
+    connected: true,
+    items: uniqueArticles(items),
+    endpoints: used
   };
 }
 

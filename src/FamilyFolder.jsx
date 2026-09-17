@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Calendar,
   CheckCircle2,
   ExternalLink,
   Folder,
@@ -138,7 +139,7 @@ function FeedListPopover({
                 onClick={() => onFilter(tab.id)}
               >
                 {tab.label}
-                {typeof tab.count === 'number' ? (
+                {typeof tab.count === 'number' && tab.count > 0 ? (
                   <span className="tabular-nums">{tab.count}</span>
                 ) : null}
               </button>
@@ -184,24 +185,22 @@ function AssignmentScoreChip({ earned, max, letter, status, className = '' }) {
   const showMissing = status === 'missing' || (zeroMissing && status !== 'done');
   if (showMissing) {
     return (
-      <span className={`inline-flex flex-col items-end gap-0.5 ${className}`}>
-        <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass('missing')}`}>Missing</span>
-        {score.raw ? (
-          <span className="text-[11px] tabular-nums text-zinc-500">{score.raw}</span>
-        ) : null}
+      <span
+        className={`ff-assign-chip ${GRADE_CHIP_CLASS} ${gradeToneClass('missing')} ${className}`}
+        title={score.raw || 'Missing'}
+      >
+        Missing
       </span>
     );
   }
   if (score.percent == null && !letterText) return null;
   const band = gradeBandFromLetterOrPercent(letterText, score.percent);
   return (
-    <span className={`inline-flex flex-col items-end gap-0.5 ${className}`}>
-      <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass(band)}`}>
-        {score.percentLabel || letterText}
-      </span>
-      {score.raw ? (
-        <span className="text-[11px] tabular-nums text-zinc-500">{score.raw}</span>
-      ) : null}
+    <span
+      className={`ff-assign-chip ${GRADE_CHIP_CLASS} ${gradeToneClass(band)} ${className}`}
+      title={score.raw || undefined}
+    >
+      {score.percentLabel || letterText}
     </span>
   );
 }
@@ -282,6 +281,7 @@ export default function FamilyFolder({
   onDisconnectBlackbaud,
   onOpenLanding,
   sportsYouConnected,
+  instructionalConnected = false,
   topbarTools,
   officialNotes = [],
   featuredNews = [],
@@ -299,6 +299,10 @@ export default function FamilyFolder({
   const signedInName = blackbaudStatus.displayName || blackbaudStatus.accountName || '';
   const signedFirst = firstName(signedInName);
   const blackbaudSync = formatSyncTime(blackbaudStatus.verifiedAt);
+  const blackbaudSynced = Boolean(blackbaudStatus.connected && blackbaudStatus.verifiedAt);
+  const sourcesLabel = blackbaudSynced
+    ? (blackbaudSync ? `Sources, Blackbaud synced ${blackbaudSync}` : 'Sources, Blackbaud synced')
+    : 'Sources, Blackbaud not synced';
   const todayLabel = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'long',
@@ -500,9 +504,9 @@ export default function FamilyFolder({
           <div className="ff-account">
             <button
               type="button"
-              className="ff-feed-btn ff-sources-toggle"
-              aria-label="Sources"
-              title="Sources"
+              className={`ff-feed-btn ff-sources-toggle ${blackbaudSynced ? 'is-synced' : ''}`}
+              aria-label={sourcesLabel}
+              title={sourcesLabel}
               aria-expanded={sourcesOpen}
               aria-haspopup="dialog"
               aria-controls="ff-sources-popover"
@@ -549,7 +553,24 @@ export default function FamilyFolder({
                   <span className="ff-source-meta">Athletics &amp; teams</span>
                 </span>
                 <span className={`ff-source-status ${sportsYouConnected ? 'is-on' : ''}`}>
-                  {sportsYouConnected || calendarEventsCount > 0 ? 'Connected' : 'Calendar'}
+                  {sportsYouConnected ? 'Connected' : 'Calendar'}
+                </span>
+                <ExternalLink className="w-3.5 h-3.5 ff-source-ext" aria-hidden="true" />
+              </a>
+              <a
+                href="https://westlakelutheran.myschoolapp.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                id="link-instructional-calendar"
+                className="ff-source-row"
+              >
+                <Calendar className="w-4 h-4" aria-hidden="true" />
+                <span>
+                  <strong>School calendar</strong>
+                  <span className="ff-source-meta">Instructional schedule</span>
+                </span>
+                <span className={`ff-source-status ${instructionalConnected ? 'is-on' : ''}`}>
+                  {instructionalConnected ? 'Connected' : 'Calendar'}
                 </span>
                 <ExternalLink className="w-3.5 h-3.5 ff-source-ext" aria-hidden="true" />
               </a>
@@ -777,7 +798,6 @@ export default function FamilyFolder({
                     const isCustom = String(task.id || '').startsWith('task_custom_');
                     const late = daysLate(task);
                     const showLate = (task.status === 'overdue' || task.status === 'missing') && late > 0;
-                    const status = statusLabel(task.status);
                     const familyFiled = task.acknowledged === true || task.doneOverride === true;
                     const showCheck = task.status === 'overdue'
                       || task.status === 'missing'
@@ -789,6 +809,11 @@ export default function FamilyFolder({
                     const showScore = task.status === 'missing' || task.isMissing || isZeroCreditMissing(task)
                       || assignmentPercent(task.pointsEarned, task.maxPoints) != null
                       || String(task.letter || task.letterGrade || '').trim();
+                    const metaBits = [
+                      task.course ? decodeHtml(task.course) : null,
+                      task.type ? decodeHtml(task.type) : null,
+                      task.dueDate || 'No due date'
+                    ].filter(Boolean);
                     return (
                       <li key={task.id} className="ff-assign-row">
                         {showLate ? (
@@ -805,27 +830,28 @@ export default function FamilyFolder({
                           aria-haspopup="dialog"
                           className="ff-assign-body"
                         >
-                          <span className="ff-assign-title-block">
-                            <span className={`ff-assign-title ${task.status === 'done' ? 'is-done' : ''}`}>
-                              {decodeHtml(task.title)}
-                            </span>
-                            <span className="ff-assign-meta">
-                              <span className={`ff-student-pill ${task.student === 'Jade' ? 'is-jade' : 'is-ben'}`}>
-                                {task.studentPhoto || studentPhoto(task.student) ? (
-                                  <ProfileAvatar
-                                    name={task.student}
-                                    photoUrl={task.studentPhoto || studentPhoto(task.student)}
-                                    size={16}
-                                  />
-                                ) : (
-                                  String(task.student || '?').charAt(0)
-                                )}
+                          <span className="ff-assign-copy">
+                            <span className="ff-assign-main">
+                              <span className={`ff-assign-title ${task.status === 'done' ? 'is-done' : ''}`}>
+                                {decodeHtml(task.title)}
                               </span>
-                              <span className={task.student === 'Ben' ? 'text-sky-300' : 'text-violet-300'}>
-                                {task.student}
+                              <span className="ff-assign-meta">
+                                <span className={`ff-student-pill ${task.student === 'Jade' ? 'is-jade' : 'is-ben'}`}>
+                                  {task.studentPhoto || studentPhoto(task.student) ? (
+                                    <ProfileAvatar
+                                      name={task.student}
+                                      photoUrl={task.studentPhoto || studentPhoto(task.student)}
+                                      size={16}
+                                    />
+                                  ) : (
+                                    String(task.student || '?').charAt(0)
+                                  )}
+                                </span>
+                                <span className={task.student === 'Ben' ? 'text-sky-300' : 'text-violet-300'}>
+                                  {task.student}
+                                </span>
+                                {metaBits.length ? ` · ${metaBits.join(' · ')}` : ''}
                               </span>
-                              {task.course ? ` · ${decodeHtml(task.course)}` : ''}
-                              {task.type ? ` · ${decodeHtml(task.type)}` : ''}
                             </span>
                             {task.comment ? (
                               <span className="ff-assign-note">Teacher note: {decodeHtml(task.comment)}</span>
@@ -843,20 +869,6 @@ export default function FamilyFolder({
                                 <span className="family-thread-unread">New family comment</span>
                               </span>
                             ) : null}
-                          </span>
-                          <span className="ff-assign-due">
-                            <span className={`ff-status-label ${status.className}`}>{status.text}</span>
-                            <span className="ff-assign-due-date tabular-nums">{task.dueDate || 'No due date'}</span>
-                            {showScore ? (
-                              <AssignmentScoreChip
-                                earned={task.pointsEarned}
-                                max={task.maxPoints}
-                                letter={task.letter || task.letterGrade}
-                                status={task.status}
-                              />
-                            ) : task.assignedDate && task.status === 'assigned' ? (
-                              <span className="ff-assign-note">Assigned {task.assignedDate}</span>
-                            ) : null}
                             {familyFiled && task.acknowledgedBy ? (
                               <span className="ff-assign-note">
                                 Done by {task.acknowledgedBy}
@@ -864,6 +876,14 @@ export default function FamilyFolder({
                               </span>
                             ) : null}
                           </span>
+                          {showScore ? (
+                            <AssignmentScoreChip
+                              earned={task.pointsEarned}
+                              max={task.maxPoints}
+                              letter={task.letter || task.letterGrade}
+                              status={task.status}
+                            />
+                          ) : null}
                         </button>
                         {showCheck ? (
                           <AssignmentDoneCheck
@@ -874,6 +894,11 @@ export default function FamilyFolder({
                               else void onMissingAck(task, !isChecked);
                             }}
                           />
+                        ) : task.status === 'done' ? (
+                          <span className="ff-done-check is-complete">
+                            <CheckCircle2 className="w-5 h-5" aria-hidden="true" />
+                            <span className="sr-only">Done</span>
+                          </span>
                         ) : (
                           <span className="ff-done-check is-empty" aria-hidden="true" />
                         )}
@@ -890,7 +915,7 @@ export default function FamilyFolder({
               <div className="ff-week-head">
                 <div>
                   <h2 id="ff-this-week-title" className="ff-card-title">This week</h2>
-                  <p className="ff-muted">sportsYou calendar</p>
+                  <p className="ff-muted">School and sportsYou calendars</p>
                 </div>
                 <label className="ff-select-wrap">
                   <span className="sr-only">Event list</span>

@@ -41,6 +41,7 @@ import { buildBlackbaudBookmarklet } from './blackbaudBookmarklet.js';
 import LandingPage from './LandingPage.jsx';
 import ClassDetailModal from './ClassDetailModal.jsx';
 import FamilyFolder, { ProfileAvatar } from './FamilyFolder.jsx';
+import PostDetail, { toPostItem } from './PostDetail.jsx';
 import {
   classifyAssignment,
   formatAssignmentDate,
@@ -160,31 +161,6 @@ function mergeOfficialNotes(portalNotes, gmailNotes) {
   return [...portal, ...extras];
 }
 
-function toModalItem(item) {
-  return {
-    ...item,
-    date: item.date || '',
-    time: item.time || '',
-    location: item.location || item.course || '',
-    description: item.description || item.emailBody || item.snippet || '',
-    source: item.source || '',
-    type: item.type || item.kind || 'note',
-    feed: item.feed || item.kind || null
-  };
-}
-
-function newsMatchesLevel(item, filter) {
-  if (filter === 'All') return true;
-  const level = item.level || 'All';
-  return level === filter || level === 'All';
-}
-
-function defaultNewsFilter(selectedStudent) {
-  if (selectedStudent === 'Ben') return 'HS';
-  if (selectedStudent === 'Jade') return 'MS';
-  return 'All';
-}
-
 function cleanDeep(obj) {
   if (typeof obj === 'string') {
     return decodeHtmlEntities(obj);
@@ -204,6 +180,15 @@ function cleanDeep(obj) {
 
 const GRADE_DISPLAY_KEY = 'school_dashboard_grade_display';
 const CALENDAR_ACK_KEY = 'school_dashboard_calendar_acked';
+
+function isLiveCalendarId(eventId) {
+  const id = String(eventId || '');
+  return id.startsWith('sy_') || id.startsWith('inst_');
+}
+
+function isInstructionalEvent(event) {
+  return event?.source === 'instructional' || event?.type === 'instructional';
+}
 
 function courseGradeValue(course, mode) {
   const letter = String(course?.letterGrade || '').trim();
@@ -593,6 +578,9 @@ export default function App() {
   const [calendarEvents, setCalendarEvents] = useState([]);
   const [officialNotes, setOfficialNotes] = useState([]);
   const [featuredNews, setFeaturedNews] = useState([]);
+  const [schoolResources, setSchoolResources] = useState([]);
+  const [selectedPost, setSelectedPost] = useState(null);
+  const [readOverrides, setReadOverrides] = useState({});
   identityRef.current = blackbaudStatus;
 
   // Persist state to both localStorage and backend Express API only on deliberate user actions
@@ -642,30 +630,38 @@ export default function App() {
     } catch {}
   };
 
-  const loadSportsYouCalendar = async () => {
-    try {
-      const res = await fetch('/api/calendar/sportsyou');
-      const data = await res.json().catch(() => ({}));
-      if (Array.isArray(data.events)) {
-        setCalendarEvents(applyCalendarAcks(data.events));
+  const loadLiveCalendars = async () => {
+    const fetchFeed = async (path, label) => {
+      try {
+        const res = await fetch(path);
+        const data = await res.json().catch(() => ({}));
+        return Array.isArray(data.events) ? data.events : [];
+      } catch (err) {
+        console.warn(`${label} calendar unavailable:`, err.message);
+        return [];
       }
-    } catch (err) {
-      console.warn('sportsYou calendar unavailable:', err.message);
-    }
+    };
+    const [sports, instructional] = await Promise.all([
+      fetchFeed('/api/calendar/sportsyou', 'sportsYou'),
+      fetchFeed('/api/calendar/instructional', 'instructional')
+    ]);
+    const merged = [...sports, ...instructional].sort((a, b) => (a.sortAt || 0) - (b.sortAt || 0));
+    setCalendarEvents(applyCalendarAcks(merged));
   };
 
   const loadSchoolFeeds = async () => {
     try {
-      const [notesRes, newsRes] = await Promise.all([
+      const [notesRes, newsRes, resourcesRes] = await Promise.all([
         fetch('/api/blackbaud/notes'),
-        fetch('/api/blackbaud/news')
+        fetch('/api/blackbaud/news'),
+        fetch('/api/blackbaud/resources')
       ]);
       const notesData = notesRes.ok ? await notesRes.json().catch(() => ({})) : {};
       const newsData = newsRes.ok ? await newsRes.json().catch(() => ({})) : {};
-      const portalNotes = cleanDeep(notesData.notes || []);
-      const newsItems = cleanDeep(newsData.items || []);
-      setOfficialNotes(portalNotes);
-      setFeaturedNews(newsItems);
+      const resourcesData = resourcesRes.ok ? await resourcesRes.json().catch(() => ({})) : {};
+      setOfficialNotes(cleanDeep(notesData.notes || []));
+      setFeaturedNews(cleanDeep(newsData.items || []));
+      setSchoolResources(cleanDeep(resourcesData.items || []));
     } catch (err) {
       console.warn('School feeds unavailable:', err.message);
     }
@@ -723,7 +719,7 @@ export default function App() {
           message: data.message
         });
       }
-      await loadSportsYouCalendar();
+      await loadLiveCalendars();
     } catch (err) {
       console.error('Failed to sync with server API:', err);
       setAuthBanner({
@@ -853,7 +849,7 @@ export default function App() {
   useEffect(() => {
     window.name = 'school-dashboard';
     fetchAuthStatus();
-    loadSportsYouCalendar();
+    loadLiveCalendars();
     (async () => {
       const status = await fetchBlackbaudStatus();
       if (status?.connected) {
@@ -895,6 +891,7 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
+        if (selectedPost) setSelectedPost(null);
         if (selectedEventForModal) setSelectedEventForModal(null);
         if (selectedTaskForModal) setSelectedTaskForModal(null);
         if (showBlackbaudModal) setShowBlackbaudModal(false);
@@ -904,7 +901,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedEventForModal, selectedTaskForModal, showBlackbaudModal, showAuthModal, syncDropdownOpen]);
+  }, [selectedPost, selectedEventForModal, selectedTaskForModal, showBlackbaudModal, showAuthModal, syncDropdownOpen]);
 
   useEffect(() => {
     if (!syncDropdownOpen) return undefined;
@@ -931,6 +928,7 @@ export default function App() {
   useEffect(() => {
     if (view !== 'dashboard' || !blackbaudStatus.connected) return undefined;
     void loadFamilyNotifications();
+    void loadReadState();
     const id = setInterval(() => {
       void loadFamilyNotifications();
     }, 20000);
@@ -1440,42 +1438,127 @@ export default function App() {
     }
   };
 
+  const loadReadState = async () => {
+    try {
+      const res = await fetch('/api/read-state', { credentials: 'include' });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      const next = {};
+      for (const [key, row] of Object.entries(data.items || {})) {
+        if (row && typeof row.read === 'boolean') next[key] = row.read;
+      }
+      setReadOverrides(next);
+    } catch (err) {
+      console.warn('Read state unavailable:', err.message);
+    }
+  };
+
+  const withReadOverride = (item) => {
+    if (!item?.id) return item;
+    const key = `${item.feed || item.kind || 'post'}:${item.id}`;
+    if (!Object.prototype.hasOwnProperty.call(readOverrides, key)) return item;
+    return { ...item, viewed: readOverrides[key] };
+  };
+
+  const applyPostRead = (item, read) => {
+    if (!item?.id) return;
+    const patch = { viewed: read, readAt: read ? new Date().toISOString() : null };
+    const match = (row) => row.id === item.id;
+    const key = `${item.feed || item.kind || 'post'}:${item.id}`;
+    setReadOverrides((prev) => ({ ...prev, [key]: read }));
+    setOfficialNotes((prev) => prev.map((row) => (match(row) ? { ...row, ...patch } : row)));
+    setFeaturedNews((prev) => prev.map((row) => (match(row) ? { ...row, ...patch } : row)));
+    setSchoolResources((prev) => prev.map((row) => (match(row) ? { ...row, ...patch } : row)));
+    setSelectedPost((prev) => (prev && prev.id === item.id ? { ...prev, ...patch } : prev));
+  };
+
+  const persistPostRead = async (item, read) => {
+    applyPostRead(item, read);
+    try {
+      await fetch('/api/read-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          itemId: item.id,
+          feed: item.feed || item.kind || 'post',
+          read
+        })
+      });
+    } catch (err) {
+      console.warn('Read state failed:', err.message);
+    }
+  };
+
+  const openPost = (item, extra = {}) => {
+    const next = toPostItem(item, extra);
+    setSelectedPost(next);
+    if (next?.id && next.viewed !== true) {
+      void persistPostRead(next, true);
+    }
+    return next;
+  };
+
   const handleOpenOfficialNote = async (item) => {
     if (!item) return;
-    if (item.kind === 'gmail') {
-      setSelectedEventForModal(toModalItem(item));
-      return;
-    }
-    setSelectedEventForModal(toModalItem(item));
-    if (!item.id || String(item.id).startsWith('gmail_')) return;
+    const opened = openPost(item, { feed: item.feed || 'notes' });
+    if (!item.id || String(item.id).startsWith('gmail_') || item.kind === 'gmail') return;
     try {
       const res = await fetch(`/api/blackbaud/notes/detail?id=${encodeURIComponent(item.id)}`);
       if (!res.ok) return;
       const data = await res.json().catch(() => ({}));
       if (data.note) {
-        const next = toModalItem(cleanDeep(data.note));
-        setSelectedEventForModal(next);
+        const next = toPostItem(cleanDeep(data.note), { feed: 'notes', viewed: true });
+        setSelectedPost(next);
         setOfficialNotes((prev) => prev.map((row) => (
-          row.id === item.id ? { ...row, viewed: true, description: next.description || row.description } : row
+          row.id === item.id
+            ? { ...row, ...next, viewed: true, description: next.description || row.description }
+            : row
         )));
       }
     } catch (err) {
       console.warn('Official note detail unavailable:', err.message);
     }
+    return opened;
   };
 
   const handleOpenFeaturedItem = async (item) => {
     if (!item) return;
-    setSelectedEventForModal(toModalItem(item));
-    if (!item.id || item.type === 'Event' || item.type === 'Media' || item.type === 'Bulletin') return;
+    openPost(item, { feed: 'news' });
+    if (!item.id || item.type === 'Bulletin') return;
     try {
       const res = await fetch(`/api/blackbaud/news/detail?id=${encodeURIComponent(item.id)}`);
       if (!res.ok) return;
       const data = await res.json().catch(() => ({}));
-      if (data.item) setSelectedEventForModal(toModalItem(cleanDeep(data.item)));
+      if (data.item) {
+        const next = toPostItem(cleanDeep(data.item), { feed: 'news', viewed: true });
+        setSelectedPost(next);
+        setFeaturedNews((prev) => prev.map((row) => (row.id === item.id ? { ...row, ...next, viewed: true } : row)));
+      }
     } catch (err) {
-      console.warn('Featured story detail unavailable:', err.message);
+      console.warn('School news detail unavailable:', err.message);
     }
+  };
+
+  const handleSelectCalendarEvent = (event) => {
+    if (!event) return;
+    setSelectedPost(null);
+    setSelectedEventForModal({
+      ...event,
+      type: event.type || (isInstructionalEvent(event) ? 'instructional' : 'sports'),
+      source: event.source || (isInstructionalEvent(event) ? 'instructional' : 'sportsYou'),
+      feed: 'calendar'
+    });
+  };
+
+  const handleOpenResource = (item) => {
+    if (!item) return;
+    openPost(item, { feed: 'resources' });
+  };
+
+  const handleOpenClassPost = (item) => {
+    if (!item) return;
+    openPost(item, { feed: item.feed || item.kind || 'bulletin' });
   };
 
   const handleConnectGoogle = () => {
@@ -1823,7 +1906,7 @@ export default function App() {
   const acknowledgeEvent = (eventId, e) => {
     if (e) e.stopPropagation();
     const acknowledgedAt = new Date().toISOString();
-    if (String(eventId).startsWith('sy_')) {
+    if (isLiveCalendarId(eventId)) {
       persistCalendarAck(eventId, acknowledgedAt);
       setCalendarEvents((prev) => prev.map((ev) => (
         ev.id === eventId ? { ...ev, acknowledged: true, acknowledgedAt } : ev
@@ -1857,7 +1940,7 @@ export default function App() {
   // Restore an acknowledged event back to active
   const restoreEvent = (eventId, e) => {
     if (e) e.stopPropagation();
-    if (String(eventId).startsWith('sy_')) {
+    if (isLiveCalendarId(eventId)) {
       persistCalendarAck(eventId, null);
       setCalendarEvents((prev) => prev.map((ev) => (
         ev.id === eventId ? { ...ev, acknowledged: false, acknowledgedAt: null } : ev
@@ -1976,16 +2059,21 @@ export default function App() {
     .sort((a, b) => compareChecklistAssignments(a, b, taskFilter));
 
   const scheduleEvents = useMemo(() => {
-    const tagged = (list, feed) => (list || []).map((ev) => {
+    const calendar = (calendarEvents || []).map((ev) => {
+      if (isInstructionalEvent(ev)) {
+        return { ...ev, student: 'All', sport: ev.sport || null, feed: ev.feed || 'calendar' };
+      }
       const classified = classifySportsYouEvent(ev.title || '');
       const mapped = classified.sport === 'CC' || classified.sport === 'Volleyball' || classified.sport === 'Boys BB'
         ? { ...ev, sport: ev.sport || classified.sport, student: classified.student }
-        : { ...ev, feed: ev.feed || feed };
-      return { ...mapped, feed: ev.feed || feed };
+        : { ...ev };
+      return { ...mapped, feed: ev.feed || 'calendar' };
     });
-    const calendar = tagged(calendarEvents, 'calendar');
     return calendar;
   }, [calendarEvents]);
+
+  const sportsYouCount = (calendarEvents || []).filter((ev) => ev.source === 'sportsYou').length;
+  const instructionalCount = (calendarEvents || []).filter((ev) => isInstructionalEvent(ev)).length;
 
   // Filter events (excluding deleted, filtered by student and active/acknowledged tab)
   const filteredEvents = scheduleEvents.filter(event => {
@@ -2059,14 +2147,15 @@ export default function App() {
   }, [blackbaudGrades, selectedStudent, canSeeBen, canSeeJade, allowedKeys]);
 
   const mergedOfficialNotes = useMemo(
-    () => mergeOfficialNotes(officialNotes, notesFromGmail(events, tasks)),
-    [officialNotes, events, tasks]
+    () => mergeOfficialNotes(officialNotes, notesFromGmail(events, tasks)).map(withReadOverride),
+    [officialNotes, events, tasks, readOverrides]
   );
   const notesUnreadCount = mergedOfficialNotes.filter((item) => (
     item.viewed === false
     && (selectedStudent === 'All' || item.student === selectedStudent || item.student === 'All')
   )).length;
-  const newsCount = featuredNews.filter((item) => newsMatchesLevel(item, defaultNewsFilter(selectedStudent))).length;
+  const newsUnreadCount = featuredNews.map(withReadOverride).filter((item) => item.viewed === false).length;
+  const resourcesUnreadCount = schoolResources.map(withReadOverride).filter((item) => item.viewed === false).length;
 
   return (
     <div className={view === 'landing'
@@ -2137,19 +2226,23 @@ export default function App() {
           setEventFilter={setEventFilter}
           activeEventsCount={activeEventsCount}
           acknowledgedEventsCount={acknowledgedEventsCount}
-          onSelectEvent={setSelectedEventForModal}
+          onSelectEvent={handleSelectCalendarEvent}
           calendarEventsCount={(calendarEvents || []).length}
           onRefreshBlackbaud={handleSyncBlackbaud}
           onBlackbaudSettings={() => setShowBlackbaudModal(true)}
           onDisconnectBlackbaud={handleDisconnectBlackbaud}
           onOpenLanding={() => setView('landing')}
-          sportsYouConnected={(calendarEvents || []).length > 0}
+          sportsYouConnected={sportsYouCount > 0}
+          instructionalConnected={instructionalCount > 0}
           officialNotes={mergedOfficialNotes}
-          featuredNews={featuredNews}
+          featuredNews={featuredNews.map(withReadOverride)}
+          schoolResources={schoolResources.map(withReadOverride)}
           notesUnreadCount={notesUnreadCount}
-          newsCount={newsCount}
+          newsUnreadCount={newsUnreadCount}
+          resourcesUnreadCount={resourcesUnreadCount}
           onOpenOfficialNote={handleOpenOfficialNote}
           onOpenFeaturedItem={handleOpenFeaturedItem}
+          onOpenResource={handleOpenResource}
         />
       </div>
 
@@ -2749,6 +2842,8 @@ export default function App() {
                   className={`text-xs font-medium px-2.5 py-1 rounded-md border flex items-center gap-1.5 ${
                     selectedEventForModal.type === 'sports'
                       ? 'bg-warning/10 text-warning border-warning/30'
+                      : selectedEventForModal.type === 'instructional'
+                      ? 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30'
                       : selectedEventForModal.type === 'academic'
                       ? 'bg-emerald-500/10 text-success border-success/30'
                       : 'bg-primary/10 text-primary border-primary/30'
@@ -2756,6 +2851,8 @@ export default function App() {
                 >
                   {selectedEventForModal.type === 'sports' ? (
                     <Trophy className="w-3.5 h-3.5" />
+                  ) : selectedEventForModal.type === 'instructional' ? (
+                    <Calendar className="w-3.5 h-3.5" />
                   ) : (
                     <GraduationCap className="w-3.5 h-3.5" />
                   )}
@@ -2878,12 +2975,21 @@ export default function App() {
           </div>
         </div>
       )}
+      {selectedPost && (
+        <PostDetail
+          post={selectedPost}
+          onClose={() => setSelectedPost(null)}
+          onToggleRead={(read) => persistPostRead(selectedPost, read)}
+        />
+      )}
       {selectedCourse && (
         <ClassDetailModal
           course={selectedCourse}
           assignments={checklistItems}
           onClose={() => setSelectedCourse(null)}
           onOpenTask={handleOpenTaskModal}
+          onOpenPost={handleOpenClassPost}
+          readOverrides={readOverrides}
           taskModalOpen={Boolean(selectedTaskForModal)}
         />
       )}

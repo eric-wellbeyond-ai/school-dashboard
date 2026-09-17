@@ -47,10 +47,20 @@ export function eventInstant(event) {
   return null;
 }
 
+function isInstructional(event) {
+  return event?.source === 'instructional' || event?.type === 'instructional';
+}
+
 function eventColor(event) {
+  if (isInstructional(event)) return 'bg-zinc-700 text-zinc-100';
   if (event.student === 'Jade') return 'bg-violet-500/80 text-white';
   if (event.student === 'Ben') return 'bg-sky-500/80 text-white';
   return 'bg-amber-500/90 text-zinc-950';
+}
+
+function eventAudience(event) {
+  if (isInstructional(event)) return 'School';
+  return event.student === 'All' ? 'Ben & Jade' : event.student;
 }
 
 function decode(text) {
@@ -113,7 +123,7 @@ function DayEventRow({ event, onSelect }) {
           type="button"
           onClick={() => onSelect(event)}
           className="absolute inset-0"
-          aria-label={decode(event.title)}
+          aria-label={`${decode(event.title)}, ${eventAudience(event)}${event.sport ? `, ${event.sport}` : ''}`}
         />
         <div className="w-20 shrink-0 text-[13px] tabular-nums text-zinc-400 pt-0.5 pointer-events-none">
           {event.time || 'All day'}
@@ -122,7 +132,7 @@ function DayEventRow({ event, onSelect }) {
         <div className="min-w-0 relative z-[1] pointer-events-none">
           <p className="text-sm font-semibold text-zinc-100">{decode(event.title)}</p>
           <p className="text-[12px] text-zinc-400 mt-0.5">
-            {event.student === 'All' ? 'Ben & Jade' : event.student}
+            {eventAudience(event)}
             {event.sport ? ` · ${event.sport}` : ''}
             {loc ? (
               <>
@@ -150,7 +160,7 @@ function EventChip({ event, onSelect, compact = false }) {
         onSelect(event);
       }}
       className={`w-full text-left rounded-md px-1.5 ${compact ? 'py-0.5 text-[10px] min-h-5 leading-tight' : 'py-1 text-[12px] min-h-7'} font-medium truncate ${eventColor(event)}`}
-      title={`${event.time || ''} ${decode(event.title)}`.trim()}
+      title={`${event.time || ''} ${decode(event.title)} · ${eventAudience(event)}${event.sport ? ` · ${event.sport}` : ''}`.trim()}
     >
       {event.time && event.time !== 'All day' ? (
         <span className="opacity-90 mr-1">{event.time}</span>

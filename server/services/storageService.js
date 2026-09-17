@@ -1,12 +1,16 @@
 /**
  * storageService.js
- * 
- * Persistent store for School Dashboard data:
- * - Tasks (including user comments, priority, completed checks)
- * - Events (sports games, practices, chapel)
+ *
+ * Persistent store for School Dashboard Blackbaud/cache data:
+ * - Tasks, events, grades, assignments snapshot
  * - Sync metadata (lastSyncedAt timestamp, stats)
- * 
- * Storage Backends:
+ *
+ * Family durable state (comments, missing-acks, notifications, read-state,
+ * done overrides) lives in supabaseStore.js → wla_* tables when
+ * SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set; otherwise JSON files
+ * via familyStore.js. This module does not write those wla_* tables.
+ *
+ * Storage Backends for dashboard-data:
  * 1. Local / Self-hosted: Persists to server/data/dashboard-data.json
  * 2. Vercel Serverless:
  *    - If Vercel KV environment variables (KV_REST_API_URL, KV_REST_API_TOKEN) are configured,
@@ -18,6 +22,11 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { decodeHtmlEntities } from './parserService.js';
+import { isConfigured as isSupabaseConfigured } from './supabaseStore.js';
+
+export function familyPersistence() {
+  return isSupabaseConfigured() ? 'supabase' : 'json';
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

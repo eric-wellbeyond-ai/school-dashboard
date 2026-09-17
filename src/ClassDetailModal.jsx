@@ -88,12 +88,19 @@ function asPost(item, index, prefix) {
     id: String(item.id || item.AlbumID || item.LinkID || item.ItemID || item.ContentItemId || item.DiscussionId || `${prefix}_${index}`),
     title: title || 'Class post',
     body: body && body !== title ? body : (title ? '' : body),
+    description: body && body !== title ? body : (title ? '' : body),
+    html: item.html || '',
     author: decode(item.author || item.CreateName || item.Author || ''),
     date: formatPostDate(item.date || item.publishDate || item.PublishDate || item.CreateDate || item.InsertDate || ''),
     url: item.url || item.Url || '',
     images,
     files,
-    links
+    links,
+    viewed: item.viewed !== true ? false : true,
+    feed: item.feed || 'bulletin',
+    type: item.type || 'Bulletin',
+    source: 'Class bulletin',
+    snippet: body
   };
 }
 
@@ -349,6 +356,8 @@ export default function ClassDetailModal({
   assignments = [],
   onClose,
   onOpenTask,
+  onOpenPost,
+  readOverrides = {},
   taskModalOpen = false
 }) {
   const closeRef = useRef(null);
@@ -377,8 +386,19 @@ export default function ClassDetailModal({
     return types;
   }, [classAssignments]);
 
-  const bulletin = useMemo(() => postsFromDetail(detail), [detail]);
-  const topics = (detail?.topics && detail.topics.length) ? detail.topics : fallbackTopics;
+  const bulletin = useMemo(() => postsFromDetail(detail).map((item) => {
+    const key = `${item.feed || 'bulletin'}:${item.id}`;
+    if (!Object.prototype.hasOwnProperty.call(readOverrides, key)) return item;
+    return { ...item, viewed: readOverrides[key] };
+  }), [detail, readOverrides]);
+  const topics = useMemo(() => {
+    const list = (detail?.topics && detail.topics.length) ? detail.topics : fallbackTopics;
+    return list.map((item) => {
+      const key = `topics:${item.id}`;
+      if (!Object.prototype.hasOwnProperty.call(readOverrides, key)) return item;
+      return { ...item, viewed: readOverrides[key] };
+    });
+  }, [detail, fallbackTopics, readOverrides]);
   const topicsFromGradebook = !(detail?.topics && detail.topics.length) && fallbackTopics.length > 0;
   const openTopic = topics.find((topic) => String(topic.id) === String(openTopicId)) || null;
   const topicAssignments = useMemo(
@@ -550,33 +570,26 @@ export default function ClassDetailModal({
                       : 'No bulletin posts for this class.'}
                   </p>
                 ) : (
-                  <ul className="space-y-3">
+                  <ul className="space-y-2">
                     {bulletin.map((post) => (
-                      <li key={post.id} className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3.5">
-                        <p className="text-[15px] font-medium text-zinc-100">{post.title}</p>
-                        {(post.author || post.date) && (
-                          <p className="mt-1 text-[13px] text-zinc-500">
-                            {[post.author, post.date].filter(Boolean).join(' · ')}
-                          </p>
-                        )}
-                        <RichBody
-                          text={post.body}
-                          images={post.images}
-                          files={post.files}
-                          links={post.links}
-                          url={post.url}
-                        />
-                        {post.url && post.url !== post.body ? (
-                          <a
-                            href={post.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="mt-2 inline-flex items-center gap-1.5 text-[13px] text-sky-400 hover:text-sky-300 break-all"
-                          >
-                            <ExternalLink className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                            {post.title && post.title !== 'Class post' ? post.title : post.url}
-                          </a>
-                        ) : null}
+                      <li key={post.id}>
+                        <button
+                          type="button"
+                          className={`w-full min-h-11 rounded-xl border border-zinc-800 px-3.5 py-2.5 text-left hover:bg-zinc-900/70 ${post.viewed === false ? 'ff-feed-row is-unread' : ''}`}
+                          onClick={() => onOpenPost?.(post)}
+                        >
+                          <span className="ff-feed-row-title block text-[15px] font-medium text-zinc-100">{post.title}</span>
+                          {(post.author || post.date) && (
+                            <span className="mt-1 block text-[13px] text-zinc-500">
+                              {[post.author, post.date].filter(Boolean).join(' · ')}
+                            </span>
+                          )}
+                          {post.body ? (
+                            <span className="mt-0.5 block text-[13px] text-zinc-400 leading-relaxed line-clamp-2">
+                              {decode(post.body)}
+                            </span>
+                          ) : null}
+                        </button>
                       </li>
                     ))}
                   </ul>
@@ -655,12 +668,23 @@ export default function ClassDetailModal({
                         <li key={topic.id}>
                           <button
                             type="button"
-                            onClick={() => setOpenTopicId(topic.id)}
+                            onClick={() => onOpenPost?.({
+                              ...topic,
+                              feed: 'topics',
+                              type: 'Topic',
+                              source: 'Class topic',
+                              date: topic.publishDate || topic.date,
+                              description: [
+                                decode(topic.description || ''),
+                                ...(topic.blocks || []).map((block) => [decode(block.title || ''), decode(block.body || '')].filter(Boolean).join('\n')).filter(Boolean)
+                              ].filter(Boolean).join('\n\n'),
+                              viewed: topic.viewed === false ? false : topic.viewed
+                            })}
                             aria-label={`Open topic ${decode(topic.title)}`}
-                            className="w-full min-h-11 rounded-xl border border-zinc-800 px-3.5 py-2.5 text-left hover:bg-zinc-900/70 flex items-center gap-3"
+                            className={`w-full min-h-11 rounded-xl border border-zinc-800 px-3.5 py-2.5 text-left hover:bg-zinc-900/70 flex items-center gap-3 ${topic.viewed === false ? 'ff-feed-row is-unread' : ''}`}
                           >
                             <span className="min-w-0 flex-1">
-                              <span className="block text-[15px] font-medium text-zinc-100">{decode(topic.title)}</span>
+                              <span className={`block text-[15px] text-zinc-100 ${topic.viewed === false ? 'font-semibold' : 'font-medium'}`}>{decode(topic.title)}</span>
                               {preview ? (
                                 <span className="mt-0.5 block text-[13px] text-zinc-400 leading-relaxed line-clamp-2">
                                   {preview}
