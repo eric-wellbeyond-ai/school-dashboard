@@ -166,6 +166,16 @@ function ProfileAvatar({ name, photoUrl, size = 28, className = '' }) {
   );
 }
 
+function photoForStudent(students, grades, assignments, name) {
+  const row = (students || []).find((s) => s.student === name);
+  if (row?.photoUrl) return row.photoUrl;
+  const courses = grades?.[name];
+  const first = Array.isArray(courses) ? courses[0] : null;
+  if (first?.studentPhoto || first?.photoUrl) return first.studentPhoto || first.photoUrl;
+  const fromAssignment = (assignments || []).find((a) => a.student === name && a.studentPhoto);
+  return fromAssignment?.studentPhoto || null;
+}
+
 export default function App() {
   const [selectedStudent, setSelectedStudent] = useState('All'); // 'All' | 'Ben' | 'Jade'
   const [isSyncing, setIsSyncing] = useState(false);
@@ -959,6 +969,27 @@ export default function App() {
     }, 1500);
   };
 
+  const promptBlackbaudReauth = async () => {
+    setAuthBanner({
+      type: 'info',
+      message: 'Blackbaud needs a sign-in. Use Log in with Blackbaud here — Chromium stays in the background on this Mac.'
+    });
+    setShowBlackbaudModal(true);
+    startPortalGradePoll();
+    let running = macWebview.running;
+    try {
+      const wvRes = await fetch('/api/blackbaud/mac-webview');
+      if (wvRes.ok) {
+        const wv = await wvRes.json();
+        setMacWebview(wv);
+        running = Boolean(wv.running);
+      }
+    } catch {}
+    if (!running) {
+      void startMacWebview();
+    }
+  };
+
   const handleLoginWithBlackbaud = () => {
     claimedMacToken.current = null;
     void handleSyncBlackbaud({ openPortal: true });
@@ -973,32 +1004,47 @@ export default function App() {
         type: 'info',
         message: 'Opening the Mac sign-in. It stays open through redirects and closes once /app/parent or /app/student loads.'
       });
-      void startMacWebview();
+      let running = macWebview.running;
+      try {
+        const wvRes = await fetch('/api/blackbaud/mac-webview');
+        if (wvRes.ok) {
+          const wv = await wvRes.json();
+          setMacWebview(wv);
+          running = Boolean(wv.running);
+        }
+      } catch {}
+      if (!running) {
+        void startMacWebview();
+      }
       return;
     }
     setIsSyncingBlackbaud(true);
     try {
       const res = await fetch('/api/blackbaud/sync');
-      const data = applyBlackbaudSync(await res.json());
-      if (data.connected) {
-        const gradeCount = gradeCountFrom(data);
-        if (gradeCount === 0 && openPortal) {
-          setAuthBanner({
-            type: 'info',
-            message: 'Sign in inside the Mac window. It stays open through the white redirect screens and closes on the parent or student home.'
-          });
-        } else if (gradeCount > 0 && !openPortal) {
-          finishMacSignIn(data, { closePopup: false });
-        }
-      } else if (openPortal) {
-        setShowBlackbaudModal(true);
+      let data = {};
+      try {
+        data = await res.json();
+      } catch {
+        data = {};
+      }
+      const msg = String(data.error || data.message || '');
+      const needsReauth =
+        res.status === 401
+        || res.status === 403
+        || data.needsReauth === true
+        || data.connected === false
+        || /SESSION_EXPIRED|token t is not valid|not connected|re-authenticate|re-run the bookmarklet/i.test(msg);
+      if (needsReauth) {
+        await promptBlackbaudReauth();
+        return;
+      }
+      data = applyBlackbaudSync(data);
+      if (gradeCountFrom(data) > 0) {
+        finishMacSignIn(data, { closePopup: false });
       }
     } catch (err) {
       console.error('Failed to sync Blackbaud:', err);
-      setAuthBanner({
-        type: 'info',
-        message: 'Could not refresh grades yet. Sign in inside the Mac Playwright window.'
-      });
+      await promptBlackbaudReauth();
     } finally {
       setIsSyncingBlackbaud(false);
     }
@@ -1402,6 +1448,12 @@ export default function App() {
   const canSeeJade = allowedKeys.includes('Jade');
   const isParentViewer = blackbaudStatus.role !== 'student';
   const signedInName = blackbaudStatus.displayName || blackbaudStatus.accountName || '';
+  const studentPhoto = (name) => photoForStudent(
+    blackbaudStatus.students,
+    blackbaudGrades,
+    blackbaudAssignments,
+    name
+  );
   const gradeGroups = useMemo(() => {
     const source = blackbaudGrades || {};
     const extra = Object.keys(source).filter((key) => key !== 'Ben' && key !== 'Jade');
@@ -1502,6 +1554,7 @@ export default function App() {
             {canSeeBen && (
               <li>
                 <button type="button" aria-pressed={selectedStudent === 'Ben'} className={selectedStudent === 'Ben' ? 'active' : ''} onClick={() => setSelectedStudent('Ben')}>
+                  <ProfileAvatar name="Ben" photoUrl={studentPhoto('Ben')} size={28} />
                   <span>
                     Ben
                     <span className="block text-xs font-normal opacity-60">High school</span>
@@ -1513,6 +1566,7 @@ export default function App() {
             {canSeeJade && (
               <li>
                 <button type="button" aria-pressed={selectedStudent === 'Jade'} className={selectedStudent === 'Jade' ? 'active' : ''} onClick={() => setSelectedStudent('Jade')}>
+                  <ProfileAvatar name="Jade" photoUrl={studentPhoto('Jade')} size={28} />
                   <span>
                     Jade
                     <span className="block text-xs font-normal opacity-60">Middle school</span>
@@ -1553,19 +1607,32 @@ export default function App() {
       {/* Main Content Area                                    */}
       {/* ---------------------------------------------------- */}
       <main id="wla-main" className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto bg-base-200">
-        <header className="navbar bg-base-100 border-b border-base-300 sticky top-0 z-20 min-h-16 px-4">
+        <header className="app-topbar navbar sticky top-0 z-30 min-h-14 px-4 bg-zinc-950">
           <div className="flex-1 min-w-0">
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-semibold">Grades and schoolwork</h2>
+                <h2 className="text-lg font-semibold text-zinc-50">Grades and schoolwork</h2>
                 <span className="badge badge-outline">Fall 2026</span>
               </div>
-              <p className="text-xs text-base-content/60 mt-0.5">
+              <p className="text-xs text-zinc-400 mt-0.5">
                 {lastSynced ? `Inbox synced at ${lastSynced}` : 'Ready to sync with school inbox & sportsYou'}
               </p>
             </div>
           </div>
-          <div className="flex-none gap-2">
+          <div className="flex-none flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              id="refresh-blackbaud-button"
+              onClick={() => void handleSyncBlackbaud({ openPortal: false })}
+              disabled={isSyncingBlackbaud}
+              aria-busy={isSyncingBlackbaud}
+              className="btn btn-primary min-h-11"
+            >
+              {isSyncingBlackbaud
+                ? <span className="loading loading-spinner loading-xs" aria-hidden="true" />
+                : <RefreshCw className="w-4 h-4" aria-hidden="true" />}
+              Refresh data from Blackbaud
+            </button>
             {authStatus.authenticated ? (
               <div className="flex items-center gap-2">
                 <span className="badge badge-success badge-outline">Gmail linked</span>
@@ -1626,15 +1693,6 @@ export default function App() {
                       </span>
                     </button>
                   </li>
-                  <li className="menu-title">School portal</li>
-                  <li>
-                    <button type="button" onClick={() => { setSyncDropdownOpen(false); handleSyncBlackbaud(); }}>
-                      <span>
-                        Sync Blackbaud
-                        <span className="block text-xs font-normal opacity-60">Refresh grades and assignments</span>
-                      </span>
-                    </button>
-                  </li>
                 </ul>
               )}
             </div>
@@ -1675,6 +1733,7 @@ export default function App() {
                   onClick={() => setSelectedStudent('Ben')}
                   className={`btn join-item ${selectedStudent === 'Ben' ? 'btn-active' : ''}`}
                 >
+                  <ProfileAvatar name="Ben" photoUrl={studentPhoto('Ben')} size={18} />
                   Ben
                 </button>
                 )}
@@ -1686,6 +1745,7 @@ export default function App() {
                   onClick={() => setSelectedStudent('Jade')}
                   className={`btn join-item ${selectedStudent === 'Jade' ? 'btn-active' : ''}`}
                 >
+                  <ProfileAvatar name="Jade" photoUrl={studentPhoto('Jade')} size={18} />
                   Jade
                 </button>
                 )}
@@ -1729,15 +1789,9 @@ export default function App() {
 
               <div className="flex flex-wrap items-center gap-2">
                 {blackbaudStatus.connected ? (
-                  <>
-                    <button type="button" onClick={handleSyncBlackbaud} disabled={isSyncingBlackbaud} className="btn btn-primary btn-sm">
-                      {isSyncingBlackbaud ? <span className="loading loading-spinner loading-xs" /> : <RefreshCw className="w-4 h-4" />}
-                      {isSyncingBlackbaud ? 'Syncing...' : 'Sync Grades'}
-                    </button>
-                    <button type="button" onClick={() => setShowBlackbaudModal(true)} className="btn btn-ghost btn-sm">
-                      Settings
-                    </button>
-                  </>
+                  <button type="button" onClick={() => setShowBlackbaudModal(true)} className="btn btn-ghost btn-sm">
+                    Settings
+                  </button>
                 ) : (
                   <button type="button" onClick={() => setView('landing')} className="btn btn-primary btn-sm">
                     Log in with Blackbaud
@@ -1773,18 +1827,19 @@ export default function App() {
                     </p>
                     <p className="text-[13px] text-base-content/70 mt-1 leading-relaxed">
                       {blackbaudStatus.connected
-                        ? 'Sync grades to pull the current term.'
+                        ? 'Use Refresh data from Blackbaud in the top bar to pull the current term.'
                         : 'Use Log in with Blackbaud on the landing page.'}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => (blackbaudStatus.connected ? handleSyncBlackbaud({ openPortal: false }) : setView('landing'))}
-                      disabled={isSyncingBlackbaud || macWebviewStarting}
-                      className="mt-4 btn btn-primary"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingBlackbaud || macWebviewStarting ? 'animate-spin' : ''}`} />
-                      <span>{isSyncingBlackbaud ? 'Syncing…' : (blackbaudStatus.connected ? 'Sync Grades' : 'Log in with Blackbaud')}</span>
-                    </button>
+                    {!blackbaudStatus.connected && (
+                      <button
+                        type="button"
+                        onClick={() => setView('landing')}
+                        className="mt-4 btn btn-primary"
+                      >
+                        <Key className="w-3.5 h-3.5" />
+                        <span>Log in with Blackbaud</span>
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <CourseGradeList groups={gradeGroups} mode={gradeDisplay} onSelectCourse={setSelectedCourse} />
@@ -1801,7 +1856,10 @@ export default function App() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <h2 className="card-title text-base">Assignments</h2>
-                  <p className="text-sm text-base-content/70">
+                  <p className="text-sm text-base-content/70 inline-flex items-center gap-2">
+                    {selectedStudent !== 'All' ? (
+                      <ProfileAvatar name={selectedStudent} photoUrl={studentPhoto(selectedStudent)} size={20} />
+                    ) : null}
                     {childLabel}
                     {taskFilter === 'dueSoon' ? ` · through ${fridayLabel}` : ''}
                   </p>
@@ -1911,7 +1969,7 @@ export default function App() {
                         <Inbox className="w-8 h-8 mx-auto mb-2 text-base-content/60" />
                         <p className="text-[15px] font-semibold text-base-content">Sign in to load assignments</p>
                         <p className="text-[13px] text-base-content/70 max-w-sm mx-auto mt-1 leading-relaxed">
-                          Log in with Blackbaud, then sync grades for {childLabel}.
+                          Log in with Blackbaud, then use Refresh data from Blackbaud for {childLabel}.
                         </p>
                         <button
                           type="button"
@@ -1933,18 +1991,9 @@ export default function App() {
                         </p>
                         <p className="text-[13px] text-base-content/60 mt-1 max-w-sm mx-auto">
                           {blackbaudAssignments.length === 0
-                            ? 'Sync grades to pull the current gradebook.'
-                            : 'Choose another status, or sync grades to refresh.'}
+                            ? 'Use Refresh data from Blackbaud in the top bar to pull the current gradebook.'
+                            : 'Choose another status, or refresh from the top bar.'}
                         </p>
-                        <button
-                          type="button"
-                          onClick={handleSyncBlackbaud}
-                          disabled={isSyncingBlackbaud}
-                          className="btn btn-primary mt-4"
-                        >
-                          {isSyncingBlackbaud ? <span className="loading loading-spinner loading-xs" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                          {isSyncingBlackbaud ? 'Syncing...' : 'Sync Grades'}
-                        </button>
                       </>
                     )}
                   </div>
@@ -1992,7 +2041,12 @@ export default function App() {
                               <p className={`text-[15px] font-medium leading-snug ${task.status === 'done' ? 'text-base-content/70' : 'text-base-content'}`}>
                                 {decodeHtmlEntities(task.title)}
                               </p>
-                              <p className="mt-1 text-[13px] text-base-content/70">
+                              <p className="mt-1 text-[13px] text-base-content/70 inline-flex items-center gap-1.5 min-w-0">
+                                <ProfileAvatar
+                                  name={task.student}
+                                  photoUrl={task.studentPhoto || studentPhoto(task.student)}
+                                  size={18}
+                                />
                                 <span className={isBen ? 'text-info' : 'text-secondary'}>
                                   {task.student}
                                 </span>
@@ -2316,7 +2370,7 @@ export default function App() {
                 </p>
               )}
               <p className="text-[11px] text-base-content/60 leading-relaxed">
-                Sync Grades refreshes this signed-in account. Log in with Blackbaud is the only
+                Refresh data from Blackbaud refreshes this signed-in account. Log in with Blackbaud is the only
                 control that starts Chromium. Phones on Wi‑Fi use{' '}
                 <code className="bg-base-200 px-1 py-0.5 rounded font-mono">http://&lt;this-mac&gt;:5173</code>.
               </p>
@@ -2481,12 +2535,17 @@ export default function App() {
               </button>
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <span
-                  className={`text-[13px] font-semibold px-2.5 py-1 rounded-md border ${
+                  className={`inline-flex items-center gap-1.5 text-[13px] font-semibold px-2.5 py-1 rounded-md border ${
                     selectedTaskForModal.student === 'Ben'
                       ? 'bg-info/10 text-info border-info/30'
                       : 'bg-secondary/10 text-secondary border-secondary/30'
                   }`}
                 >
+                  <ProfileAvatar
+                    name={selectedTaskForModal.student}
+                    photoUrl={selectedTaskForModal.studentPhoto || studentPhoto(selectedTaskForModal.student)}
+                    size={18}
+                  />
                   {selectedTaskForModal.student}
                 </span>
                 {selectedTaskForModal.course && (

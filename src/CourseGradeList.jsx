@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { gradeBandFromLetterOrPercent, gradeToneClass } from './lib/gradeColors.js';
 
 function decode(str) {
@@ -20,8 +20,44 @@ function courseGradeValue(course, mode) {
   return letter || percent || '—';
 }
 
+function resolveTeacherPhoto(course) {
+  const direct = course?.teacherPhoto || course?.teacherImage || '';
+  if (direct && !/\/api\/user\/profilephoto/i.test(direct)) return direct;
+  if (course?.teacherUserId) return `/api/blackbaud/profile-photo/${course.teacherUserId}`;
+  if (direct) return `/api/blackbaud/photo?url=${encodeURIComponent(direct)}`;
+  return null;
+}
+
 const GRADE_CHIP_CLASS =
   'inline-flex min-w-[2.75rem] justify-center tabular-nums font-semibold text-[13px] px-2 py-0.5 rounded-md border';
+
+function TeacherAvatar({ name, photoUrl, size = 28 }) {
+  const [broken, setBroken] = useState(false);
+  const initial = String(name || '?').trim().charAt(0).toUpperCase() || '?';
+  const dim = `${size}px`;
+  if (photoUrl && !broken) {
+    return (
+      <img
+        src={photoUrl}
+        alt=""
+        width={size}
+        height={size}
+        onError={() => setBroken(true)}
+        className="rounded-full object-cover shrink-0 bg-zinc-800"
+        style={{ width: dim, height: dim }}
+      />
+    );
+  }
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-flex items-center justify-center rounded-full shrink-0 font-semibold bg-zinc-800 text-zinc-100"
+      style={{ width: dim, height: dim, fontSize: Math.max(10, Math.round(size * 0.4)) }}
+    >
+      {initial}
+    </span>
+  );
+}
 
 export default function CourseGradeList({ groups, mode, onSelectCourse }) {
   if (!groups.length) return null;
@@ -45,6 +81,8 @@ export default function CourseGradeList({ groups, mode, onSelectCourse }) {
                 const value = courseGradeValue(c, mode);
                 const band = gradeBandFromLetterOrPercent(c.letterGrade, c.percentage || c.numericGrade);
                 const label = decode(c.course) || 'Class';
+                const teacherName = decode(c.teacher || 'Teacher TBA');
+                const teacherPhoto = resolveTeacherPhoto(c);
                 return (
                   <tr
                     key={`${group.key}-${c.sectionId || c.course || idx}`}
@@ -62,8 +100,13 @@ export default function CourseGradeList({ groups, mode, onSelectCourse }) {
                   >
                     <td className="font-medium">{label}</td>
                     <td className="text-base-content/70">
-                      {decode(c.teacher || 'Teacher TBA')}
-                      {c.room ? ` · Rm ${c.room}` : ''}
+                      <span className="inline-flex items-center gap-2 min-w-0">
+                        <TeacherAvatar name={teacherName} photoUrl={teacherPhoto} />
+                        <span className="min-w-0">
+                          {teacherName}
+                          {c.room ? ` · Rm ${c.room}` : ''}
+                        </span>
+                      </span>
                     </td>
                     <td className="text-right">
                       <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass(band)}`}>
@@ -80,3 +123,4 @@ export default function CourseGradeList({ groups, mode, onSelectCourse }) {
     </div>
   );
 }
+

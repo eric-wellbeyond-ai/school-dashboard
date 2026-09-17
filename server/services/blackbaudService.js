@@ -34,7 +34,58 @@ const __dirname = path.dirname(__filename);
 
 const SUBDOMAIN = process.env.BLACKBAUD_SUBDOMAIN || 'westlakelutheran';
 const BASE_URL = `https://${SUBDOMAIN}.myschoolapp.com`;
+const CDN_HOST = 'https://bbk12e1-cdn.myschoolcdn.com';
+const SCHOOL_FTP_PREFIX = '/ftpimages/2274/user';
 const TOKENS_PATH = path.join(__dirname, '..', '.blackbaud_tokens.json');
+const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+
+function isAllowedPhotoHost(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/\.$/, '');
+  return host === 'myschoolapp.com'
+    || host.endsWith('.myschoolapp.com')
+    || host === 'myschoolcdn.com'
+    || host.endsWith('.myschoolcdn.com');
+}
+
+export function isAllowedPhotoUrl(raw, base = BASE_URL) {
+  if (!raw) return false;
+  try {
+    const u = new URL(String(raw), base);
+    return (u.protocol === 'https:' || u.protocol === 'http:') && isAllowedPhotoHost(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function toCdnPhotoUrl(value) {
+  if (!value || typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) {
+    return isAllowedPhotoUrl(raw) ? raw : null;
+  }
+  if (/FileAccess\.aspx/i.test(raw) || raw.startsWith('/podium/')) {
+    const abs = raw.startsWith('http') ? raw : `${BASE_URL}${raw.startsWith('/') ? '' : '/'}${raw}`;
+    return isAllowedPhotoUrl(abs) ? abs : null;
+  }
+  if (raw.startsWith('/ftpimages/')) return `${CDN_HOST}${raw}`;
+  if (raw.startsWith('/')) return `${CDN_HOST}${raw}`;
+  return `${CDN_HOST}${SCHOOL_FTP_PREFIX}/${raw.replace(/^\/+/, '')}`;
+}
+
+export function dashboardPhotoSrc(absUrl) {
+  if (!absUrl) return null;
+  try {
+    const u = new URL(absUrl, BASE_URL);
+    if (!isAllowedPhotoHost(u.hostname)) return null;
+    if (/fileaccess/i.test(u.pathname) || /profilephoto/i.test(u.pathname)) {
+      return `/api/blackbaud/photo?url=${encodeURIComponent(u.href)}`;
+    }
+    return u.href;
+  } catch {
+    return absUrl;
+  }
+}
 
 // Memory cache
 let cachedSession = null;
@@ -228,11 +279,30 @@ export function studentsFromContext(data = {}) {
 }
 
 export function profilePhotoUrl(ui = {}) {
-  const photo = ui.ProfilePhoto || {};
-  const rel = photo.ThumbFilenameUrl || photo.ThumbFilenameEditedUrl || photo.LargeFilenameUrl || photo.LargeFilenameEditedUrl;
-  if (!rel) return null;
-  if (String(rel).startsWith('http')) return rel;
-  return `https://bbk12e1-cdn.myschoolcdn.com${rel}`;
+  const photo = ui.ProfilePhoto || ui.profilePhoto || {};
+  const candidates = [
+    photo.ThumbFilenameUrl,
+    photo.ThumbFilenameEditedUrl,
+    photo.LargeFilenameUrl,
+    photo.LargeFilenameEditedUrl,
+    photo.ThumbFilename,
+    photo.LargeFilename,
+    ui.ThumbFilenameUrl,
+    ui.LargeFilenameUrl,
+    ui.PhotoUrl,
+    ui.LargePhotoUrl,
+    ui.ProfilePicture,
+    ui.photoUrl,
+    ui.ThumbFilename,
+    ui.LargeFilename,
+    ui.groupownerphoto,
+    ui.ProfilePhotoFile?.Attachment
+  ];
+  for (const candidate of candidates) {
+    const abs = toCdnPhotoUrl(candidate);
+    if (abs) return dashboardPhotoSrc(abs);
+  }
+  return null;
 }
 
 export function accountFromContext(data = {}, status = {}, homeUrl = '') {
@@ -380,14 +450,12 @@ export async function getStudentClassesAndGrades(studentId, personaId = 1) {
       const classes = await blackbaudRequest(classEndpoint);
       if (!Array.isArray(classes) || classes.length === 0) continue;
 
-      return classes.map((c) => {
+      const mapped = classes.map((c) => {
         const title = decodeHtmlEntities(c.sectionidentifier || c.course_title || c.GroupName || 'Course');
         const teacher = decodeHtmlEntities(c.groupownername || c.Owner || '');
         const teacherEmail = c.groupowneremail || null;
         const teacherUserId = c.groupownerid || c.OwnerId || c.ownerid || null;
-        const teacherPhoto = teacherUserId
-          ? `${BASE_URL}/api/user/profilephoto?userId=${teacherUserId}`
-          : null;
+        const teacherPhoto = profilePhotoUrl(c);
         const rawGrade = c.cumgrade;
         const numGrade = (rawGrade !== null && rawGrade !== undefined && rawGrade !== '') ? parseFloat(rawGrade) : null;
         const letterGrade = toLetterGrade(numGrade);
@@ -400,6 +468,7 @@ export async function getStudentClassesAndGrades(studentId, personaId = 1) {
           teacherEmail: teacherEmail,
           teacherUserId,
           teacherPhoto,
+          teacherImage: teacherPhoto,
           letterGrade: letterGrade,
           percentage: (numGrade !== null && !isNaN(numGrade)) ? `${Math.round(numGrade)}%` : (c.CumulativeDisplay || null),
           numericGrade: numGrade,
@@ -410,13 +479,26 @@ export async function getStudentClassesAndGrades(studentId, personaId = 1) {
           leadSectionId: c.leadsectionid || c.LeadSectionId || c.sectionid,
           associationId: c.associationid || c.AssociationId || null,
           markingPeriodId: c.markingperiodid,
-          coursePhoto: photoRel
-            ? (String(photoRel).startsWith('http') ? photoRel : `https://bbk12e1-cdn.myschoolcdn.com${photoRel}`)
-            : null,
+          coursePhoto: photoRel ? toCdnPhotoUrl(photoRel) : null,
           overdueCount: c.OverdueCount || 0,
           upcomingCount: c.UpcomingCount || 0
         };
       });
+      const missingIds = [...new Set(
+        mapped.filter((c) => !c.teacherPhoto && c.teacherUserId).map((c) => c.teacherUserId)
+      )];
+      if (missingIds.length) {
+        const extra = await hydrateTeacherPhotos(missingIds);
+        for (const course of mapped) {
+          if (course.teacherPhoto || !course.teacherUserId) continue;
+          const photo = extra.get(Number(course.teacherUserId)) || extra.get(course.teacherUserId) || null;
+          if (photo) {
+            course.teacherPhoto = photo;
+            course.teacherImage = photo;
+          }
+        }
+      }
+      return mapped;
     }
     return [];
   } catch (err) {
@@ -458,8 +540,9 @@ function mapHydrateAssignment(meta, grade, course, studentId, studentName, now) 
     sectionId: course.sectionId,
     teacher: decodeHtmlEntities(course.teacher || ''),
     teacherEmail: course.teacherEmail || null,
-    teacherPhoto: course.teacherPhoto || null,
+    teacherPhoto: course.teacherPhoto || course.teacherImage || null,
     student: studentName,
+    studentPhoto: course.studentPhoto || null,
     type: decodeHtmlEntities(meta.AssignmentType || grade.AssignmentType || 'Assignment'),
     assignedDate: assignedAt ? formatAssignmentDate(assignedAt) : '',
     dueDate: dueAt ? formatAssignmentDate(dueAt) : '',
@@ -594,9 +677,30 @@ export async function syncBlackbaudData() {
     session.email = account.email;
     session.photoUrl = account.photoUrl;
     if (account.accountName) session.accountName = account.accountName;
+    const fromCtx = studentsFromContext(ctx);
+    const photoById = new Map(fromCtx.map((s) => [Number(s.id), s.photoUrl]));
+    students = students.map((s) => ({
+      ...s,
+      photoUrl: s.photoUrl || photoById.get(Number(s.id)) || null
+    }));
+    for (const s of fromCtx) {
+      if (allowedIds.has(s.id) && !students.some((row) => Number(row.id) === Number(s.id))) {
+        students.push(s);
+      }
+    }
   } catch (err) {
     console.warn('[Blackbaud] Profile refresh failed:', err.message);
   }
+
+  const stillMissingPhotos = students.filter((s) => s.id && !s.photoUrl).map((s) => s.id);
+  if (stillMissingPhotos.length) {
+    const extra = await hydrateTeacherPhotos(stillMissingPhotos);
+    students = students.map((s) => ({
+      ...s,
+      photoUrl: s.photoUrl || extra.get(Number(s.id)) || extra.get(s.id) || null
+    }));
+  }
+  session.students = students;
 
   const results = {
     connected: true,
@@ -624,9 +728,13 @@ export async function syncBlackbaudData() {
       s.id,
       session.personaId || (identity.role === 'student' ? 2 : 1)
     );
-    results.grades[stName] = classes;
+    const withPhotos = classes.map((c) => ({
+      ...c,
+      studentPhoto: s.photoUrl || null
+    }));
+    results.grades[stName] = withPhotos;
 
-    const items = await getStudentAssignments(s.id, stName, classes);
+    const items = await getStudentAssignments(s.id, stName, withPhotos);
     results.assignments.push(...items);
     results.missingAssignments.push(...items.filter((a) => a.isMissing));
   }
@@ -676,17 +784,21 @@ async function blackbaudRequestSoft(endpoint, options = {}) {
   }
 
   const contentType = res.headers.get('content-type') || '';
-  if (contentType.includes('text/html')) {
-    return { ok: false, status: res.status, data: null };
-  }
+  const raw = await res.text();
   if (!res.ok) {
-    return { ok: false, status: res.status, data: null };
+    return { ok: false, status: res.status, forbidden: res.status === 403, data: null, html: contentType.includes('text/html') ? raw : null };
   }
-  try {
-    return { ok: true, status: res.status, data: await res.json() };
-  } catch {
-    return { ok: false, status: res.status, data: null };
+  if (contentType.includes('application/json') || /^\s*[\[{]/.test(raw)) {
+    try {
+      return { ok: true, status: res.status, data: JSON.parse(raw) };
+    } catch {
+      /* fall through and try HTML posts */
+    }
   }
+  if (raw && (contentType.includes('text/html') || /bb-tile|bulletin|LongText|BriefDescription/i.test(raw))) {
+    return { ok: true, status: res.status, data: null, html: raw };
+  }
+  return { ok: false, status: res.status, data: null };
 }
 
 function firstRecord(data) {
@@ -695,11 +807,45 @@ function firstRecord(data) {
   return null;
 }
 
+const LIST_KEYS = [
+  'Items', 'items', 'topics', 'Topics', 'posts', 'Posts',
+  'bulletin', 'Bulletin', 'BulletinBoardContent', 'bulletinBoardContent',
+  'content', 'Content', 'ContentList', 'value', 'data', 'results', 'Results',
+  'Discussions', 'discussions', 'Discussion', 'threads', 'Threads',
+  'messages', 'Messages', 'Entries', 'entries',
+  'NewsItem', 'NewsItems', 'news', 'News',
+  'MessageList', 'Conversation', 'Announcements', 'announcements'
+];
+
+const CONTENT_TYPE_TITLES = /^(News|Text|Links?|Announcement|Widget|Downloads?|Events?)$/i;
+const FLAG_DESCRIPTION = /^(yes|no)$/i;
+
+function looksLikeRecord(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+  return Boolean(
+    item.Headline || item.Title || item.Name || item.Subject
+    || item.LongDescription || item.Description || item.Body || item.Message
+    || item.ContentItemId || item.ContentId || item.DiscussionId || item.TopicID
+    || item.ShortDescription || item.ContentName || item.Preview
+  );
+}
+
 function asList(data) {
-  if (Array.isArray(data)) return data;
-  if (data && Array.isArray(data.Items)) return data.Items;
-  if (data && Array.isArray(data.topics)) return data.topics;
-  if (data && typeof data === 'object') return [data];
+  if (data == null) return [];
+  if (Array.isArray(data)) {
+    if (data.length && Array.isArray(data[0])) return data.flatMap((entry) => asList(entry));
+    return data.filter((item) => item != null);
+  }
+  if (typeof data !== 'object') return [];
+  for (const key of LIST_KEYS) {
+    if (Array.isArray(data[key]) && data[key].length) return asList(data[key]);
+  }
+  for (const val of Object.values(data)) {
+    if (!Array.isArray(val) || val.length === 0) continue;
+    const nested = asList(val);
+    if (nested.some((item) => looksLikeRecord(item))) return nested;
+  }
+  if (looksLikeRecord(data)) return [data];
   return [];
 }
 
@@ -711,21 +857,79 @@ function pickText(...values) {
   return '';
 }
 
+function formatDisplayDate(value) {
+  if (value == null || value === '') return null;
+  const raw = String(value);
+  const ms = raw.match(/\/Date\((-?\d+)/);
+  const d = ms ? new Date(Number(ms[1])) : new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function itemDedupeKey(item) {
+  return String(
+    item.ContentItemId || item.ContentId || item.DiscussionId || item.TopicID
+    || item.Id || item.Headline || item.Title || item.Name || ''
+  );
+}
+
+async function collectLists(urls) {
+  let forbidden = false;
+  let expired = false;
+  const items = [];
+  const seen = new Set();
+  for (const url of urls) {
+    const result = await blackbaudRequestSoft(url);
+    if (result.forbidden) forbidden = true;
+    if (result.expired) expired = true;
+    if (!result.ok || result.data == null) continue;
+    for (const item of asList(result.data)) {
+      const key = itemDedupeKey(item) || JSON.stringify(item).slice(0, 120);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(item);
+    }
+  }
+  return { items, forbidden, expired, ok: items.length > 0 };
+}
+
 function normalizeBulletinItem(item, index) {
-  const title = pickText(item.Headline, item.Name, item.Title, item.ShortDescription, item.ContentName);
+  const title = pickText(
+    item.Headline,
+    item.Name,
+    item.Title,
+    item.Subject,
+    item.ShortDescription,
+    item.BriefDescription,
+    item.ContentName
+  );
   const body = pickText(
     item.LongDescription,
     item.Description,
     item.LongText,
-    item.ShortDescription,
-    item.AlbumDescription
+    item.Body,
+    item.Message,
+    item.HtmlContent,
+    item.ContentBody,
+    item.RichText,
+    item.Comment,
+    item.AlbumDescription,
+    item.ShortDescription
   );
   return {
     id: item.ContentItemId || item.ContentId || item.Id || `bb_${index}`,
-    title: title || 'Class post',
-    body,
-    date: item.PublishDate || item.CreateDate || item.Date || null,
-    author: pickText(item.CreateName, item.Author, item.ModifyName) || null,
+    title: title || (body ? 'Class post' : ''),
+    body: body && body !== title ? body : (title ? '' : body),
+    date: formatDisplayDate(item.PublishDate || item.CreateDate || item.Date || item.DatePosted),
+    author: pickText(
+      item.CreateName,
+      item.Author,
+      item.AuthorName,
+      item.ModifyName,
+      item.PostedBy,
+      item.OwnerName,
+      item.UserName
+    ) || null,
     url: item.Url || null
   };
 }
@@ -735,12 +939,22 @@ function normalizeTopic(item, index) {
     id: item.TopicID || item.TopicIndexID || item.Id || `topic_${index}`,
     title: pickText(item.Name, item.Title, item.TopicName) || 'Topic',
     description: pickText(item.Description, item.LongDescription, item.ShortDescription),
-    publishDate: item.PublishDate || null,
+    publishDate: formatDisplayDate(item.PublishDate || item.Date),
     thumbUrl: item.ThumbFilename
       ? (String(item.ThumbFilename).startsWith('http')
         ? item.ThumbFilename
         : `https://bbk12e1-cdn.myschoolcdn.com${item.ThumbFilename}`)
       : null
+  };
+}
+
+function normalizeDiscussion(item, index) {
+  return {
+    id: item.DiscussionId || item.ThreadId || item.Id || `disc_${index}`,
+    title: pickText(item.Name, item.Title, item.Subject, item.Headline) || 'Discussion',
+    description: pickText(item.Description, item.Preview, item.Body, item.Message, item.LatestPost, item.LastPost),
+    author: pickText(item.Author, item.AuthorName, item.CreateName, item.UserName, item.PostedBy) || null,
+    publishDate: formatDisplayDate(item.PublishDate || item.Date || item.CreateDate || item.LastPostDate)
   };
 }
 
@@ -758,6 +972,26 @@ async function firstOk(urls) {
   return { ok: false, data: null, forbidden, expired };
 }
 
+export async function fetchUserPhotoUrl(userId) {
+  if (!userId) return null;
+  const hit = await blackbaudRequestSoft(`/api/user/${encodeURIComponent(userId)}?format=json`);
+  const rec = firstRecord(hit.data);
+  return profilePhotoUrl(rec || {});
+}
+
+async function hydrateTeacherPhotos(userIds = []) {
+  const map = new Map();
+  await Promise.all(userIds.map(async (id) => {
+    try {
+      const url = await fetchUserPhotoUrl(id);
+      if (url) map.set(Number(id), url);
+    } catch (err) {
+      console.warn(`[Blackbaud] Teacher photo hydrate failed for ${id}:`, err.message);
+    }
+  }));
+  return map;
+}
+
 export async function fetchProfilePhoto(userId) {
   const session = await getBlackbaudSession();
   if (!session?.cookie || !userId) return null;
@@ -767,26 +1001,67 @@ export async function fetchProfilePhoto(userId) {
     'Referer': `${BASE_URL}/`,
     'Cookie': formatCookieString(session.cookie)
   };
-  const res = await fetch(`${BASE_URL}/api/user/profilephoto?userId=${encodeURIComponent(userId)}`, { headers });
-  if (!res.ok) return null;
-  const contentType = res.headers.get('content-type') || 'image/jpeg';
-  if (contentType.includes('text/html')) return null;
-  if (contentType.includes('application/json')) {
-    const json = await res.json().catch(() => null);
-    const rel = json?.ThumbFilenameUrl || json?.LargeFilenameUrl || json?.url;
-    if (!rel) return null;
-    const abs = String(rel).startsWith('http') ? rel : `https://bbk12e1-cdn.myschoolcdn.com${rel}`;
-    const img = await fetch(abs, { headers });
-    if (!img.ok) return null;
-    return {
-      buf: Buffer.from(await img.arrayBuffer()),
-      contentType: img.headers.get('content-type') || 'image/jpeg'
-    };
+  const cdnUrl = await fetchUserPhotoUrl(userId);
+  const targets = [
+    cdnUrl,
+    `${BASE_URL}/api/user/profilephoto?userId=${encodeURIComponent(userId)}`
+  ].filter(Boolean);
+  for (const url of targets) {
+    const img = await fetch(url, { headers, redirect: 'manual' });
+    if (img.status >= 300 && img.status < 400) {
+      const loc = img.headers.get('location');
+      if (!loc) continue;
+      const next = new URL(loc, url).href;
+      if (!isAllowedPhotoUrl(next)) continue;
+      const followed = await fetch(next, { headers });
+      if (!followed.ok) continue;
+      const contentType = followed.headers.get('content-type') || 'image/jpeg';
+      if (contentType.includes('text/html')) continue;
+      const buf = Buffer.from(await followed.arrayBuffer());
+      if (!buf.length || buf.length > PHOTO_MAX_BYTES) continue;
+      return { buf, contentType };
+    }
+    if (!img.ok) continue;
+    const contentType = img.headers.get('content-type') || 'image/jpeg';
+    if (contentType.includes('text/html')) continue;
+    if (contentType.includes('application/json')) continue;
+    const buf = Buffer.from(await img.arrayBuffer());
+    if (!buf.length || buf.length > PHOTO_MAX_BYTES) continue;
+    return { buf, contentType };
   }
-  return {
-    buf: Buffer.from(await res.arrayBuffer()),
-    contentType
+  return null;
+}
+
+export async function fetchPhotoByUrl(rawUrl) {
+  const session = await getBlackbaudSession();
+  if (!session?.cookie || !rawUrl) return null;
+  if (!isAllowedPhotoUrl(rawUrl)) return null;
+  const headers = {
+    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+    'Referer': `${BASE_URL}/`,
+    'Cookie': formatCookieString(session.cookie)
   };
+
+  let current = new URL(String(rawUrl), BASE_URL).href;
+  for (let hop = 0; hop < 4; hop += 1) {
+    if (!isAllowedPhotoUrl(current)) return null;
+    const res = await fetch(current, { headers, redirect: 'manual' });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      if (!loc) return null;
+      current = new URL(loc, current).href;
+      continue;
+    }
+    if (!res.ok) return null;
+    const contentType = res.headers.get('content-type') || 'image/jpeg';
+    if (contentType.includes('text/html') || contentType.includes('application/json')) return null;
+    if (!contentType.startsWith('image/') && contentType !== 'application/octet-stream') return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!buf.length || buf.length > PHOTO_MAX_BYTES) return null;
+    return { buf, contentType: contentType.startsWith('image/') ? contentType : 'image/jpeg' };
+  }
+  return null;
 }
 
 /**
@@ -806,21 +1081,25 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
   const leadEnc = encodeURIComponent(lead);
 
   const [bulletinHit, topicsHit, discussionHit, assignmentHit, teacherHit] = await Promise.all([
-    firstOk([
+    collectLists([
       `/api/datadirect/BulletinBoardContentGet?format=json&sectionId=${sid}&associationId=${assoc}&pendingInd=false`,
       `/api/datadirect/BulletinBoardContentGet?format=json&sectionId=${leadEnc}&associationId=${assoc}&pendingInd=false`,
+      `/api/datadirect/BulletinBoardContentGet?format=json&sectionId=${sid}&associationId=1&pendingInd=false`,
+      `/api/datadirect/BulletinBoardContentGet?format=json&sectionId=${sid}&associationId=9&pendingInd=false`,
       `/api/class/bulletinboard/${sid}`,
       `/api/class/bulletinboard/${leadEnc}`
     ]),
-    firstOk([
+    collectLists([
       `/api/datadirect/sectiontopicsget/${leadEnc}?format=json&active=true&future=false&expired=false&sharedTopics=true`,
       `/api/datadirect/sectiontopicsget/${sid}?format=json&active=true&future=false&expired=false&sharedTopics=true`,
       `/api/datadirect/GroupPossibleTopicsGet?leadSectionId=${leadEnc}&durationId=${encodeURIComponent(info?.DurationId || 0)}&active=true&future=false&expired=false`,
       `/api/datadirect/GroupPossibleTopicsGet?leadSectionId=${sid}&durationId=0`
     ]),
-    firstOk([
+    collectLists([
       `/api/discussion/discussionboardget/?format=json&sectionId=${sid}`,
-      `/api/discussion/GetDiscussionBoard?format=json&sectionId=${sid}`
+      `/api/discussion/discussionboardget/?format=json&sectionId=${leadEnc}`,
+      `/api/discussion/GetDiscussionBoard?format=json&sectionId=${sid}`,
+      `/api/discussion/GetDiscussionBoard?format=json&sectionId=${leadEnc}`
     ]),
     firstOk([
       `/api/assignment2/forsection/${sid}/?format=json`
@@ -830,7 +1109,8 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
       : Promise.resolve({ ok: false, data: null })
   ]);
 
-  const bulletin = asList(bulletinHit.data).map(normalizeBulletinItem).filter((item) => item.title || item.body);
+  const bulletin = bulletinHit.items.map(normalizeBulletinItem).filter((item) => item.title || item.body);
+  const discussions = discussionHit.items.map(normalizeDiscussion);
   if (info?.Description) {
     const intro = pickText(info.Description, info.CourseTopic);
     if (intro && !bulletin.some((item) => item.body === intro)) {
@@ -838,20 +1118,28 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
         id: 'section-intro',
         title: 'Class overview',
         body: intro,
-        date: info.StartDate || null,
+        date: formatDisplayDate(info.StartDate) || null,
         author: pickText(info.Teacher) || null,
         url: null
       });
     }
   }
+  for (const thread of discussions) {
+    if (!(thread.title || thread.description)) continue;
+    if (bulletin.some((post) => post.id === thread.id || (post.title === thread.title && post.body === thread.description))) {
+      continue;
+    }
+    bulletin.push({
+      id: thread.id,
+      title: thread.title,
+      body: thread.description,
+      date: thread.publishDate,
+      author: thread.author,
+      url: null
+    });
+  }
 
-  const topics = asList(topicsHit.data).map(normalizeTopic);
-  const discussions = asList(discussionHit.data).map((item, index) => ({
-    id: item.DiscussionId || item.Id || `disc_${index}`,
-    title: pickText(item.Name, item.Title, item.Subject) || 'Discussion',
-    description: pickText(item.Description, item.Preview, item.Body),
-    publishDate: item.PublishDate || item.Date || null
-  }));
+  const topics = topicsHit.items.map(normalizeTopic);
   if (discussions.length && !topics.length) {
     topics.push(...discussions.map((d) => ({
       id: d.id,
@@ -868,6 +1156,7 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
     teacherUser.NickName
   );
   const teacherPhotoCdn = profilePhotoUrl(teacherUser);
+  const teacherPhoto = teacherPhotoCdn || (teacherUserId ? `/api/blackbaud/profile-photo/${teacherUserId}` : null);
 
   return {
     sectionId: Number(sectionId) || sectionId,
@@ -880,12 +1169,13 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
       name: teacherName || null,
       email: teacherUser.Email || null,
       userId: teacherUser.UserId || teacherUserId || null,
-      photoUrl: teacherPhotoCdn || (teacherUserId ? `/api/blackbaud/profile-photo/${teacherUserId}` : null)
+      photoUrl: teacherPhoto
     },
     bulletin,
     topics,
+    discussions,
     forbidden: {
-      bulletin: Boolean(bulletinHit.forbidden && bulletin.length === 0),
+      bulletin: Boolean((bulletinHit.forbidden || discussionHit.forbidden) && bulletin.length === 0),
       topics: Boolean(topicsHit.forbidden && topics.length === 0),
       assignments: Boolean(assignmentHit.forbidden)
     },

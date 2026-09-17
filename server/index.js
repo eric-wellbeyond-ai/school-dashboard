@@ -15,6 +15,8 @@ import {
   getAssignmentDetail,
   getClassPage,
   fetchProfilePhoto,
+  fetchPhotoByUrl,
+  isAllowedPhotoUrl,
   isSessionExpiredError
 } from './services/blackbaudService.js';
 import { runWithWlaSession } from './services/wlaContext.js';
@@ -447,7 +449,7 @@ app.post('/api/blackbaud/mac-webview/start', async (req, res) => {
  */
 app.get('/api/blackbaud/status', async (req, res) => {
   try {
-    if (req.wla?.cookie && !req.wla.photoUrl) {
+    if (req.wla?.cookie && (!req.wla.photoUrl || (req.wla.students || []).some((s) => !s.photoUrl))) {
       try {
         const live = await verifyAndDiscoverProfiles(req.wla.cookie, { homeUrl: req.wla.homeUrl });
         req.wla.firstName = live.firstName;
@@ -456,6 +458,7 @@ app.get('/api/blackbaud/status', async (req, res) => {
         req.wla.email = live.email;
         req.wla.photoUrl = live.photoUrl;
         if (live.accountName) req.wla.accountName = live.accountName;
+        if (Array.isArray(live.students)) req.wla.students = live.students;
         persistSessions();
       } catch (err) {
         console.warn('[Blackbaud] Profile hydrate skipped:', err.message);
@@ -632,16 +635,37 @@ app.get('/api/blackbaud/profile-photo/:userId', async (req, res) => {
   }
 });
 
+app.get('/api/blackbaud/photo', async (req, res) => {
+  if (!req.wla?.cookie) {
+    return res.status(401).end();
+  }
+  const raw = String(req.query.url || '');
+  if (!raw || !isAllowedPhotoUrl(raw)) {
+    return res.status(400).end();
+  }
+  try {
+    const photo = await runWithWlaSession(req.wla, () => fetchPhotoByUrl(raw));
+    if (!photo?.buf) return res.status(404).end();
+    res.setHeader('Content-Type', photo.contentType || 'image/jpeg');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.send(photo.buf);
+  } catch (err) {
+    console.warn('[Blackbaud] Photo proxy failed:', err.message);
+    res.status(502).end();
+  }
+});
+
 app.get('/api/blackbaud/sync', async (req, res) => {
   try {
     const result = await syncBlackbaudData();
-    if (req.wla && (result.photoUrl || result.accountName)) {
+    if (req.wla && (result.photoUrl || result.accountName || result.students)) {
       if (result.photoUrl) req.wla.photoUrl = result.photoUrl;
       if (result.firstName) req.wla.firstName = result.firstName;
       if (result.lastName) req.wla.lastName = result.lastName;
       if (result.nickName) req.wla.nickName = result.nickName;
       if (result.email) req.wla.email = result.email;
       if (result.accountName) req.wla.accountName = result.accountName;
+      if (Array.isArray(result.students)) req.wla.students = result.students;
       persistSessions();
     }
     if (!result.connected) {
