@@ -232,23 +232,35 @@ function postsFromDetail(detail) {
   return posts;
 }
 
-function AssignmentRow({ item }) {
+function AssignmentRow({ item, onOpen }) {
   const score = formatAssignmentScore(item.pointsEarned, item.maxPoints);
   const zeroMissing = isZeroCreditMissing(item);
   const missing = (item.status === 'missing' || item.isMissing || zeroMissing) && !item.doneOverride && !item.acknowledged;
   const band = missing ? 'missing' : gradeBandFromLetterOrPercent(item.letter, score.percent);
+  const title = decode(item.title);
   return (
-    <li className="flex items-baseline justify-between gap-3 px-3.5 py-2.5">
-      <div className="min-w-0">
-        <p className="text-[15px] text-zinc-100 truncate">{decode(item.title)}</p>
-        <p className="text-[13px] text-zinc-500">
-          {statusLabel(item)}
-          {item.dueDate ? ` · due ${item.dueDate}` : ''}
-        </p>
-      </div>
-      <span className={`shrink-0 text-[13px] tabular-nums font-semibold px-2 py-0.5 rounded-md border ${gradeToneClass(band)}`}>
-        {missing ? 'Missing' : (score.percentLabel || '—')}
-      </span>
+    <li>
+      <button
+        type="button"
+        className="flex w-full items-baseline justify-between gap-3 px-3.5 py-2.5 min-h-11 text-left hover:bg-zinc-900/70"
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpen?.(item);
+        }}
+        aria-haspopup="dialog"
+        aria-label={`Open ${title}`}
+      >
+        <div className="min-w-0">
+          <p className="text-[15px] text-zinc-100 truncate">{title}</p>
+          <p className="text-[13px] text-zinc-500">
+            {statusLabel(item)}
+            {item.dueDate ? ` · due ${item.dueDate}` : ''}
+          </p>
+        </div>
+        <span className={`shrink-0 text-[13px] tabular-nums font-semibold px-2 py-0.5 rounded-md border ${gradeToneClass(band)}`}>
+          {missing ? 'Missing' : (score.percentLabel || '—')}
+        </span>
+      </button>
     </li>
   );
 }
@@ -332,7 +344,13 @@ function TeacherSidebar({ course, detail, teacherName, teacherEmail, teacherPhot
   );
 }
 
-export default function ClassDetailModal({ course, assignments = [], onClose }) {
+export default function ClassDetailModal({
+  course,
+  assignments = [],
+  onClose,
+  onOpenTask,
+  taskModalOpen = false
+}) {
   const closeRef = useRef(null);
   const panelRef = useRef(null);
   const tabRefs = useRef([]);
@@ -375,6 +393,7 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
+      if (taskModalOpen) return;
       if (openTopicId) {
         setOpenTopicId(null);
         return;
@@ -383,7 +402,7 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, openTopicId]);
+  }, [onClose, openTopicId, taskModalOpen]);
 
   useEffect(() => {
     setOpenTopicId(null);
@@ -619,7 +638,7 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
                       ) : (
                         <ul className="mt-2 divide-y divide-zinc-800 border border-zinc-800 rounded-xl overflow-hidden">
                           {topicAssignments.map((item) => (
-                            <AssignmentRow key={item.id} item={item} />
+                            <AssignmentRow key={item.id} item={item} onOpen={onOpenTask} />
                           ))}
                         </ul>
                       )}
@@ -667,7 +686,7 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
                 ) : (
                   <ul className="divide-y divide-zinc-800 border border-zinc-800 rounded-xl overflow-hidden">
                     {classAssignments.map((item) => (
-                      <AssignmentRow key={item.id} item={item} />
+                      <AssignmentRow key={item.id} item={item} onOpen={onOpenTask} />
                     ))}
                   </ul>
                 )

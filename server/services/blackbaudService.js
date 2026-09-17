@@ -1573,3 +1573,278 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
     portalUrl: `${BASE_URL}/app/parent#academicclass/${sectionId}/bulletinboard`
   };
 }
+
+function mmddyyyy(value = new Date()) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    const now = new Date();
+    return `${now.getMonth() + 1}/${now.getDate()}/${now.getFullYear()}`;
+  }
+  return `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+}
+
+function decodeParam(raw) {
+  let value = String(raw || '');
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      const next = decodeURIComponent(value);
+      if (next === value) break;
+      value = next;
+    } catch {
+      break;
+    }
+  }
+  return value;
+}
+
+function snippetFrom(text, max = 140) {
+  const clean = pickText(text);
+  if (!clean) return '';
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, max).trim()}…`;
+}
+
+function studentFromOfficialNote(item = {}) {
+  const id = Number(item.StudentUserId || item.StudentId || 0);
+  if (id === BEN_ID) return 'Ben';
+  if (id === JADE_ID) return 'Jade';
+  const name = String(item.StudentName || '');
+  if (/ben/i.test(name)) return 'Ben';
+  if (/jade/i.test(name)) return 'Jade';
+  return labelStudent({ id, FirstName: name });
+}
+
+const HS_AUDIENCE = /\b(high\s*school|upper\s*school|\bhs\b|9th|10th|11th|12th|grades?\s*9|freshman|sophomore|junior\s+class|senior\s+class)\b/i;
+const MS_AUDIENCE = /\b(middle\s*school|junior\s*high|\bms\b|6th|7th|8th|grades?\s*[6-8])\b/i;
+
+function audienceBlob(item = {}) {
+  const groups = asList(item.GroupList).map((group) => (
+    group?.Name || group?.GroupName || group?.Label || group?.Title || ''
+  )).join(' ');
+  return [
+    item.GroupName,
+    item.Category,
+    item.NewsCategory,
+    item.Audience,
+    item.SchoolLevel,
+    item.schoollevel,
+    item.schoolLevel,
+    item.Division,
+    item.Level,
+    item.Name,
+    item.Title,
+    item.Headline,
+    item.BriefDescription,
+    item.Description,
+    item.LongDescription,
+    item.Location,
+    groups
+  ].map((value) => pickText(value)).filter(Boolean).join(' ');
+}
+
+export function classifySchoolLevel(item = {}) {
+  const tagged = pickText(item.SchoolLevel, item.schoollevel, item.schoolLevel, item.Audience, item.Category, item.GroupName);
+  const taggedHs = tagged && HS_AUDIENCE.test(tagged);
+  const taggedMs = tagged && MS_AUDIENCE.test(tagged);
+  if (taggedHs && !taggedMs) return 'HS';
+  if (taggedMs && !taggedHs) return 'MS';
+  const text = audienceBlob(item);
+  const hs = HS_AUDIENCE.test(text);
+  const ms = MS_AUDIENCE.test(text);
+  if (hs && !ms) return 'HS';
+  if (ms && !hs) return 'MS';
+  return 'All';
+}
+
+function normalizeOfficialNote(item, index) {
+  const body = pickText(item.Comment, item.LongDescription, item.Body);
+  const title = pickText(
+    item.SubjectLine,
+    item.Title,
+    item.CommentType,
+    snippetFrom(body, 72)
+  ) || 'Official note';
+  return {
+    id: String(item.CommentId || item.Id || `note_${index}`),
+    kind: 'note',
+    title,
+    date: formatDisplayDate(item.CreatedDate || item.InsertDate || item.NoteDate) || pickText(item.CreatedDate, item.InsertDate),
+    time: null,
+    student: studentFromOfficialNote(item),
+    studentUserId: Number(item.StudentUserId || item.StudentId || 0) || null,
+    studentName: pickText(item.StudentName) || null,
+    author: pickText(item.AuthorName, item.TeacherName) || null,
+    course: pickText(item.CourseTitle) || null,
+    type: pickText(item.CommentType) || 'Official note',
+    source: 'Official Notes',
+    snippet: snippetFrom(body),
+    description: body,
+    viewed: item.Viewed !== false,
+    imageUrl: null,
+    feed: 'notes'
+  };
+}
+
+function officialNotesQuery() {
+  const toDate = encodeURIComponent(mmddyyyy());
+  return `format=json&currentInd=1&statusXml=&commentTypeXml=&fromDate=&toDate=${toDate}&searchText=`;
+}
+
+export async function fetchOfficialNotes() {
+  const qs = officialNotesQuery();
+  const listUrl = `/api/officialnote/InboxExternal/?${qs}`;
+  const countUrl = `/api/officialnote/GetInboxCountsExternal/?${qs}`;
+  const [listHit, countHit] = await Promise.all([
+    blackbaudRequestSoft(listUrl),
+    blackbaudRequestSoft(countUrl)
+  ]);
+  if (listHit.expired || countHit.expired) {
+    return { connected: false, expired: true, notes: [], unreadCount: 0, endpoints: [listUrl, countUrl] };
+  }
+  const notes = asList(listHit.data).map((item, index) => normalizeOfficialNote(item, index))
+    .filter((item) => item.title || item.description);
+  const countRow = asList(countHit.data)[0] || {};
+  const unreadCount = notes.filter((item) => item.viewed === false).length
+    || Number(countRow.NumNewComments || 0)
+    || 0;
+  return {
+    connected: true,
+    notes,
+    unreadCount,
+    totalCount: Number(countRow.AcaCommentCount || notes.length) || notes.length,
+    endpoints: [listUrl, countUrl]
+  };
+}
+
+export async function fetchOfficialNoteDetail(rawId) {
+  const id = decodeParam(rawId);
+  if (!id) return null;
+  const url = `/api/officialnote/InboxDetailExternal/?format=json&id=${encodeURIComponent(id)}`;
+  const hit = await blackbaudRequestSoft(url);
+  const item = asList(hit.data)[0] || (looksLikeRecord(hit.data) ? hit.data : null);
+  if (!item) return null;
+  return { ...normalizeOfficialNote(item, 0), id: String(rawId || item.CommentId || id) };
+}
+
+function newsImageUrl(item) {
+  const raw = item?.LargeFilenameUrl || item?.ThumbFilenameUrl || item?.ZoomFilenameUrl
+    || item?.PhotoList?.[0]?.LargeFilenameUrl || item?.PhotoList?.[0]?.ThumbFilenameUrl;
+  return dashboardPhotoSrc(toCdnPhotoUrl(raw) || resolvePortalUrl(raw));
+}
+
+function normalizeFeaturedNews(item, index) {
+  const body = pickText(item.LongDescription, item.BriefDescription, item.Description);
+  const level = classifySchoolLevel(item);
+  return {
+    id: String(item.Id || item.ContentItemId || `news_${index}`),
+    kind: 'news',
+    title: pickText(item.Name, item.Headline, item.Title) || 'Featured story',
+    date: formatDisplayDate(item.PublishDate || item.PublishDateDisplay || item.FeatureDate)
+      || pickText(item.PublishDateDisplay, item.PublishDate),
+    time: null,
+    student: 'All',
+    level,
+    author: pickText(item.Author) || null,
+    type: 'News',
+    source: 'Featured Content',
+    snippet: snippetFrom(body || item.BriefDescription),
+    description: body,
+    viewed: true,
+    imageUrl: newsImageUrl(item),
+    url: resolvePortalUrl(item.Url) || null,
+    feed: 'news'
+  };
+}
+
+function normalizeFeaturedEvent(item, index) {
+  const body = pickText(item.LongDescription, item.BriefDescription, item.Description);
+  const time = [item.StartTimeDisplay, item.EndTimeDisplay].filter(Boolean).join(' – ')
+    || (item.AllDay ? 'All day' : null);
+  const level = classifySchoolLevel(item);
+  return {
+    id: String(item.Id || `feat_ev_${index}`),
+    kind: 'news',
+    title: pickText(item.Name, item.Title) || 'Featured event',
+    date: formatDisplayDate(item.StartDate || item.StartDateDisplay || item.FeatureDate)
+      || pickText(item.StartDateDisplay, item.StartDate),
+    time,
+    location: pickText(item.Location) || null,
+    student: 'All',
+    level,
+    author: null,
+    type: 'Event',
+    source: 'Featured Content',
+    snippet: snippetFrom(body) || [item.StartDateDisplay, time].filter(Boolean).join(' · '),
+    description: body,
+    viewed: true,
+    imageUrl: null,
+    feed: 'news'
+  };
+}
+
+function normalizeFeaturedMedia(item, index) {
+  const body = pickText(item.LongDescription, item.BriefDescription, item.Description, item.Caption);
+  const level = classifySchoolLevel(item);
+  return {
+    id: String(item.Id || item.AlbumID || `media_${index}`),
+    kind: 'news',
+    title: pickText(item.Name, item.Title, item.Headline) || 'Featured media',
+    date: formatDisplayDate(item.PublishDate || item.FeatureDate) || null,
+    time: null,
+    student: 'All',
+    level,
+    type: 'Media',
+    source: 'Featured Content',
+    snippet: snippetFrom(body),
+    description: body,
+    viewed: true,
+    imageUrl: newsImageUrl(item),
+    feed: 'news'
+  };
+}
+
+export async function fetchFeaturedContent() {
+  const newsUrl = '/api/News/FeaturedNewsGet/?format=json';
+  const eventsUrl = '/api/Event/FeaturedEventsGet/?format=json';
+  const mediaUrl = '/api/Media/FeaturedMediaGet/?format=json';
+  const bulletinUrl = '/api/DataDirect/MainBulletinUser?personaId=1';
+  const [newsHit, eventsHit, mediaHit, bulletinHit] = await Promise.all([
+    blackbaudRequestSoft(newsUrl),
+    blackbaudRequestSoft(eventsUrl),
+    blackbaudRequestSoft(mediaUrl),
+    blackbaudRequestSoft(bulletinUrl)
+  ]);
+  if (newsHit.expired || eventsHit.expired) {
+    return { connected: false, expired: true, items: [], endpoints: [newsUrl, eventsUrl, mediaUrl, bulletinUrl] };
+  }
+  const items = [
+    ...asList(newsHit.data).map((item, index) => normalizeFeaturedNews(item, index)),
+    ...asList(eventsHit.data).map((item, index) => normalizeFeaturedEvent(item, index)),
+    ...asList(mediaHit.data).map((item, index) => normalizeFeaturedMedia(item, index)),
+    ...asList(bulletinHit.data).map((item, index) => normalizeFeaturedNews({ ...item, Name: item.Name || item.Headline || 'Bulletin' }, index))
+      .map((item) => ({ ...item, type: 'Bulletin' }))
+  ].filter((item) => item.title);
+  const seen = new Set();
+  const unique = [];
+  for (const item of items) {
+    const key = `${item.type}:${item.id}:${item.title}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+  return {
+    connected: true,
+    items: unique,
+    endpoints: [newsUrl, eventsUrl, mediaUrl, bulletinUrl]
+  };
+}
+
+export async function fetchNewsDetail(rawId) {
+  const id = encodeURIComponent(String(rawId || '').trim());
+  if (!id) return null;
+  const url = `/api/news/${id}/?format=json`;
+  const hit = await blackbaudRequestSoft(url);
+  const item = asList(hit.data)[0] || (hit.data && typeof hit.data === 'object' && !Array.isArray(hit.data) ? hit.data : null);
+  if (!item || item.Error) return null;
+  return normalizeFeaturedNews(item, 0);
+}

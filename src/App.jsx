@@ -97,6 +97,94 @@ export function decodeHtmlEntities(str) {
     .trim();
 }
 
+function fingerprintText(text) {
+  return String(text || '')
+    .replace(/<[^>]+>/g, ' ')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .slice(0, 90);
+}
+
+function formatMailDate(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function notesFromGmail(events, tasks) {
+  const byEmail = new Map();
+  const push = (item) => {
+    const emailId = item?.emailId;
+    if (!emailId || byEmail.has(emailId)) return;
+    const body = item.emailBody || item.description || '';
+    const title = item.emailSubject || item.title || 'School email';
+    byEmail.set(emailId, {
+      id: `gmail_${emailId}`,
+      kind: 'gmail',
+      title,
+      date: formatMailDate(item.emailDate) || item.date || null,
+      time: null,
+      student: item.student || 'All',
+      author: item.emailFrom || item.source || null,
+      type: item.source === 'sportsYou' ? 'sportsYou email' : 'School email',
+      source: item.source === 'sportsYou' ? 'Gmail · sportsYou' : 'Gmail',
+      snippet: decodeHtmlEntities(body).slice(0, 140),
+      description: decodeHtmlEntities(body),
+      viewed: true,
+      feed: 'notes',
+      emailId,
+      emailSubject: item.emailSubject,
+      emailBody: item.emailBody,
+      emailFrom: item.emailFrom,
+      emailDate: item.emailDate
+    });
+  };
+  (events || []).forEach(push);
+  (tasks || []).forEach(push);
+  return [...byEmail.values()];
+}
+
+function mergeOfficialNotes(portalNotes, gmailNotes) {
+  const portal = portalNotes || [];
+  const fingerprints = new Set(portal.map((item) => fingerprintText(item.description || item.snippet || item.title)).filter(Boolean));
+  const extras = (gmailNotes || []).filter((item) => {
+    const print = fingerprintText(item.description || item.snippet || item.title);
+    if (!print) return true;
+    for (const existing of fingerprints) {
+      if (existing && (print.includes(existing) || existing.includes(print))) return false;
+    }
+    return true;
+  });
+  return [...portal, ...extras];
+}
+
+function toModalItem(item) {
+  return {
+    ...item,
+    date: item.date || '',
+    time: item.time || '',
+    location: item.location || item.course || '',
+    description: item.description || item.emailBody || item.snippet || '',
+    source: item.source || '',
+    type: item.type || item.kind || 'note',
+    feed: item.feed || item.kind || null
+  };
+}
+
+function newsMatchesLevel(item, filter) {
+  if (filter === 'All') return true;
+  const level = item.level || 'All';
+  return level === filter || level === 'All';
+}
+
+function defaultNewsFilter(selectedStudent) {
+  if (selectedStudent === 'Ben') return 'HS';
+  if (selectedStudent === 'Jade') return 'MS';
+  return 'All';
+}
+
 function cleanDeep(obj) {
   if (typeof obj === 'string') {
     return decodeHtmlEntities(obj);
@@ -503,6 +591,8 @@ export default function App() {
   const [eventFilter, setEventFilter] = useState('active'); // 'active' | 'acknowledged'
   const [eventSource, setEventSource] = useState('calendar'); // 'calendar' | 'inbox' | 'all'
   const [calendarEvents, setCalendarEvents] = useState([]);
+  const [officialNotes, setOfficialNotes] = useState([]);
+  const [featuredNews, setFeaturedNews] = useState([]);
   identityRef.current = blackbaudStatus;
 
   // Persist state to both localStorage and backend Express API only on deliberate user actions
@@ -561,6 +651,23 @@ export default function App() {
       }
     } catch (err) {
       console.warn('sportsYou calendar unavailable:', err.message);
+    }
+  };
+
+  const loadSchoolFeeds = async () => {
+    try {
+      const [notesRes, newsRes] = await Promise.all([
+        fetch('/api/blackbaud/notes'),
+        fetch('/api/blackbaud/news')
+      ]);
+      const notesData = notesRes.ok ? await notesRes.json().catch(() => ({})) : {};
+      const newsData = newsRes.ok ? await newsRes.json().catch(() => ({})) : {};
+      const portalNotes = cleanDeep(notesData.notes || []);
+      const newsItems = cleanDeep(newsData.items || []);
+      setOfficialNotes(portalNotes);
+      setFeaturedNews(newsItems);
+    } catch (err) {
+      console.warn('School feeds unavailable:', err.message);
     }
   };
 
@@ -751,6 +858,7 @@ export default function App() {
       const status = await fetchBlackbaudStatus();
       if (status?.connected) {
         await loadDashboardState();
+        await loadSchoolFeeds();
       } else {
         setBlackbaudGrades({ Ben: [], Jade: [] });
         setBlackbaudMissing([]);
@@ -1313,6 +1421,7 @@ export default function App() {
       }
       data = applyBlackbaudSync(data);
       noteIncomingComments(data.assignments || [], data.tasks || []);
+      await loadSchoolFeeds();
       showToast({
         id: 'blackbaud-refresh',
         type: 'success',
@@ -1328,6 +1437,44 @@ export default function App() {
       });
     } finally {
       setIsSyncingBlackbaud(false);
+    }
+  };
+
+  const handleOpenOfficialNote = async (item) => {
+    if (!item) return;
+    if (item.kind === 'gmail') {
+      setSelectedEventForModal(toModalItem(item));
+      return;
+    }
+    setSelectedEventForModal(toModalItem(item));
+    if (!item.id || String(item.id).startsWith('gmail_')) return;
+    try {
+      const res = await fetch(`/api/blackbaud/notes/detail?id=${encodeURIComponent(item.id)}`);
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      if (data.note) {
+        const next = toModalItem(cleanDeep(data.note));
+        setSelectedEventForModal(next);
+        setOfficialNotes((prev) => prev.map((row) => (
+          row.id === item.id ? { ...row, viewed: true, description: next.description || row.description } : row
+        )));
+      }
+    } catch (err) {
+      console.warn('Official note detail unavailable:', err.message);
+    }
+  };
+
+  const handleOpenFeaturedItem = async (item) => {
+    if (!item) return;
+    setSelectedEventForModal(toModalItem(item));
+    if (!item.id || item.type === 'Event' || item.type === 'Media' || item.type === 'Bulletin') return;
+    try {
+      const res = await fetch(`/api/blackbaud/news/detail?id=${encodeURIComponent(item.id)}`);
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      if (data.item) setSelectedEventForModal(toModalItem(cleanDeep(data.item)));
+    } catch (err) {
+      console.warn('Featured story detail unavailable:', err.message);
     }
   };
 
@@ -1904,6 +2051,16 @@ export default function App() {
       }));
   }, [blackbaudGrades, selectedStudent, canSeeBen, canSeeJade, allowedKeys]);
 
+  const mergedOfficialNotes = useMemo(
+    () => mergeOfficialNotes(officialNotes, notesFromGmail(events, tasks)),
+    [officialNotes, events, tasks]
+  );
+  const notesUnreadCount = mergedOfficialNotes.filter((item) => (
+    item.viewed === false
+    && (selectedStudent === 'All' || item.student === selectedStudent || item.student === 'All')
+  )).length;
+  const newsCount = featuredNews.filter((item) => newsMatchesLevel(item, defaultNewsFilter(selectedStudent))).length;
+
   return (
     <div className={view === 'landing'
       ? 'wla-app min-h-dvh w-full flex items-center justify-center bg-zinc-950 text-zinc-100'
@@ -1980,6 +2137,12 @@ export default function App() {
           onDisconnectBlackbaud={handleDisconnectBlackbaud}
           onOpenLanding={() => setView('landing')}
           sportsYouConnected={(calendarEvents || []).length > 0}
+          officialNotes={mergedOfficialNotes}
+          featuredNews={featuredNews}
+          notesUnreadCount={notesUnreadCount}
+          newsCount={newsCount}
+          onOpenOfficialNote={handleOpenOfficialNote}
+          onOpenFeaturedItem={handleOpenFeaturedItem}
         />
       </div>
 
@@ -2713,6 +2876,8 @@ export default function App() {
           course={selectedCourse}
           assignments={checklistItems}
           onClose={() => setSelectedCourse(null)}
+          onOpenTask={handleOpenTaskModal}
+          taskModalOpen={Boolean(selectedTaskForModal)}
         />
       )}
     </div>

@@ -17,7 +17,11 @@ import {
   fetchProfilePhoto,
   fetchPhotoByUrl,
   isAllowedPhotoUrl,
-  isSessionExpiredError
+  isSessionExpiredError,
+  fetchOfficialNotes,
+  fetchOfficialNoteDetail,
+  fetchFeaturedContent,
+  fetchNewsDetail
 } from './services/blackbaudService.js';
 import { runWithWlaSession } from './services/wlaContext.js';
 import {
@@ -615,6 +619,77 @@ app.get('/api/blackbaud/assignment/:id', async (req, res) => {
   } catch (err) {
     console.warn('[Blackbaud] Assignment detail failed:', err.message);
     res.status(502).json({ error: 'Could not load assignment details.' });
+  }
+});
+
+function filterNotesForIdentity(notes, identity) {
+  if (!identity || identity.role === 'parent') return notes || [];
+  const allowed = new Set(identity.allowedStudentKeys || []);
+  return (notes || []).filter((item) => !item.student || item.student === 'All' || allowed.has(item.student));
+}
+
+app.get('/api/blackbaud/notes', async (req, res) => {
+  if (!req.wla?.cookie) {
+    return res.status(401).json({ error: 'Sign in with Blackbaud to view official notes.', notes: [], unreadCount: 0 });
+  }
+  try {
+    const result = await runWithWlaSession(req.wla, () => fetchOfficialNotes());
+    const notes = filterNotesForIdentity(result.notes, req.wla);
+    res.json({
+      ...result,
+      notes,
+      unreadCount: notes.filter((item) => item.viewed === false).length
+    });
+  } catch (err) {
+    console.warn('[Blackbaud] Official notes failed:', err.message);
+    if (isSessionExpiredError(err)) {
+      return res.status(401).json({ error: 'Blackbaud session expired. Sign in again.', needsReauth: true, notes: [] });
+    }
+    res.status(502).json({ error: 'Could not load official notes.', notes: [] });
+  }
+});
+
+app.get('/api/blackbaud/notes/detail', async (req, res) => {
+  if (!req.wla?.cookie) {
+    return res.status(401).json({ error: 'Sign in with Blackbaud to view official notes.' });
+  }
+  try {
+    const note = await runWithWlaSession(req.wla, () => fetchOfficialNoteDetail(req.query.id));
+    if (!note) return res.status(404).json({ error: 'Note not found.' });
+    res.json({ note });
+  } catch (err) {
+    console.warn('[Blackbaud] Official note detail failed:', err.message);
+    res.status(502).json({ error: 'Could not load note.' });
+  }
+});
+
+app.get('/api/blackbaud/news', async (req, res) => {
+  if (!req.wla?.cookie) {
+    return res.status(401).json({ error: 'Sign in with Blackbaud to view featured content.', items: [] });
+  }
+  try {
+    const result = await runWithWlaSession(req.wla, () => fetchFeaturedContent());
+    res.json(result);
+  } catch (err) {
+    console.warn('[Blackbaud] Featured content failed:', err.message);
+    if (isSessionExpiredError(err)) {
+      return res.status(401).json({ error: 'Blackbaud session expired. Sign in again.', needsReauth: true, items: [] });
+    }
+    res.status(502).json({ error: 'Could not load featured content.', items: [] });
+  }
+});
+
+app.get('/api/blackbaud/news/detail', async (req, res) => {
+  if (!req.wla?.cookie) {
+    return res.status(401).json({ error: 'Sign in with Blackbaud to view featured content.' });
+  }
+  try {
+    const item = await runWithWlaSession(req.wla, () => fetchNewsDetail(req.query.id));
+    if (!item) return res.status(404).json({ error: 'Story not found.' });
+    res.json({ item });
+  } catch (err) {
+    console.warn('[Blackbaud] News detail failed:', err.message);
+    res.status(502).json({ error: 'Could not load story.' });
   }
 });
 
