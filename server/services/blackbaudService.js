@@ -89,6 +89,64 @@ export function dashboardPhotoSrc(absUrl) {
   }
 }
 
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|heic)$/i;
+const SKIP_TOPIC_CONTENT_IDS = new Set([405, 407, 408]);
+const COVER_IMAGE_CONTENT_ID = 404;
+const COVER_BRIEF_CONTENT_ID = 406;
+
+export function proxiedPhotoSrc(absUrl) {
+  if (!absUrl) return null;
+  try {
+    const u = new URL(String(absUrl), BASE_URL);
+    if ((u.protocol !== 'https:' && u.protocol !== 'http:') || !isAllowedPhotoHost(u.hostname)) {
+      return null;
+    }
+    return `/api/blackbaud/photo?url=${encodeURIComponent(u.href)}`;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePortalUrl(value) {
+  if (!value || typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw || /^(javascript|data|vbscript):/i.test(raw)) return null;
+  try {
+    return new URL(raw, BASE_URL).href;
+  } catch {
+    return null;
+  }
+}
+
+function isImageRef(url, filename = '') {
+  const target = `${filename || ''} ${url || ''}`.split('?')[0].toLowerCase();
+  return IMAGE_EXT.test(target);
+}
+
+function joinPortalFile(filePath, fileName) {
+  const name = fileName && typeof fileName === 'string' ? fileName.trim() : '';
+  const pathPart = filePath && typeof filePath === 'string' ? filePath.trim() : '';
+  if (name && /^https?:\/\//i.test(name)) return resolvePortalUrl(name);
+  if (pathPart && /^https?:\/\//i.test(pathPart) && !name) return resolvePortalUrl(pathPart);
+  if (pathPart && name) {
+    const combined = pathPart.endsWith('/') ? `${pathPart}${name}` : `${pathPart}/${name}`;
+    return resolvePortalUrl(combined);
+  }
+  if (name) {
+    if (name.startsWith('/')) return resolvePortalUrl(name);
+    if (/^download_/i.test(name)) return resolvePortalUrl(`/ftpimages/2274/download/${name}`);
+    return resolvePortalUrl(`/ftpimages/2274/photo/${name}`);
+  }
+  if (pathPart) return resolvePortalUrl(pathPart);
+  return null;
+}
+
+function htmlAttr(tag, name) {
+  const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
+  const match = String(tag || '').match(re);
+  return match ? (match[1] || match[2] || match[3] || '').trim() : '';
+}
+
 // Memory cache
 let cachedSession = null;
 
@@ -919,8 +977,144 @@ function isFlagDescription(value) {
   return FLAG_DESCRIPTION.test(String(value || '').trim());
 }
 
+function attachmentsFromRecord(item) {
+  if (!item || typeof item !== 'object') return [];
+  const list = [];
+  const push = (value) => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      value.forEach(push);
+      return;
+    }
+    if (typeof value === 'object') list.push(value);
+    else if (typeof value === 'string') list.push({ url: value });
+  };
+  push(item.Attachment);
+  push(item.Attachments);
+  push(item.Photos);
+  push(item.DownloadItems);
+  push(item.LinkItems);
+  push(item.Files);
+  push(item.PhotoList);
+  if (item.DownloadUrl || item.FileName || item.Filename || item.FilePath || item.Thumbnail || item.ThumbFilename) {
+    list.push({
+      url: item.DownloadUrl || item.Attachment || item.FilenameUrl,
+      DownloadUrl: item.DownloadUrl,
+      FileName: item.FileName || item.Filename,
+      FilePath: item.FilePath,
+      FriendlyFileName: item.FriendlyFileName,
+      Thumbnail: item.Thumbnail || item.ThumbFilename || item.ThumbFilenameUrl,
+      Title: item.Description || item.ShortDescription || item.FriendlyFileName
+    });
+  }
+  return list;
+}
+
+function extractRichContent(html, extra = {}) {
+  const raw = String(html || '');
+  const images = [];
+  const files = [];
+  const links = [];
+  const seenImg = new Set();
+  const seenFile = new Set();
+  const seenLink = new Set();
+
+  const pushImage = (url, alt = '', caption = '') => {
+    const abs = resolvePortalUrl(url);
+    if (!abs || !isAllowedPhotoUrl(abs)) return;
+    const src = proxiedPhotoSrc(abs);
+    if (!src || seenImg.has(src)) return;
+    seenImg.add(src);
+    images.push({
+      src,
+      alt: pickText(alt, caption) || '',
+      caption: pickText(caption) || '',
+      href: abs
+    });
+  };
+
+  const pushFile = (url, name = '', note = '') => {
+    const abs = resolvePortalUrl(url);
+    if (!abs) return;
+    const label = pickText(name) || abs;
+    if (isAllowedPhotoUrl(abs) && isImageRef(abs, label)) {
+      pushImage(abs, label, label);
+      return;
+    }
+    if (seenFile.has(abs)) return;
+    seenFile.add(abs);
+    files.push({ name: label, url: abs, note: pickText(note) || '' });
+  };
+
+  const pushLink = (url, label = '') => {
+    const abs = resolvePortalUrl(url);
+    if (!abs) return;
+    const key = abs.toLowerCase();
+    if (seenLink.has(key) || seenFile.has(abs)) return;
+    const name = pickText(label) || abs;
+    if (isAllowedPhotoUrl(abs) && isImageRef(abs, name)) {
+      pushImage(abs, name, name);
+      return;
+    }
+    seenLink.add(key);
+    links.push({ url: abs, label: name });
+  };
+
+  for (const match of raw.matchAll(/<img\b[^>]*>/gi)) {
+    const tag = match[0];
+    pushImage(htmlAttr(tag, 'src'), htmlAttr(tag, 'alt'));
+  }
+  for (const match of raw.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/gi)) {
+    const tag = match[0];
+    const inner = tag.replace(/^<a\b[^>]*>/i, '').replace(/<\/a>$/i, '');
+    pushLink(htmlAttr(tag, 'href'), inner);
+  }
+
+  for (const att of extra.attachments || []) {
+    const name = att.name || att.Title || att.Filename || att.FileName || att.FriendlyFileName || att.Caption || '';
+    const note = att.note || att.LongDescription || att.Caption || '';
+    const thumb = att.Thumbnail || att.ThumbFilename || att.ThumbFilenameUrl || att.ThumbFilePath
+      || att.LargeFilenameUrl || att.CoverFilenameUrl || att.FilenameUrl;
+    if (thumb) pushImage(joinPortalFile(null, thumb) || thumb, name, name);
+    const abs = joinPortalFile(att.FilePath, att.FileName || att.Filename || att.DownloadUrl || att.url || att.Attachment);
+    if (abs && isImageRef(abs, name)) pushImage(abs, name, name);
+    else if (abs) pushFile(abs, name, note);
+  }
+
+  return {
+    text: pickText(raw),
+    images,
+    files,
+    links
+  };
+}
+
+function mergeRich(target, next) {
+  const seenImg = new Set((target.images || []).map((item) => item.src));
+  const seenFile = new Set((target.files || []).map((item) => item.url));
+  const seenLink = new Set((target.links || []).map((item) => item.url));
+  for (const image of next.images || []) {
+    if (!image?.src || seenImg.has(image.src)) continue;
+    seenImg.add(image.src);
+    target.images.push(image);
+  }
+  for (const file of next.files || []) {
+    if (!file?.url || seenFile.has(file.url)) continue;
+    seenFile.add(file.url);
+    target.files.push(file);
+  }
+  for (const link of next.links || []) {
+    if (!link?.url || seenLink.has(link.url) || seenFile.has(link.url)) continue;
+    seenLink.add(link.url);
+    target.links.push(link);
+  }
+  return target;
+}
+
 function normalizeBulletinItem(item, index) {
-  if (!item || typeof item !== 'object') return { id: `bb_${index}`, title: '', body: '', date: null, author: null, url: null };
+  if (!item || typeof item !== 'object') {
+    return { id: `bb_${index}`, title: '', body: '', date: null, author: null, url: null, images: [], files: [], links: [] };
+  }
   const desc = isFlagDescription(item.Description) ? '' : item.Description;
   const shortDesc = pickText(item.ShortDescription);
   const title = pickText(
@@ -933,7 +1127,7 @@ function normalizeBulletinItem(item, index) {
     item.Name && !CONTENT_TYPE_TITLES.test(item.Name) ? item.Name : '',
     item.UrlDisplay
   );
-  const body = pickText(
+  const html = [
     item.body,
     item.LongText,
     item.LongDescription,
@@ -944,14 +1138,21 @@ function normalizeBulletinItem(item, index) {
     item.ContentBody,
     item.RichText,
     desc && pickText(desc) !== title ? desc : '',
-    item.AlbumDescription,
-    item.Url
-  );
+    item.AlbumDescription
+  ].filter((value) => value && typeof value === 'string').join('\n');
+  const rich = extractRichContent(html, { attachments: attachmentsFromRecord(item) });
+  const cover = item.LargeFilenameUrl || item.CoverFilenameUrl || item.FilenameUrl || item.LinkImageUrl || item.ThumbFilenameUrl;
+  if (cover) mergeRich(rich, extractRichContent('', { attachments: [{ url: cover, FileName: cover, Title: title }] }));
+  const url = item.Url || item.url || null;
+  if (url && !rich.links.some((link) => link.url === url) && url !== rich.text) {
+    rich.links.push({ url, label: pickText(item.UrlDisplay, shortDesc, title) || url });
+  }
+  const body = rich.text && rich.text !== title ? rich.text : (title ? '' : rich.text);
   return {
     id: item.AlbumID || item.LinkID || item.ItemID || item.EditableTextId || item.ContentItemId
-      || item.ContentId || item.Id || `bb_${index}`,
-    title: title || (body ? 'Class post' : ''),
-    body: body && body !== title ? body : (title ? '' : body),
+      || item.DownloadID || item.ContentId || item.Id || `bb_${index}`,
+    title: title || (body || rich.images.length || rich.files.length ? 'Class post' : ''),
+    body,
     date: formatDisplayDate(
       item.PublishDate || item.PublishDateDisplay || item.CreateDate || item.Date || item.DatePosted || item.InsertDate
     ),
@@ -964,13 +1165,16 @@ function normalizeBulletinItem(item, index) {
       item.OwnerName,
       item.UserName
     ) || null,
-    url: item.Url || null
+    url,
+    images: rich.images,
+    files: rich.files,
+    links: rich.links.filter((link) => link.url !== url)
   };
 }
 
 async function fetchSectionBulletin(sectionId, leadSectionId) {
   const ids = [...new Set([leadSectionId, sectionId].filter(Boolean).map(String))];
-  const kinds = ['news', 'text', 'announcement', 'link'];
+  const kinds = ['news', 'text', 'announcement', 'link', 'download', 'media', 'photo'];
   const labels = [2, 1];
   let forbidden = false;
   let expired = false;
@@ -998,7 +1202,7 @@ async function fetchSectionBulletin(sectionId, leadSectionId) {
     let added = 0;
     combined.forEach((item, index) => {
       const mapped = normalizeBulletinItem(item, items.length + index);
-      if (!(mapped.title || mapped.body)) return;
+      if (!(mapped.title || mapped.body || mapped.images?.length || mapped.files?.length)) return;
       const key = String(mapped.id || mapped.title);
       if (seen.has(key)) return;
       seen.add(key);
@@ -1021,15 +1225,19 @@ function postsFromBulletinHtml(html) {
     const title = pickText(
       (chunk.match(/<(?:h[1-4]|header)[^>]*>([\s\S]*?)<\/(?:h[1-4]|header)>/i) || [])[1]
     );
-    const body = pickText(chunk);
-    if (title || (body && body.length > 12)) {
+    const rich = extractRichContent(chunk);
+    const body = rich.text;
+    if (title || (body && body.length > 12) || rich.images.length) {
       posts.push({
         id: `html_${index}`,
         title: title || 'Class post',
         body: body && body !== title ? body : '',
         date: null,
         author: null,
-        url: null
+        url: null,
+        images: rich.images,
+        files: rich.files,
+        links: rich.links
       });
     }
     index += 1;
@@ -1038,17 +1246,85 @@ function postsFromBulletinHtml(html) {
 }
 
 function normalizeTopic(item, index) {
+  const html = item.Description || item.LongDescription || item.ShortDescription || '';
+  const rich = extractRichContent(html);
   return {
-    id: item.TopicID || item.TopicIndexID || item.Id || `topic_${index}`,
+    id: item.TopicID || item.TopicId || item.TopicIndexID || item.Id || `topic_${index}`,
+    indexId: item.TopicIndexID || item.TopicIndexId || null,
     title: pickText(item.Name, item.Title, item.TopicName) || 'Topic',
-    description: pickText(item.Description, item.LongDescription, item.ShortDescription),
+    description: rich.text,
     publishDate: formatDisplayDate(item.PublishDate || item.Date),
-    thumbUrl: item.ThumbFilename
-      ? (String(item.ThumbFilename).startsWith('http')
-        ? item.ThumbFilename
-        : `https://bbk12e1-cdn.myschoolcdn.com${item.ThumbFilename}`)
-      : null
+    author: pickText(item.TopicAuthorShare, item.CreatedByUser) || null,
+    thumbUrl: null,
+    images: rich.images,
+    files: rich.files,
+    links: rich.links,
+    blocks: [],
+    assignments: []
   };
+}
+
+function topicContentEntry(entry) {
+  const title = pickText(entry.ShortDescription, entry.Headline, entry.FriendlyFileName, entry.FileName);
+  const rich = extractRichContent(
+    [entry.LongDescription, entry.AlbumDescription, entry.BriefDescription, entry.Description].filter(Boolean).join('\n'),
+    { attachments: attachmentsFromRecord(entry) }
+  );
+  const fileAbs = joinPortalFile(entry.FilePath, entry.FileName || entry.DownloadUrl);
+  if (fileAbs && isImageRef(fileAbs, entry.FileName || entry.FriendlyFileName || title)) {
+    const src = proxiedPhotoSrc(fileAbs);
+    if (src) {
+      rich.images.unshift({
+        src,
+        alt: title || '',
+        caption: title || '',
+        note: rich.text,
+        href: fileAbs
+      });
+    }
+  } else if (fileAbs) {
+    rich.files.unshift({
+      name: pickText(entry.FriendlyFileName, title) || 'Attachment',
+      url: fileAbs,
+      note: rich.text
+    });
+  }
+  if (entry.Url) {
+    const abs = resolvePortalUrl(entry.Url);
+    if (abs && !rich.links.some((link) => link.url === abs) && !rich.files.some((file) => file.url === abs)) {
+      rich.links.unshift({ url: abs, label: title || abs });
+    }
+  }
+  return { title, body: rich.text, images: rich.images, files: rich.files, links: rich.links };
+}
+
+async function hydrateTopic(item, index) {
+  const topic = normalizeTopic(item, index);
+  const topicId = item.TopicID || item.TopicId;
+  const indexId = item.TopicIndexID || item.TopicIndexId;
+  if (!topicId || !indexId) return topic;
+
+  const contentHit = await blackbaudRequestSoft(
+    `/api/datadirect/topiccontentget/${encodeURIComponent(topicId)}/?format=json&index_id=${encodeURIComponent(indexId)}&id=${encodeURIComponent(topicId)}`
+  );
+  for (const entry of asList(contentHit.data)) {
+    const contentId = Number(entry.ContentId);
+    if (SKIP_TOPIC_CONTENT_IDS.has(contentId) || contentId === COVER_IMAGE_CONTENT_ID) continue;
+    if (contentId === COVER_BRIEF_CONTENT_ID) {
+      const brief = extractRichContent(entry.LongDescription || entry.ShortDescription || '');
+      if (brief.text && !topic.description) topic.description = brief.text;
+      mergeRich(topic, brief);
+      continue;
+    }
+    if (!entry.ContentItemId && !entry.FileName && !entry.Url && !entry.LongDescription) continue;
+    const mapped = topicContentEntry(entry);
+    mergeRich(topic, mapped);
+    if (mapped.body && mapped.body !== topic.description && !mapped.images.length && !mapped.files.length) {
+      topic.blocks.push({ title: mapped.title, body: mapped.body });
+    }
+  }
+
+  return topic;
 }
 
 function normalizeDiscussion(item, index) {
@@ -1187,9 +1463,7 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
     fetchSectionBulletin(sectionId, lead),
     collectLists([
       `/api/datadirect/sectiontopicsget/${leadEnc}?format=json&active=true&future=false&expired=false&sharedTopics=true`,
-      `/api/datadirect/sectiontopicsget/${sid}?format=json&active=true&future=false&expired=false&sharedTopics=true`,
-      `/api/datadirect/GroupPossibleTopicsGet?leadSectionId=${leadEnc}&durationId=${encodeURIComponent(info?.DurationId || 0)}&active=true&future=false&expired=false`,
-      `/api/datadirect/GroupPossibleTopicsGet?leadSectionId=${sid}&durationId=0`
+      `/api/datadirect/sectiontopicsget/${sid}?format=json&active=true&future=false&expired=false&sharedTopics=true`
     ]),
     collectLists([
       `/api/discussion/discussionboardget/?format=json&sectionId=${sid}`,
@@ -1211,7 +1485,8 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
   }
   const discussions = discussionHit.items.map(normalizeDiscussion);
   if (info?.Description) {
-    const intro = pickText(info.Description, info.CourseTopic);
+    const introRich = extractRichContent(info.Description);
+    const intro = introRich.text || pickText(info.CourseTopic);
     if (intro && !bulletin.some((item) => item.body === intro)) {
       bulletin.unshift({
         id: 'section-intro',
@@ -1219,7 +1494,10 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
         body: intro,
         date: formatDisplayDate(info.StartDate) || null,
         author: pickText(info.Teacher) || null,
-        url: null
+        url: null,
+        images: introRich.images,
+        files: introRich.files,
+        links: introRich.links
       });
     }
   }
@@ -1234,18 +1512,30 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
       body: thread.description,
       date: thread.publishDate,
       author: thread.author,
-      url: null
+      url: null,
+      images: [],
+      files: [],
+      links: []
     });
   }
 
-  const topics = topicsHit.items.map(normalizeTopic);
+  const topics = await Promise.all(topicsHit.items.map((item, index) => hydrateTopic(item, index)));
+  if (topics.length) {
+    console.info(`[Blackbaud] Class ${sectionId} topics: ${topics.length} from sectiontopicsget`);
+  }
   if (discussions.length && !topics.length) {
     topics.push(...discussions.map((d) => ({
       id: d.id,
       title: d.title,
       description: d.description,
       publishDate: d.publishDate,
-      thumbUrl: null
+      author: d.author,
+      thumbUrl: null,
+      images: [],
+      files: [],
+      links: [],
+      blocks: [],
+      assignments: []
     })));
   }
 

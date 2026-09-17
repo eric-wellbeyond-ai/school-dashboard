@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Mail, MapPin } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ExternalLink, Mail, MapPin, Paperclip } from 'lucide-react';
 import { formatAssignmentScore } from './lib/assignmentScore.js';
 import { gradeBandFromLetterOrPercent, gradeToneClass } from './lib/gradeColors.js';
 import { isZeroCreditMissing } from './lib/assignmentBuckets.js';
@@ -78,17 +78,129 @@ function asPost(item, index, prefix) {
   );
   const body = decode(
     item.body || item.LongText || item.LongDescription || item.BriefDescription
-    || item.description || item.Preview || item.Message || (desc && desc !== title ? desc : '') || item.Url || ''
+    || item.description || item.Preview || item.Message || (desc && desc !== title ? desc : '') || ''
   );
-  if (!title && !body) return null;
+  const images = Array.isArray(item.images) ? item.images : [];
+  const files = Array.isArray(item.files) ? item.files : [];
+  const links = Array.isArray(item.links) ? item.links : [];
+  if (!title && !body && !images.length && !files.length) return null;
   return {
     id: String(item.id || item.AlbumID || item.LinkID || item.ItemID || item.ContentItemId || item.DiscussionId || `${prefix}_${index}`),
     title: title || 'Class post',
     body: body && body !== title ? body : (title ? '' : body),
     author: decode(item.author || item.CreateName || item.Author || ''),
     date: formatPostDate(item.date || item.publishDate || item.PublishDate || item.CreateDate || item.InsertDate || ''),
-    url: item.url || item.Url || ''
+    url: item.url || item.Url || '',
+    images,
+    files,
+    links
   };
+}
+
+function MediaImages({ images }) {
+  if (!images?.length) return null;
+  return (
+    <div className="class-detail-media mt-3 space-y-3">
+      {images.map((image, index) => (
+        <figure key={image.src || index} className="space-y-1.5">
+          <img
+            src={image.src}
+            alt={image.caption ? '' : (image.alt || '')}
+            className="class-detail-media-img"
+            onError={(event) => {
+              event.currentTarget.hidden = true;
+            }}
+          />
+          {(image.caption || image.note) ? (
+            <figcaption className="text-[13px] text-zinc-400 leading-relaxed">
+              {[image.caption, image.note && image.note !== image.caption ? image.note : '']
+                .filter(Boolean)
+                .join(' — ')}
+            </figcaption>
+          ) : null}
+        </figure>
+      ))}
+    </div>
+  );
+}
+
+function FileList({ files }) {
+  if (!files?.length) return null;
+  return (
+    <ul className="mt-3 space-y-1.5">
+      {files.map((file, index) => (
+        <li key={file.url || index} className="flex items-start gap-2 text-[13px] text-zinc-300">
+          <Paperclip className="w-3.5 h-3.5 mt-0.5 shrink-0 text-zinc-500" aria-hidden="true" />
+          <span className="min-w-0">
+            <span className="font-medium text-zinc-200">{file.name || 'Attachment'}</span>
+            {file.note ? <span className="block text-zinc-500 leading-relaxed">{file.note}</span> : null}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function LinkList({ links, skipUrl }) {
+  const items = (links || []).filter((link) => link?.url && link.url !== skipUrl);
+  if (!items.length) return null;
+  return (
+    <ul className="mt-3 space-y-1.5">
+      {items.map((link) => (
+        <li key={link.url}>
+          <a
+            href={link.url}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-start gap-1.5 text-[13px] text-sky-400 hover:text-sky-300 break-all"
+          >
+            <ExternalLink className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
+            {link.label || link.url}
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function RichBody({ text, images, files, links, url }) {
+  return (
+    <>
+      {text ? (
+        <p className="mt-2 text-[15px] text-zinc-300 leading-relaxed whitespace-pre-wrap">{text}</p>
+      ) : null}
+      <MediaImages images={images} />
+      <FileList files={files} />
+      <LinkList links={links} skipUrl={url} />
+    </>
+  );
+}
+
+const TOPIC_STOP = new Set(['unit', 'week', 'notes', 'resource', 'video', 'with', 'from', 'this', 'that', 'plus']);
+
+export function assignmentsForTopic(assignments, topic) {
+  const list = [];
+  const seen = new Set();
+  const push = (item) => {
+    if (!item) return;
+    const key = String(item.id || item.title);
+    if (seen.has(key)) return;
+    seen.add(key);
+    list.push(item);
+  };
+  (topic?.assignments || []).forEach(push);
+  const name = decode(topic?.title || '').toLowerCase();
+  if (!name) return list;
+  const tokens = name.split(/[^a-z0-9]+/).filter((word) => word.length > 3 && !TOPIC_STOP.has(word));
+  for (const item of assignments || []) {
+    const title = decode(item.title || '').toLowerCase();
+    const type = decode(item.type || '').toLowerCase();
+    const fullHit = (name.length > 4 && (title.includes(name) || type.includes(name)))
+      || (type.length > 4 && name.includes(type));
+    const tokenHit = tokens.length > 0 && tokens.every((token) => title.includes(token) || type.includes(token));
+    if (fullHit || tokenHit) push(item);
+  }
+  return list;
 }
 
 function postsFromDetail(detail) {
@@ -118,6 +230,27 @@ function postsFromDetail(detail) {
     });
   });
   return posts;
+}
+
+function AssignmentRow({ item }) {
+  const score = formatAssignmentScore(item.pointsEarned, item.maxPoints);
+  const zeroMissing = isZeroCreditMissing(item);
+  const missing = (item.status === 'missing' || item.isMissing || zeroMissing) && !item.doneOverride && !item.acknowledged;
+  const band = missing ? 'missing' : gradeBandFromLetterOrPercent(item.letter, score.percent);
+  return (
+    <li className="flex items-baseline justify-between gap-3 px-3.5 py-2.5">
+      <div className="min-w-0">
+        <p className="text-[15px] text-zinc-100 truncate">{decode(item.title)}</p>
+        <p className="text-[13px] text-zinc-500">
+          {statusLabel(item)}
+          {item.dueDate ? ` · due ${item.dueDate}` : ''}
+        </p>
+      </div>
+      <span className={`shrink-0 text-[13px] tabular-nums font-semibold px-2 py-0.5 rounded-md border ${gradeToneClass(band)}`}>
+        {missing ? 'Missing' : (score.percentLabel || '—')}
+      </span>
+    </li>
+  );
 }
 
 function TeacherPhoto({ name, photoUrl, size = 72 }) {
@@ -204,6 +337,7 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
   const panelRef = useRef(null);
   const tabRefs = useRef([]);
   const [tab, setTab] = useState('bulletin');
+  const [openTopicId, setOpenTopicId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -228,6 +362,11 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
   const bulletin = useMemo(() => postsFromDetail(detail), [detail]);
   const topics = (detail?.topics && detail.topics.length) ? detail.topics : fallbackTopics;
   const topicsFromGradebook = !(detail?.topics && detail.topics.length) && fallbackTopics.length > 0;
+  const openTopic = topics.find((topic) => String(topic.id) === String(openTopicId)) || null;
+  const topicAssignments = useMemo(
+    () => (openTopic ? assignmentsForTopic(classAssignments, openTopic) : []),
+    [classAssignments, openTopic]
+  );
 
   useEffect(() => {
     closeRef.current?.focus();
@@ -235,15 +374,29 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape') onClose?.();
+      if (e.key !== 'Escape') return;
+      if (openTopicId) {
+        setOpenTopicId(null);
+        return;
+      }
+      onClose?.();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, openTopicId]);
+
+  useEffect(() => {
+    setOpenTopicId(null);
+    panelRef.current?.scrollTo({ top: 0 });
+  }, [tab]);
+
+  useEffect(() => {
+    setOpenTopicId(null);
+  }, [course?.sectionId, course?.id]);
 
   useEffect(() => {
     panelRef.current?.scrollTo({ top: 0 });
-  }, [tab]);
+  }, [openTopicId]);
 
   useEffect(() => {
     if (!course?.sectionId && !course?.id) return undefined;
@@ -387,19 +540,22 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
                             {[post.author, post.date].filter(Boolean).join(' · ')}
                           </p>
                         )}
-                        {post.body ? (
-                          <p className="mt-2 text-[15px] text-zinc-300 leading-relaxed whitespace-pre-wrap">
-                            {post.body}
-                          </p>
-                        ) : null}
+                        <RichBody
+                          text={post.body}
+                          images={post.images}
+                          files={post.files}
+                          links={post.links}
+                          url={post.url}
+                        />
                         {post.url && post.url !== post.body ? (
                           <a
                             href={post.url}
                             target="_blank"
                             rel="noreferrer"
-                            className="mt-2 inline-flex text-[13px] text-sky-400 hover:text-sky-300 break-all"
+                            className="mt-2 inline-flex items-center gap-1.5 text-[13px] text-sky-400 hover:text-sky-300 break-all"
                           >
-                            {post.url}
+                            <ExternalLink className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                            {post.title && post.title !== 'Class post' ? post.title : post.url}
                           </a>
                         ) : null}
                       </li>
@@ -417,21 +573,88 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
                       ? 'Topics are not available on this parent session.'
                       : 'No topics posted yet.'}
                   </p>
+                ) : openTopic ? (
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setOpenTopicId(null)}
+                      aria-label="Back to topics"
+                      className="inline-flex items-center gap-1 min-h-11 text-[13px] font-medium text-zinc-300 hover:text-zinc-100"
+                    >
+                      <ChevronLeft className="w-4 h-4" aria-hidden="true" />
+                      Topics
+                    </button>
+                    <h3 className="mt-3 text-[17px] font-semibold text-zinc-100 leading-snug">
+                      {decode(openTopic.title)}
+                    </h3>
+                    {(openTopic.author || openTopic.publishDate) && (
+                      <p className="mt-1 text-[13px] text-zinc-500">
+                        {[openTopic.author, openTopic.publishDate].filter(Boolean).join(' · ')}
+                      </p>
+                    )}
+                    <RichBody
+                      text={decode(openTopic.description)}
+                      images={openTopic.images}
+                      files={openTopic.files}
+                      links={openTopic.links}
+                    />
+                    {(openTopic.blocks || []).map((block, index) => (
+                      <div key={`${block.title || 'block'}_${index}`} className="mt-4">
+                        {block.title ? (
+                          <p className="text-[15px] font-medium text-zinc-100">{decode(block.title)}</p>
+                        ) : null}
+                        {block.body ? (
+                          <p className="mt-1 text-[15px] text-zinc-300 leading-relaxed whitespace-pre-wrap">
+                            {decode(block.body)}
+                          </p>
+                        ) : null}
+                      </div>
+                    ))}
+                    <div className="mt-5">
+                      <p className="text-[13px] font-medium text-zinc-500">Assignments</p>
+                      {topicAssignments.length === 0 ? (
+                        <p className="mt-2 text-[15px] text-zinc-400 leading-relaxed">
+                          No assignments listed under this topic.
+                        </p>
+                      ) : (
+                        <ul className="mt-2 divide-y divide-zinc-800 border border-zinc-800 rounded-xl overflow-hidden">
+                          {topicAssignments.map((item) => (
+                            <AssignmentRow key={item.id} item={item} />
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
                 ) : (
                   <ul className="space-y-2">
                     {topicsFromGradebook && (
                       <li className="text-[13px] text-zinc-500">From the gradebook</li>
                     )}
-                    {topics.map((topic) => (
-                      <li key={topic.id} className="rounded-xl border border-zinc-800 px-3.5 py-2.5">
-                        <p className="text-[15px] font-medium text-zinc-100">{decode(topic.title)}</p>
-                        {topic.description ? (
-                          <p className="mt-0.5 text-[13px] text-zinc-400 leading-relaxed">
-                            {decode(topic.description)}
-                          </p>
-                        ) : null}
-                      </li>
-                    ))}
+                    {topics.map((topic) => {
+                      const preview = decode(topic.description || '');
+                      return (
+                        <li key={topic.id}>
+                          <button
+                            type="button"
+                            onClick={() => setOpenTopicId(topic.id)}
+                            aria-label={`Open topic ${decode(topic.title)}`}
+                            className="w-full min-h-11 rounded-xl border border-zinc-800 px-3.5 py-2.5 text-left hover:bg-zinc-900/70 flex items-center gap-3"
+                          >
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[15px] font-medium text-zinc-100">{decode(topic.title)}</span>
+                              {preview ? (
+                                <span className="mt-0.5 block text-[13px] text-zinc-400 leading-relaxed line-clamp-2">
+                                  {preview}
+                                </span>
+                              ) : topic.publishDate ? (
+                                <span className="mt-0.5 block text-[13px] text-zinc-500">{topic.publishDate}</span>
+                              ) : null}
+                            </span>
+                            <ChevronRight className="w-4 h-4 shrink-0 text-zinc-500" aria-hidden="true" />
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )
               )}
@@ -443,26 +666,9 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
                   </p>
                 ) : (
                   <ul className="divide-y divide-zinc-800 border border-zinc-800 rounded-xl overflow-hidden">
-                    {classAssignments.map((item) => {
-                      const score = formatAssignmentScore(item.pointsEarned, item.maxPoints);
-                      const zeroMissing = isZeroCreditMissing(item);
-                      const missing = (item.status === 'missing' || item.isMissing || zeroMissing) && !item.doneOverride && !item.acknowledged;
-                      const band = missing ? 'missing' : gradeBandFromLetterOrPercent(item.letter, score.percent);
-                      return (
-                        <li key={item.id} className="flex items-baseline justify-between gap-3 px-3.5 py-2.5">
-                          <div className="min-w-0">
-                            <p className="text-[15px] text-zinc-100 truncate">{decode(item.title)}</p>
-                            <p className="text-[13px] text-zinc-500">
-                              {statusLabel(item)}
-                              {item.dueDate ? ` · due ${item.dueDate}` : ''}
-                            </p>
-                          </div>
-                          <span className={`shrink-0 text-[13px] tabular-nums font-semibold px-2 py-0.5 rounded-md border ${gradeToneClass(band)}`}>
-                            {missing ? 'Missing' : (score.percentLabel || '—')}
-                          </span>
-                        </li>
-                      );
-                    })}
+                    {classAssignments.map((item) => (
+                      <AssignmentRow key={item.id} item={item} />
+                    ))}
                   </ul>
                 )
               )}

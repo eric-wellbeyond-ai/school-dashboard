@@ -508,6 +508,15 @@ body {
     -webkit-overflow-scrolling: touch;
   }
 
+  .class-detail-media-img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border-radius: 0.5rem;
+    border: 1px solid #27272a;
+    background: #18181b;
+  }
+
   .modal-action {
     display: flex;
     justify-content: flex-end;
