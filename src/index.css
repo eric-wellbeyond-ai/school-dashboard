@@ -54,7 +54,7 @@ body {
     flex-direction: column;
   }
 
-  .wla-app.wla-shell > div {
+  .wla-app.wla-shell > div:not(.wla-toasts) {
     min-height: 0;
     height: 100%;
   }
@@ -1816,18 +1816,21 @@ body {
   }
 }
 
+.wla-app.wla-shell > .wla-toasts,
 .wla-toasts {
   position: fixed;
   top: auto;
   left: auto;
   right: max(1rem, env(safe-area-inset-right));
   bottom: max(1rem, env(safe-area-inset-bottom));
-  z-index: 80;
+  z-index: 90;
   display: flex;
   flex-direction: column;
+  justify-content: flex-end;
   align-items: stretch;
   gap: 0.5rem;
   width: min(22.5rem, calc(100vw - 2rem));
+  height: auto;
   max-height: min(50vh, calc(100dvh - 5rem));
   overflow: auto;
   pointer-events: none;
