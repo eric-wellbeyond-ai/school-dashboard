@@ -98,6 +98,62 @@ export function setCompletion(assignmentId, doneOverride, identity) {
   return byAssignment[assignmentId];
 }
 
+function identityLabel(identity) {
+  const key = String(identity?.userKey || '').toLowerCase();
+  if (key === 'eric') return 'Eric';
+  if (key === 'stefani') return 'Stefani';
+  if (key === 'ben') return 'Ben';
+  if (key === 'jade') return 'Jade';
+  const name = String(identity?.displayName || identity?.firstName || identity?.accountName || '').trim();
+  return name.split(/\s+/)[0] || 'Family';
+}
+
+export function missingAckKey(assignmentId, student) {
+  const id = String(assignmentId || '');
+  const who = String(student || '').trim();
+  return who ? `${id}::${who}` : id;
+}
+
+export function getMissingAcks() {
+  const data = readJson('missing-acks.json', { byKey: {} });
+  return data.byKey || {};
+}
+
+export function lookupMissingAck(assignmentId, student) {
+  if (!assignmentId) return null;
+  const byKey = getMissingAcks();
+  return byKey[missingAckKey(assignmentId, student)] || byKey[assignmentId] || null;
+}
+
+export function isMissingAcked(assignmentId, student) {
+  return lookupMissingAck(assignmentId, student)?.acknowledged === true;
+}
+
+export function setMissingAck(assignmentId, acknowledged, identity, extra = {}) {
+  const data = readJson('missing-acks.json', { byKey: {} });
+  const byKey = data.byKey || {};
+  const student = extra.student || null;
+  const key = missingAckKey(assignmentId, student);
+  const now = new Date().toISOString();
+  const on = Boolean(acknowledged);
+  const row = {
+    assignmentId,
+    student,
+    acknowledged: on,
+    acknowledgedAt: on ? now : null,
+    acknowledgedBy: on ? identityLabel(identity) : null,
+    acknowledgedByKey: on ? (identity?.userKey || null) : null,
+    acknowledgedByUserId: on ? (identity?.userId || null) : null,
+    acknowledgedByPhoto: on ? (identity?.photoUrl || null) : null,
+    role: identity?.role || null,
+    updatedAt: now
+  };
+  byKey[key] = row;
+  if (assignmentId && key !== assignmentId) byKey[assignmentId] = row;
+  writeJson('missing-acks.json', { byKey, updatedAt: now });
+  return row;
+}
+
 /**
  * Family comments live in comments.json, not Blackbaud.
  * Prefer the family store when an assignment id has been seen;
@@ -148,14 +204,23 @@ export function ingestClientComments(lists = []) {
 
 export function annotateAssignments(assignments = []) {
   const completions = getCompletions();
+  const acks = getMissingAcks();
   return overlayFamilyComments(assignments).map((a) => {
+    if (!a?.id) return a;
     const override = completions[a.id];
-    const doneOverride = override ? Boolean(override.doneOverride) : undefined;
+    const ack = acks[missingAckKey(a.id, a.student)] || acks[a.id] || null;
+    const acked = ack?.acknowledged === true;
+    const doneOverride = acked || Boolean(override?.doneOverride);
     return {
       ...a,
       doneOverride,
-      completed: doneOverride === true || a.completed,
-      done: doneOverride === true || a.done
+      completed: doneOverride || a.completed,
+      done: doneOverride || a.done,
+      missingAck: ack,
+      acknowledged: acked,
+      acknowledgedAt: acked ? ack.acknowledgedAt : null,
+      acknowledgedBy: acked ? ack.acknowledgedBy : null,
+      acknowledgedByKey: acked ? ack.acknowledgedByKey : null
     };
   });
 }

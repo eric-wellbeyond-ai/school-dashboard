@@ -44,5 +44,6 @@ export function gradeToneClass(band) {
   if (band === 'c') return 'grade-c';
   if (band === 'd') return 'grade-d';
   if (band === 'f') return 'grade-f';
+  if (band === 'missing') return 'grade-missing';
   return 'grade-none';
 }

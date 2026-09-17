@@ -1,18 +1,18 @@
 /**
- * Exclusive assignment filters: overdue, dueSoon, done, assigned.
+ * Exclusive assignment filters: missing, done, overdue, dueSoon, assigned.
  * upcoming (future DateAssigned) is hidden until assigned.
  *
  * classifyAssignment order:
- * 1. done — graded (numeric points, letter, or earned/possible num/num)
- *    or family mark-done (`completed` / `doneOverride` / `done`)
- * 2. assigned — no due date (never overdue or hidden just because due is missing)
- * 3. overdue — due before today
- * 4. upcoming — DateAssigned after today (hidden)
- * 5. dueSoon — due today through Friday of the current week
- * 6. assigned — DateAssigned is missing or has arrived
- * 7. upcoming
- *
- * Graded always wins over a missing due date.
+ * 1. missing — Blackbaud missing flag OR earned is exactly 0 with maxPoints > 0 (0/100),
+ *    unless the family acknowledged it (doneOverride / acknowledged → done).
+ * 2. done — graded (real points, letter that is not M, or earned/possible).
+ *    Graded with only a creation date (no due date) is Done, not Assigned.
+ * 3. assigned — ungraded and no due date (creation date only is fine).
+ * 4. overdue — due before today
+ * 5. upcoming — DateAssigned after today (hidden)
+ * 6. dueSoon — due today through Friday of the current week
+ * 7. assigned — DateAssigned is missing or has arrived
+ * 8. upcoming
  */
 
 export function parsePortalDate(value) {
@@ -62,6 +62,72 @@ function parseRatioScore(value) {
   return { earned, possible };
 }
 
+function presentCreditNumber(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
+  if (typeof value === 'string' && value.includes('/')) return null;
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function parseAssignmentCredit(grade = {}) {
+  if (!grade || typeof grade !== 'object') return null;
+  const ratio = parseRatioScore(grade.pointsEarned)
+    || parseRatioScore(grade.PointsEarned)
+    || parseRatioScore(grade.score)
+    || parseRatioScore(grade.Score);
+  if (ratio) return ratio;
+  const earned = presentCreditNumber(grade.pointsEarned ?? grade.PointsEarned);
+  const possible = presentCreditNumber(grade.maxPoints ?? grade.MaxPoints);
+  if (earned == null || possible == null || possible <= 0) return null;
+  return { earned, possible };
+}
+
+function truthyFlag(value) {
+  if (value === true || value === 1) return true;
+  if (typeof value === 'string' && /^(true|yes|1|missing|m)$/i.test(value.trim())) return true;
+  return false;
+}
+
+const PORTAL_MISSING_KEYS = [
+  'Missing',
+  'IsMissing',
+  'isMissing',
+  'missing',
+  'MissingAssignment',
+  'missingAssignment',
+  'MissingInd',
+  'IsMissingAssignment',
+  'AssignmentMissing'
+];
+
+/** Blackbaud hydrategradebook Roster.AssignmentGrades.Missing (and aliases). */
+export function isPortalMissingFlag(source = {}) {
+  if (!source || typeof source !== 'object') return false;
+  for (const key of PORTAL_MISSING_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(source, key) && truthyFlag(source[key])) {
+      return true;
+    }
+  }
+  const letter = String(source.letter || source.Letter || source.letterGrade || '').trim().toUpperCase();
+  return letter === 'M';
+}
+
+/** Portal empty work: exactly 0 earned with a positive max (0/100). Ungraded has no score. */
+export function isZeroCreditMissing(grade = {}) {
+  if (!grade || typeof grade !== 'object') return false;
+  if (grade.Exempt === true || grade.exempt === true) return false;
+  if (grade.Dropped === true || grade.dropped === true) return false;
+  const credit = parseAssignmentCredit(grade);
+  if (!credit) return false;
+  return credit.earned === 0 && credit.possible > 0;
+}
+
+export function isMissingWork(grade = {}, explicitMissing) {
+  if (explicitMissing === true) return true;
+  return isPortalMissingFlag(grade) || isZeroCreditMissing(grade);
+}
+
 function hasNumericPoints(value) {
   if (typeof value === 'number') return !Number.isNaN(value);
   if (typeof value === 'string' && value.trim() !== '' && !value.includes('/')) {
@@ -70,21 +136,26 @@ function hasNumericPoints(value) {
   return false;
 }
 
+function letterGradeValue(grade = {}) {
+  return String(grade.letter || grade.Letter || grade.letterGrade || '').trim();
+}
+
 export function isAssignmentGraded(grade = {}) {
   if (!grade || typeof grade !== 'object') return false;
   if (grade.Exempt === true || grade.exempt === true) return true;
   if (grade.Dropped === true || grade.dropped === true) return true;
+  if (isZeroCreditMissing(grade)) return false;
 
-  const letter = String(grade.letter || grade.Letter || grade.letterGrade || '').trim();
-  if (letter.length > 0) return true;
+  const letter = letterGradeValue(grade);
+  if (letter.length > 0 && letter.toUpperCase() !== 'M') return true;
 
   const earned = grade.pointsEarned ?? grade.PointsEarned;
-  if (hasNumericPoints(earned)) return true;
+  if (hasNumericPoints(earned) && Number(earned) !== 0) return true;
 
   const ratio = parseRatioScore(earned)
     || parseRatioScore(grade.score)
     || parseRatioScore(grade.Score);
-  if (ratio) return true;
+  if (ratio && !(ratio.earned === 0 && ratio.possible > 0)) return true;
 
   const possibleRaw = grade.maxPoints ?? grade.MaxPoints;
   if (earned == null || String(earned).trim() === '' || possibleRaw == null || String(possibleRaw).trim() === '') {
@@ -92,7 +163,7 @@ export function isAssignmentGraded(grade = {}) {
   }
   const earnedNum = Number(earned);
   const possible = Number(possibleRaw);
-  return Number.isFinite(earnedNum) && Number.isFinite(possible) && possible > 0;
+  return Number.isFinite(earnedNum) && Number.isFinite(possible) && possible > 0 && earnedNum !== 0;
 }
 
 export function isAssignmentDone(grade = {}) {
@@ -106,6 +177,8 @@ export function classifyAssignment({
   graded,
   completed,
   doneOverride,
+  acknowledged,
+  isMissing,
   pointsEarned,
   PointsEarned,
   maxPoints,
@@ -126,28 +199,35 @@ export function classifyAssignment({
     Letter: Letter ?? grade?.Letter,
     letterGrade: letterGrade ?? grade?.letterGrade
   };
+  const missingWork = isMissingWork(gradeFields, isMissing === true);
+  const familyDone = doneOverride === true || acknowledged === true || (
+    !missingWork && (completed === true || done === true)
+  );
   const isGraded = graded === true || isAssignmentGraded(gradeFields);
-  const familyDone = doneOverride === true || completed === true || done === true;
 
-  // 1. Graded always wins (including no due date). Family mark-done also → done.
-  if (isGraded || familyDone) return 'done';
+  // 1. Family acknowledge / mark-done forces Done even for portal missing or 0/max.
+  if (familyDone) return 'done';
+  // 2. Blackbaud missing flag or exact 0/max → Missing (not Done/F).
+  if (missingWork) return 'missing';
+  // 3. Graded (including no due date / creation date only) → Done.
+  if (isGraded) return 'done';
 
   const today = toDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate()));
   const assignedKey = toDateKey(assignedAt);
   const dueKey = toDateKey(dueAt);
 
-  // 2. No due date → Assignments filter, never overdue/hidden.
+  // 4. Ungraded, no due date (creation date only is fine) → Assigned.
   if (!dueKey) return 'assigned';
-  // 3. Due before today.
+  // 5. Due before today.
   if (dueKey < today) return 'overdue';
-  // 4. Future DateAssigned stays hidden until assigned.
+  // 6. Future DateAssigned stays hidden until assigned.
   if (assignedKey && assignedKey > today) return 'upcoming';
-  // 5. Due today through this week's Friday.
+  // 7. Due today through this week's Friday.
   const fridayKey = toDateKey(fridayOfCurrentWeek(now));
   if (dueKey <= fridayKey) return 'dueSoon';
-  // 6. Assigned date missing or already reached.
+  // 8. Assigned date missing or already reached.
   if (!assignedKey || assignedKey <= today) return 'assigned';
-  // 7. Fallback hidden.
+  // 9. Fallback hidden.
   return 'upcoming';
 }
 

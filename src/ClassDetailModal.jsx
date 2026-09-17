@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Mail, MapPin } from 'lucide-react';
 import { formatAssignmentScore } from './lib/assignmentScore.js';
 import { gradeBandFromLetterOrPercent, gradeToneClass } from './lib/gradeColors.js';
+import { isZeroCreditMissing } from './lib/assignmentBuckets.js';
 
 const CLASS_TABS = [
   { id: 'bulletin', label: 'Bulletin' },
@@ -49,6 +50,8 @@ export function assignmentsForCourse(assignments, course) {
 }
 
 function statusLabel(item) {
+  if (item.doneOverride || item.acknowledged) return 'Done';
+  if (item.status === 'missing' || item.isMissing || isZeroCreditMissing(item)) return 'Missing';
   if (item.status === 'overdue') return 'Overdue';
   if (item.status === 'dueSoon') return 'Due soon';
   if (item.status === 'assigned') return 'Assigned';
@@ -442,7 +445,9 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
                   <ul className="divide-y divide-zinc-800 border border-zinc-800 rounded-xl overflow-hidden">
                     {classAssignments.map((item) => {
                       const score = formatAssignmentScore(item.pointsEarned, item.maxPoints);
-                      const band = gradeBandFromLetterOrPercent(item.letter, score.percent);
+                      const zeroMissing = isZeroCreditMissing(item);
+                      const missing = (item.status === 'missing' || item.isMissing || zeroMissing) && !item.doneOverride && !item.acknowledged;
+                      const band = missing ? 'missing' : gradeBandFromLetterOrPercent(item.letter, score.percent);
                       return (
                         <li key={item.id} className="flex items-baseline justify-between gap-3 px-3.5 py-2.5">
                           <div className="min-w-0">
@@ -452,8 +457,8 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
                               {item.dueDate ? ` · due ${item.dueDate}` : ''}
                             </p>
                           </div>
-                          <span className={`shrink-0 text-[13px] tabular-nums font-semibold px-2 py-0.5 rounded-md border ${gradeToneClass(band)} grade-${band}`}>
-                            {score.percentLabel || '—'}
+                          <span className={`shrink-0 text-[13px] tabular-nums font-semibold px-2 py-0.5 rounded-md border ${gradeToneClass(band)}`}>
+                            {missing ? 'Missing' : (score.percentLabel || '—')}
                           </span>
                         </li>
                       );

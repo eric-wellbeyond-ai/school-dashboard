@@ -45,7 +45,10 @@ import {
   getNotifications,
   markNotificationRead,
   markNotificationsForAssignment,
-  markAllNotificationsRead
+  markAllNotificationsRead,
+  annotateAssignments,
+  setMissingAck,
+  isMissingAcked
 } from './services/familyStore.js';
 
 dotenv.config();
@@ -124,12 +127,15 @@ async function mergeSyncIntoStore(result, identity) {
       const { comments: _ignored, ...rest } = a;
       return rest;
     });
-  const assignments = overlayFamilyComments([...keepAssignments, ...newAssignments]);
+  const assignments = annotateAssignments([...keepAssignments, ...newAssignments]);
   const tasks = overlayFamilyComments(stored.tasks || []);
+  const missingAssignments = [...keepMissing, ...newMissing].filter((m) => (
+    !isMissingAcked(m.id, m.student)
+  ));
   await saveDashboardData({
     grades,
     assignments,
-    missingAssignments: [...keepMissing, ...newMissing],
+    missingAssignments,
     lastSyncedAt: result.lastSyncedAt || new Date().toISOString()
   });
   return filterPayloadForIdentity({
@@ -137,7 +143,7 @@ async function mergeSyncIntoStore(result, identity) {
     grades,
     assignments,
     tasks,
-    missingAssignments: [...keepMissing, ...newMissing],
+    missingAssignments,
     lastSyncedAt: result.lastSyncedAt
   }, identity);
 }
@@ -722,7 +728,7 @@ app.get('/api/dashboard/state', async (req, res) => {
     const data = await getDashboardData();
     const overlaid = {
       ...data,
-      assignments: overlayFamilyComments(data.assignments || []),
+      assignments: annotateAssignments(data.assignments || []),
       tasks: overlayFamilyComments(data.tasks || [])
     };
     res.json(filterPayloadForIdentity(overlaid, req.wla));
@@ -746,7 +752,7 @@ app.post('/api/dashboard/state', async (req, res) => {
 
     if (identity?.role === 'student') {
       const merged = mergeStudentWrite(existing, { tasks, events, deletedEventKeys, assignments }, identity);
-      merged.assignments = overlayFamilyComments(merged.assignments || []);
+      merged.assignments = annotateAssignments(merged.assignments || []);
       merged.tasks = overlayFamilyComments(merged.tasks || []);
       const updated = await saveDashboardData(merged);
       return res.json({ success: true, data: filterPayloadForIdentity(updated, identity) });
@@ -782,7 +788,7 @@ app.post('/api/dashboard/state', async (req, res) => {
       tasks: overlayFamilyComments(updatedTasks),
       events: events !== undefined ? events : existing.events,
       deletedEventKeys: deletedEventKeys !== undefined ? deletedEventKeys : existing.deletedEventKeys,
-      assignments: overlayFamilyComments(Array.isArray(assignments)
+      assignments: annotateAssignments(Array.isArray(assignments)
         ? (existing.assignments || []).map((a) => {
             const client = assignments.find((c) => c.id === a.id);
             return client?.comments?.length ? { ...a, comments: client.comments } : a;
@@ -1120,6 +1126,35 @@ app.delete('/api/assignments/:id/comments/:commentId', (req, res) => {
     return res.status(result.reason === 'forbidden' ? 403 : 404).json(result);
   }
   res.json({ ok: true, comments: getComments(req.params.id) });
+});
+
+app.post('/api/assignments/:id/ack', (req, res) => {
+  if (!requireFamilySession(req, res)) return;
+  const acknowledged = req.body?.acknowledged !== false;
+  const ack = setMissingAck(req.params.id, acknowledged, req.wla, {
+    student: req.body?.student || null
+  });
+  res.json({
+    ack,
+    assignmentId: req.params.id,
+    student: ack.student,
+    acknowledged: ack.acknowledged,
+    acknowledgedAt: ack.acknowledgedAt,
+    acknowledgedBy: ack.acknowledgedBy,
+    acknowledgedByKey: ack.acknowledgedByKey
+  });
+});
+
+app.delete('/api/assignments/:id/ack', (req, res) => {
+  if (!requireFamilySession(req, res)) return;
+  const ack = setMissingAck(req.params.id, false, req.wla, {
+    student: req.query?.student || req.body?.student || null
+  });
+  res.json({
+    ack,
+    assignmentId: req.params.id,
+    acknowledged: false
+  });
 });
 
 app.get('/api/notifications', (req, res) => {

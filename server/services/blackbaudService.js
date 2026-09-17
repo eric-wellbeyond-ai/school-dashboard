@@ -25,7 +25,9 @@ import {
   toDateKey,
   classifyAssignment,
   formatAssignmentDate,
-  isAssignmentGraded
+  isAssignmentGraded,
+  isZeroCreditMissing,
+  isPortalMissingFlag
 } from '../../src/lib/assignmentBuckets.js';
 import { assignmentPercent } from '../../src/lib/gradeColors.js';
 
@@ -516,6 +518,9 @@ function shortCourseName(title) {
 function mapHydrateAssignment(meta, grade, course, studentId, studentName, now) {
   const assignedAt = parsePortalDate(meta.SortDateAssigned || meta.DateAssigned);
   const dueAt = parsePortalDate(meta.SortDateDue || meta.DateDue);
+  const createdAt = parsePortalDate(
+    meta.DateCreated || meta.CreatedDate || meta.CreateDate || meta.InsertDate || grade.InsertDate
+  );
   const title = decodeHtmlEntities(meta.AssignShort || meta.AbbrDescription || meta.ShortDescription || 'Assignment');
   const comment = decodeHtmlEntities(grade.Comment || '');
   const pointsRaw = grade.PointsEarned ?? grade.pointsEarned;
@@ -524,13 +529,27 @@ function mapHydrateAssignment(meta, grade, course, studentId, studentName, now) 
     : (Number.isFinite(Number(pointsRaw)) && String(pointsRaw).trim() !== '' ? Number(pointsRaw) : null);
   const maxPoints = meta.MaxPoints || grade.MaxPoints || null;
   const percent = assignmentPercent(points, maxPoints);
-  const graded = isAssignmentGraded({
+  const gradeFields = {
     ...grade,
     pointsEarned: points,
     maxPoints,
     letter: grade.Letter || grade.letter
+  };
+  const portalMissing = isPortalMissingFlag(grade) || isPortalMissingFlag(meta);
+  const zeroMissing = isZeroCreditMissing(gradeFields);
+  const isMissing = portalMissing || zeroMissing;
+  const graded = isAssignmentGraded(gradeFields);
+  const status = classifyAssignment({
+    assignedAt,
+    dueAt,
+    graded,
+    isMissing,
+    pointsEarned: points,
+    maxPoints,
+    letter: grade.Letter || grade.letter,
+    grade: gradeFields,
+    now
   });
-  const status = classifyAssignment({ assignedAt, dueAt, done: graded, graded, now });
   return {
     id: `bb_${meta.AssignmentId || grade.AssignmentId}_${studentId}`,
     assignmentId: meta.AssignmentId || grade.AssignmentId,
@@ -544,15 +563,18 @@ function mapHydrateAssignment(meta, grade, course, studentId, studentName, now) 
     student: studentName,
     studentPhoto: course.studentPhoto || null,
     type: decodeHtmlEntities(meta.AssignmentType || grade.AssignmentType || 'Assignment'),
-    assignedDate: assignedAt ? formatAssignmentDate(assignedAt) : '',
+    assignedDate: assignedAt
+      ? formatAssignmentDate(assignedAt)
+      : (createdAt ? formatAssignmentDate(createdAt) : ''),
     dueDate: dueAt ? formatAssignmentDate(dueAt) : '',
     assignedDateISO: toDateKey(assignedAt),
     dueDateISO: toDateKey(dueAt),
+    createdDateISO: toDateKey(createdAt),
     status,
-    done: graded,
-    completed: graded,
+    done: graded && !isMissing,
+    completed: graded && !isMissing,
     graded,
-    isMissing: grade.Missing === true,
+    isMissing,
     late: grade.Late === true,
     incomplete: grade.Incomplete === true,
     exempt: grade.Exempt === true,
@@ -563,7 +585,7 @@ function mapHydrateAssignment(meta, grade, course, studentId, studentName, now) 
     percentage: percent,
     comment,
     source: 'Blackbaud',
-    priority: status === 'overdue' ? 'high' : status === 'dueSoon' ? 'medium' : 'low'
+    priority: status === 'overdue' || status === 'missing' ? 'high' : status === 'dueSoon' ? 'medium' : 'low'
   };
 }
 
