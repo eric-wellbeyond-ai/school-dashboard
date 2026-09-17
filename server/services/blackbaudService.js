@@ -208,12 +208,8 @@ export function portalTFromCookie(raw) {
  * Cookie header for myschoolapp. Always includes harvested `t` when present.
  */
 export function formatCookieString(rawCookie) {
-  const str = String(rawCookie || '').trim();
-  if (!str) return '';
-  const t = portalTFromCookie(str);
-  if (!t) return str;
-  if (/(?:^|;\s*)t=/.test(str)) return str;
-  return `t=${t}`;
+  const t = portalTFromCookie(rawCookie);
+  return t ? `t=${t}` : '';
 }
 
 function portalCookieHeader(session) {

@@ -108,14 +108,48 @@ function isPythonAgent(req) {
   return /python-requests|python-urllib/i.test(req.headers['user-agent'] || '');
 }
 
+function resolveBindSessionId(req) {
+  const fromBody = String(req.body?.sessionId || '').trim();
+  const fromHeader = String(req.headers['x-wla-session'] || '').trim();
+  const fromCookie = parseCookies(req)[SESSION_COOKIE];
+  const fromLogin = (() => {
+    const nonce = parseCookies(req)[LOGIN_COOKIE];
+    return nonce ? portalLogins.get(nonce)?.sessionId : null;
+  })();
+  return fromBody || fromHeader || req.wla?.sessionId || fromCookie || fromLogin || null;
+}
+
+function persistBoundSession(record, req, res) {
+  const cookie = formatCookieString(record?.cookie);
+  if (!cookie) return null;
+  const identity = identifyUser(record);
+  const merged = {
+    ...(req.wla || {}),
+    ...record,
+    ...identity,
+    cookie,
+    subdomain: record.subdomain || 'westlakelutheran',
+    verifiedAt: new Date().toISOString()
+  };
+  const targetId = resolveBindSessionId(req);
+  if (targetId && getSession(targetId)) {
+    merged.sessionId = targetId;
+    persistSessions(merged);
+    return { id: targetId, record: merged };
+  }
+  const id = createSession(merged);
+  merged.sessionId = id;
+  appendSetCookie(res, sessionCookieHeader(id));
+  return { id, record: merged };
+}
+
 async function attachIdentifiedSession(discovered, req, res) {
   const identity = identifyUser(discovered);
-  const record = { ...discovered, ...identity };
+  const record = { ...discovered, ...identity, cookie: formatCookieString(discovered.cookie) };
   const { claimToken } = stageLogin(record);
   const syncResult = await runWithWlaSession(record, () => syncBlackbaudData());
   if (!isPythonAgent(req)) {
-    const id = createSession(record);
-    appendSetCookie(res, sessionCookieHeader(id));
+    persistBoundSession(record, req, res);
   }
   return { record, claimToken, syncResult, identity: publicIdentity(record) };
 }
@@ -640,7 +674,7 @@ app.post('/api/blackbaud/mac-webview/start', async (req, res) => {
  */
 app.get('/api/blackbaud/status', async (req, res) => {
   try {
-    if (req.wla?.cookie && (!req.wla.photoUrl || (req.wla.students || []).some((s) => !s.photoUrl))) {
+    if (sessionHasPortalT(req.wla) && (!req.wla.photoUrl || (req.wla.students || []).some((s) => !s.photoUrl))) {
       try {
         const live = await verifyAndDiscoverProfiles(req.wla.cookie, { homeUrl: req.wla.homeUrl });
         req.wla.firstName = live.firstName;
@@ -685,26 +719,23 @@ app.post('/api/blackbaud/session', async (req, res) => {
       });
     }
 
-    const identity = identifyUser(discovered);
-    const merged = {
-      ...(req.wla || {}),
-      ...discovered,
-      ...identity,
-      cookie,
-      subdomain: 'westlakelutheran',
-      verifiedAt: new Date().toISOString()
-    };
-
-    const sessionId = merged.sessionId || parseCookies(req)[SESSION_COOKIE];
-    if (sessionId && getSession(sessionId)) {
-      merged.sessionId = sessionId;
-      persistSessions(merged);
-      return res.json({ success: true, data: publicIdentity(merged) });
+    const bound = persistBoundSession(discovered, req, res);
+    if (!bound) {
+      return res.status(400).json({ error: 'Could not bind portal session cookie t.' });
     }
 
-    const id = createSession(merged);
-    appendSetCookie(res, sessionCookieHeader(id));
-    res.json({ success: true, data: publicIdentity({ ...merged, sessionId: id }) });
+    const syncResult = await runWithWlaSession(bound.record, () => syncBlackbaudData());
+    if (syncResult?.connected) {
+      await mergeSyncIntoStore(syncResult, bound.record);
+    }
+
+    res.json({
+      success: true,
+      message: 'Bound portal session cookie t to this dashboard session',
+      data: publicIdentity(bound.record),
+      grades: syncResult?.grades || {},
+      students: publicIdentity(bound.record).students
+    });
   } catch (err) {
     console.error('Blackbaud session bind failed:', err);
     res.status(500).json({ error: err.message });
@@ -756,10 +787,13 @@ app.post('/api/blackbaud/claim', async (req, res) => {
     if (!record?.cookie) {
       return res.status(401).json({ success: false, error: 'Sign-in expired. Use Log in with Blackbaud again.' });
     }
-    const id = createSession(record);
-    appendSetCookie(res, sessionCookieHeader(id));
+    record.cookie = formatCookieString(record.cookie);
+    const bound = persistBoundSession(record, req, res);
+    if (!bound) {
+      return res.status(401).json({ success: false, error: 'Sign-in expired. Use Log in with Blackbaud again.' });
+    }
     appendSetCookie(res, loginCookieHeader('', { clear: true }));
-    res.json({ success: true, data: publicIdentity(record) });
+    res.json({ success: true, data: publicIdentity(bound.record) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -829,7 +863,7 @@ app.post('/api/blackbaud/disconnect', async (req, res) => {
  * Assignment center details for the selected row.
  */
 app.get('/api/blackbaud/assignment/:id', async (req, res) => {
-  if (!req.wla?.cookie) {
+  if (!sessionHasPortalT(req.wla)) {
     return res.status(401).json({ error: 'Sign in with Blackbaud to view assignment details.' });
   }
   try {
@@ -848,7 +882,7 @@ function filterNotesForIdentity(notes, identity) {
 }
 
 app.get('/api/blackbaud/notes', async (req, res) => {
-  if (!req.wla?.cookie) {
+  if (!sessionHasPortalT(req.wla)) {
     return res.status(401).json({ error: 'Sign in with Blackbaud to view official notes.', notes: [], unreadCount: 0 });
   }
   try {
@@ -869,7 +903,7 @@ app.get('/api/blackbaud/notes', async (req, res) => {
 });
 
 app.get('/api/blackbaud/notes/detail', async (req, res) => {
-  if (!req.wla?.cookie) {
+  if (!sessionHasPortalT(req.wla)) {
     return res.status(401).json({ error: 'Sign in with Blackbaud to view official notes.' });
   }
   try {
@@ -884,7 +918,7 @@ app.get('/api/blackbaud/notes/detail', async (req, res) => {
 });
 
 app.get('/api/blackbaud/news', async (req, res) => {
-  if (!req.wla?.cookie) {
+  if (!sessionHasPortalT(req.wla)) {
     return res.status(401).json({ error: 'Sign in with Blackbaud to view featured content.', items: [] });
   }
   try {
@@ -903,7 +937,7 @@ app.get('/api/blackbaud/news', async (req, res) => {
 });
 
 app.get('/api/blackbaud/news/detail', async (req, res) => {
-  if (!req.wla?.cookie) {
+  if (!sessionHasPortalT(req.wla)) {
     return res.status(401).json({ error: 'Sign in with Blackbaud to view featured content.' });
   }
   try {
@@ -918,7 +952,7 @@ app.get('/api/blackbaud/news/detail', async (req, res) => {
 });
 
 app.get('/api/blackbaud/resources', async (req, res) => {
-  if (!req.wla?.cookie) {
+  if (!sessionHasPortalT(req.wla)) {
     return res.status(401).json({ error: 'Sign in with Blackbaud to view resources.', items: [] });
   }
   try {
@@ -954,7 +988,7 @@ app.post('/api/read-state', async (req, res) => {
 });
 
 app.get('/api/blackbaud/class/:sectionId', async (req, res) => {
-  if (!req.wla?.cookie) {
+  if (!sessionHasPortalT(req.wla)) {
     return res.status(401).json({ error: 'Sign in with Blackbaud to view class details.' });
   }
   try {
@@ -985,7 +1019,7 @@ app.get('/api/blackbaud/class/:sectionId', async (req, res) => {
 });
 
 app.get('/api/blackbaud/profile-photo/:userId', async (req, res) => {
-  if (!req.wla?.cookie) {
+  if (!sessionHasPortalT(req.wla)) {
     return res.status(401).end();
   }
   try {
@@ -1001,7 +1035,7 @@ app.get('/api/blackbaud/profile-photo/:userId', async (req, res) => {
 });
 
 app.get('/api/blackbaud/photo', async (req, res) => {
-  if (!req.wla?.cookie) {
+  if (!sessionHasPortalT(req.wla)) {
     return res.status(401).end();
   }
   const raw = String(req.query.url || '');

@@ -96,7 +96,8 @@ test('Cookie header always carries harvested t', () => {
   assert.equal(portalTFromCookie('t=abc-token'), 'abc-token');
   assert.equal(portalTFromCookie('sd=1; t=abc-token; persona=parent'), 'abc-token');
   assert.equal(formatCookieString('abc-token-without-equals-prefix-xxx'), 't=abc-token-without-equals-prefix-xxx');
-  assert.match(formatCookieString('sd=1; t=abc-token'), /t=abc-token/);
+  assert.equal(formatCookieString('sd=1; t=abc-token'), 't=abc-token');
+  assert.equal(formatCookieString('AuthSvcToken=sky-jwt-not-t'), '');
 });
 
 test('blackbaudService has no process-global cachedSession', () => {
