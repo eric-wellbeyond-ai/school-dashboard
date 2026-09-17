@@ -300,9 +300,6 @@ export default function FamilyFolder({
   const signedFirst = firstName(signedInName);
   const blackbaudSync = formatSyncTime(blackbaudStatus.verifiedAt);
   const blackbaudSynced = Boolean(blackbaudStatus.connected && blackbaudStatus.verifiedAt);
-  const sourcesLabel = blackbaudSynced
-    ? (blackbaudSync ? `Sources, Blackbaud synced ${blackbaudSync}` : 'Sources, Blackbaud synced')
-    : 'Sources, Blackbaud not synced';
   const todayLabel = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'long',
@@ -505,8 +502,8 @@ export default function FamilyFolder({
             <button
               type="button"
               className={`ff-feed-btn ff-sources-toggle ${blackbaudSynced ? 'is-synced' : ''}`}
-              aria-label={sourcesLabel}
-              title={sourcesLabel}
+              aria-label="Sources"
+              title="Sources"
               aria-expanded={sourcesOpen}
               aria-haspopup="dialog"
               aria-controls="ff-sources-popover"
