@@ -231,7 +231,32 @@ export function classifyAssignment({
   return 'upcoming';
 }
 
+/** Milliseconds for checklist sort: due date, else creation/assigned date. */
 export function assignmentSortValue(item) {
-  const due = parsePortalDate(item.dueDateISO || item.dueDate);
-  return due ? due.getTime() : Number.MAX_SAFE_INTEGER;
+  if (!item || typeof item !== 'object') return Number.MAX_SAFE_INTEGER;
+  const due = parsePortalDate(
+    item.dueDateISO
+    || item.dateDue
+    || item.DateDue
+    || item.SortDateDue
+    || item.dueDate
+  );
+  if (due) return due.getTime();
+  const created = parsePortalDate(
+    item.createdDateISO
+    || item.dateAssigned
+    || item.DateAssigned
+    || item.assignedDateISO
+    || item.assignedDate
+    || item.createdAt
+    || item.CreateDate
+    || item.DateCreated
+  );
+  return created ? created.getTime() : Number.MAX_SAFE_INTEGER;
+}
+
+/** Done: newest first. Overdue, missing, due soon, assigned: oldest first. */
+export function compareChecklistAssignments(a, b, bucket) {
+  const delta = assignmentSortValue(a) - assignmentSortValue(b);
+  return bucket === 'done' ? -delta : delta;
 }

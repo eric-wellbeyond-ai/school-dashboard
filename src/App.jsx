@@ -47,7 +47,7 @@ import {
   formatAssignmentDate,
   fridayOfCurrentWeek,
   parsePortalDate,
-  assignmentSortValue,
+  compareChecklistAssignments,
   isZeroCreditMissing
 } from './lib/assignmentBuckets.js';
 import { classifySportsYouEvent } from './lib/sportsyouClassify.js';
@@ -1848,10 +1848,7 @@ export default function App() {
 
   const filteredTasks = scopedChecklist
     .filter((item) => item.status === taskFilter)
-    .sort((a, b) => {
-      const dir = taskFilter === 'done' ? -1 : 1;
-      return dir * (assignmentSortValue(a) - assignmentSortValue(b));
-    });
+    .sort((a, b) => compareChecklistAssignments(a, b, taskFilter));
 
   const scheduleEvents = useMemo(() => {
     const tagged = (list, feed) => (list || []).map((ev) => {
