@@ -6,9 +6,9 @@
  * - Sync metadata (lastSyncedAt timestamp, stats)
  *
  * Family durable state (comments, missing-acks, notifications, read-state,
- * done overrides) lives in supabaseStore.js → wla_* tables when
- * SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set; otherwise JSON files
- * via familyStore.js. This module does not write those wla_* tables.
+ * done overrides) lives in supabaseStore.js → wla_* tables. Requires
+ * SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY. This module does not write
+ * those wla_* tables.
  *
  * Storage Backends for dashboard-data:
  * 1. Local / Self-hosted: Persists to server/data/dashboard-data.json
@@ -25,7 +25,7 @@ import { decodeHtmlEntities } from './parserService.js';
 import { isConfigured as isSupabaseConfigured } from './supabaseStore.js';
 
 export function familyPersistence() {
-  return isSupabaseConfigured() ? 'supabase' : 'json';
+  return isSupabaseConfigured() ? 'supabase' : 'unconfigured';
 }
 
 const __filename = fileURLToPath(import.meta.url);

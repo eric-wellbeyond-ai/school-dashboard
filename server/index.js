@@ -1,7 +1,6 @@
-import 'dotenv/config';
+import './loadEnv.js';
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import { spawn, execSync } from 'child_process';
@@ -63,8 +62,6 @@ import {
   getMissingAcks,
   missingAckKey
 } from './services/familyStore.js';
-
-dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -305,7 +302,6 @@ async function saveTokens(tokens) {
 let oauth2Client = null;
 
 function getOAuthConfig() {
-  dotenv.config();
   const clientId = (process.env.GOOGLE_CLIENT_ID || '').replace(/^['"]|['"]$/g, '').trim();
   const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').replace(/^['"]|['"]$/g, '').trim();
   const redirectUri = (
@@ -1375,6 +1371,7 @@ app.get('/', (req, res) => {
 if (!process.env.VERCEL) {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`School Dashboard backend server running on http://0.0.0.0:${PORT}`);
+    console.log(`Family store: ${familyPersistence()}`);
   });
 }
 

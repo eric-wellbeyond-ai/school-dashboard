@@ -4,6 +4,7 @@
  * Tables are wla_* in project aiden-wellbeyond-ais; existing product tables are unused.
  */
 
+import '../loadEnv.js';
 import { createClient } from '@supabase/supabase-js';
 
 const TABLES = {
@@ -16,14 +17,26 @@ const TABLES = {
 
 let client = null;
 
+function env(name) {
+  return String(process.env[name] || '').replace(/^['"]|['"]$/g, '').trim();
+}
+
 export function isConfigured() {
-  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+  return Boolean(env('SUPABASE_URL') && env('SUPABASE_SERVICE_ROLE_KEY'));
+}
+
+export function requireConfigured() {
+  if (!isConfigured()) {
+    throw new Error(
+      'Family store requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (school-dashboard/.env or Vercel env)'
+    );
+  }
 }
 
 export function getServiceClient() {
-  if (!isConfigured()) return null;
+  requireConfigured();
   if (!client) {
-    client = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+    client = createClient(env('SUPABASE_URL'), env('SUPABASE_SERVICE_ROLE_KEY'), {
       auth: { persistSession: false, autoRefreshToken: false }
     });
   }
@@ -31,9 +44,7 @@ export function getServiceClient() {
 }
 
 function requireClient() {
-  const sb = getServiceClient();
-  if (!sb) throw new Error('Supabase is not configured');
-  return sb;
+  return getServiceClient();
 }
 
 function throwIf(error) {

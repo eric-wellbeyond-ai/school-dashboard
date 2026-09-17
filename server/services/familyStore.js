@@ -1,8 +1,9 @@
 /**
  * Durable family store (the DB for this Mac app):
  * comments, notifications, completions, missing-acks, read-state.
- * Prefers Supabase wla_* tables when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
- * are set; otherwise local JSON. Independent of Blackbaud hydrate / dashboard-data.json.
+ * Requires SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY and writes only to
+ * wla_* tables. Local JSON is read once to seed empty tables, never as a
+ * runtime fallback. Independent of Blackbaud hydrate / dashboard-data.json.
  */
 
 import fs from 'fs';
@@ -14,10 +15,6 @@ import * as supabaseStore from './supabaseStore.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.VERCEL ? '/tmp' : path.join(__dirname, '..', 'data');
 
-function useSupabase() {
-  return supabaseStore.isConfigured();
-}
-
 function readJson(name, fallback) {
   const file = path.join(DATA_DIR, name);
   try {
@@ -26,43 +23,6 @@ function readJson(name, fallback) {
   } catch {
     return fallback;
   }
-}
-
-function writeJson(name, data) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = path.join(DATA_DIR, `${name}.tmp`);
-  const dest = path.join(DATA_DIR, name);
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
-  fs.renameSync(tmp, dest);
-}
-
-let seedAttempted = false;
-async function maybeSeedSupabase() {
-  if (seedAttempted || !useSupabase()) return;
-  seedAttempted = true;
-  try {
-    await supabaseStore.seedIfEmpty({
-      comments: jsonGetAllComments(),
-      acks: jsonGetMissingAcks(),
-      notifications: readJson('notifications.json', { items: [] }).items || [],
-      completions: jsonGetCompletions(),
-      readState: readJson('read-state.json', { byUser: {} }).byUser || {}
-    });
-  } catch (err) {
-    console.warn('[familyStore] Supabase seed skipped:', err.message);
-  }
-}
-
-async function withStore(sbFn, jsonFn) {
-  if (useSupabase()) {
-    await maybeSeedSupabase();
-    try {
-      return await sbFn();
-    } catch (err) {
-      console.warn('[familyStore] Supabase failed, using JSON fallback:', err.message);
-    }
-  }
-  return jsonFn();
 }
 
 function jsonGetAllComments() {
@@ -80,16 +40,37 @@ function jsonGetMissingAcks() {
   return data.byKey || {};
 }
 
+let seedAttempted = false;
+async function maybeSeedSupabase() {
+  supabaseStore.requireConfigured();
+  if (seedAttempted) return;
+  seedAttempted = true;
+  try {
+    await supabaseStore.seedIfEmpty({
+      comments: jsonGetAllComments(),
+      acks: jsonGetMissingAcks(),
+      notifications: readJson('notifications.json', { items: [] }).items || [],
+      completions: jsonGetCompletions(),
+      readState: readJson('read-state.json', { byUser: {} }).byUser || {}
+    });
+  } catch (err) {
+    console.warn('[familyStore] Supabase seed skipped:', err.message);
+  }
+}
+
+async function withSupabase(fn) {
+  supabaseStore.requireConfigured();
+  await maybeSeedSupabase();
+  return fn();
+}
+
 export async function getAllComments() {
-  return withStore(() => supabaseStore.getAllComments(), () => jsonGetAllComments());
+  return withSupabase(() => supabaseStore.getAllComments());
 }
 
 export async function getComments(assignmentId) {
   if (!assignmentId) return [];
-  return withStore(
-    () => supabaseStore.getComments(assignmentId),
-    () => jsonGetAllComments()[assignmentId] || []
-  );
+  return withSupabase(() => supabaseStore.getComments(assignmentId));
 }
 
 export async function addComment(assignmentId, comment) {
@@ -111,16 +92,7 @@ export async function addComment(assignmentId, comment) {
         + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
     createdAt: new Date().toISOString()
   };
-  return withStore(
-    () => supabaseStore.addComment(assignmentId, row),
-    () => {
-      const byAssignment = jsonGetAllComments();
-      const list = byAssignment[assignmentId] || [];
-      byAssignment[assignmentId] = [...list, row];
-      writeJson('comments.json', { byAssignment, updatedAt: new Date().toISOString() });
-      return row;
-    }
-  );
+  return withSupabase(() => supabaseStore.addComment(assignmentId, row));
 }
 
 export async function deleteComment(assignmentId, commentId, identity) {
@@ -134,39 +106,16 @@ export async function deleteComment(assignmentId, commentId, identity) {
   );
   const isParent = identity?.role === 'parent';
   if (!isAuthor && !isParent) return { ok: false, reason: 'forbidden' };
-  await withStore(
-    async () => {
-      await supabaseStore.deleteComment(assignmentId, commentId);
-      return true;
-    },
-    () => {
-      const byAssignment = jsonGetAllComments();
-      byAssignment[assignmentId] = (byAssignment[assignmentId] || []).filter((c) => c.id !== commentId);
-      writeJson('comments.json', { byAssignment, updatedAt: new Date().toISOString() });
-      return true;
-    }
-  );
+  await withSupabase(() => supabaseStore.deleteComment(assignmentId, commentId));
   return { ok: true };
 }
 
 export async function getCompletions() {
-  return withStore(() => supabaseStore.getCompletions(), () => jsonGetCompletions());
+  return withSupabase(() => supabaseStore.getCompletions());
 }
 
 export async function setCompletion(assignmentId, doneOverride, identity) {
-  return withStore(
-    () => supabaseStore.setCompletion(assignmentId, doneOverride, identity),
-    () => {
-      const byAssignment = jsonGetCompletions();
-      byAssignment[assignmentId] = {
-        doneOverride: Boolean(doneOverride),
-        updatedAt: new Date().toISOString(),
-        userKey: identity?.userKey || null
-      };
-      writeJson('completions.json', { byAssignment, updatedAt: new Date().toISOString() });
-      return byAssignment[assignmentId];
-    }
-  );
+  return withSupabase(() => supabaseStore.setCompletion(assignmentId, doneOverride, identity));
 }
 
 export async function ingestDoneOverrides(lists = [], identity) {
@@ -193,7 +142,7 @@ export function missingAckKey(assignmentId, student) {
 }
 
 export async function getMissingAcks() {
-  return withStore(() => supabaseStore.getMissingAcks(), () => jsonGetMissingAcks());
+  return withSupabase(() => supabaseStore.getMissingAcks());
 }
 
 export async function lookupMissingAck(assignmentId, student) {
@@ -224,21 +173,11 @@ export async function setMissingAck(assignmentId, acknowledged, identity, extra 
     role: identity?.role || null,
     updatedAt: now
   };
-  return withStore(
-    () => supabaseStore.setMissingAck(key, assignmentId, row),
-    () => {
-      const data = readJson('missing-acks.json', { byKey: {} });
-      const byKey = data.byKey || {};
-      byKey[key] = row;
-      if (assignmentId && key !== assignmentId) byKey[assignmentId] = row;
-      writeJson('missing-acks.json', { byKey, updatedAt: now });
-      return row;
-    }
-  );
+  return withSupabase(() => supabaseStore.setMissingAck(key, assignmentId, row));
 }
 
 /**
- * Family comments live in comments.json / wla_assignment_comments, not Blackbaud.
+ * Family comments live in wla_assignment_comments, not Blackbaud.
  * Prefer the family store when an assignment id has been seen;
  * otherwise migrate inline comments from dashboard-data.json.
  * Merge is add-only so a sync with empty comments[] cannot wipe the thread.
@@ -276,16 +215,11 @@ export async function overlayFamilyComments(assignments = []) {
     return { ...a, comments: [] };
   });
   if (dirty) {
-    await withStore(
-      async () => {
-        for (const [assignmentId, list] of Object.entries(byAssignment)) {
-          if (list?.length) await supabaseStore.upsertComments(assignmentId, list);
-        }
-      },
-      () => {
-        writeJson('comments.json', { byAssignment, updatedAt: new Date().toISOString() });
+    await withSupabase(async () => {
+      for (const [assignmentId, list] of Object.entries(byAssignment)) {
+        if (list?.length) await supabaseStore.upsertComments(assignmentId, list);
       }
-    );
+    });
   }
   return out;
 }
@@ -328,10 +262,7 @@ function notificationVisible(item, identity) {
 }
 
 async function loadNotificationItems() {
-  return withStore(
-    () => supabaseStore.getNotificationItems(),
-    () => readJson('notifications.json', { items: [] }).items || []
-  );
+  return withSupabase(() => supabaseStore.getNotificationItems());
 }
 
 export async function getNotifications(identity) {
@@ -341,15 +272,7 @@ export async function getNotifications(identity) {
 
 export async function addNotifications(rows) {
   if (!rows?.length) return [];
-  return withStore(
-    () => supabaseStore.addNotifications(rows),
-    () => {
-      const data = readJson('notifications.json', { items: [] });
-      data.items = [...rows, ...(data.items || [])].slice(0, 400);
-      writeJson('notifications.json', data);
-      return rows;
-    }
-  );
+  return withSupabase(() => supabaseStore.addNotifications(rows));
 }
 
 export async function markNotificationRead(id, identity) {
@@ -357,16 +280,7 @@ export async function markNotificationRead(id, identity) {
   const target = items.find((item) => item.id === id && notificationVisible(item, identity));
   if (!target) return false;
   const readAt = new Date().toISOString();
-  await withStore(
-    () => supabaseStore.updateNotifications([id], { read: true, readAt }),
-    () => {
-      const data = readJson('notifications.json', { items: [] });
-      data.items = (data.items || []).map((item) => (
-        item.id === id ? { ...item, read: true, readAt } : item
-      ));
-      writeJson('notifications.json', data);
-    }
-  );
+  await withSupabase(() => supabaseStore.updateNotifications([id], { read: true, readAt }));
   return true;
 }
 
@@ -375,18 +289,7 @@ export async function markAllNotificationsRead(identity) {
   const now = new Date().toISOString();
   const ids = items.filter((item) => notificationVisible(item, identity) && !item.read).map((item) => item.id);
   if (ids.length) {
-    await withStore(
-      () => supabaseStore.updateNotifications(ids, { read: true, readAt: now }),
-      () => {
-        const data = readJson('notifications.json', { items: [] });
-        data.items = (data.items || []).map((item) => (
-          notificationVisible(item, identity)
-            ? { ...item, read: true, readAt: item.readAt || now }
-            : item
-        ));
-        writeJson('notifications.json', data);
-      }
-    );
+    await withSupabase(() => supabaseStore.updateNotifications(ids, { read: true, readAt: now }));
   }
   return getNotifications(identity);
 }
@@ -399,19 +302,7 @@ export async function markNotificationsForAssignment(assignmentId, identity) {
     .filter((item) => item.assignmentId === assignmentId && notificationVisible(item, identity) && !item.read)
     .map((item) => item.id);
   if (ids.length) {
-    await withStore(
-      () => supabaseStore.updateNotifications(ids, { read: true, readAt: now }),
-      () => {
-        const data = readJson('notifications.json', { items: [] });
-        data.items = (data.items || []).map((item) => {
-          if (item.assignmentId !== assignmentId) return item;
-          if (!notificationVisible(item, identity)) return item;
-          if (item.read) return item;
-          return { ...item, read: true, readAt: now };
-        });
-        writeJson('notifications.json', data);
-      }
-    );
+    await withSupabase(() => supabaseStore.updateNotifications(ids, { read: true, readAt: now }));
   }
   return getNotifications(identity);
 }
@@ -426,14 +317,7 @@ export function feedReadKey(feed, itemId) {
 
 export async function getReadMap(identity) {
   const userKey = readUserKey(identity);
-  return withStore(
-    () => supabaseStore.getReadMap(userKey),
-    () => {
-      const data = readJson('read-state.json', { byUser: {} });
-      const byUser = data.byUser || {};
-      return byUser[userKey] || {};
-    }
-  );
+  return withSupabase(() => supabaseStore.getReadMap(userKey));
 }
 
 export async function setItemReadState(identity, { feed, itemId, read }) {
@@ -443,32 +327,14 @@ export async function setItemReadState(identity, { feed, itemId, read }) {
   const key = feedReadKey(feed, id);
   const now = new Date().toISOString();
   const on = Boolean(read);
-  const row = {
+  return withSupabase(() => supabaseStore.setItemReadState(userKey, {
     feed: String(feed || 'post'),
     itemId: id,
+    feedKey: key,
     read: on,
     readAt: on ? now : null,
     updatedAt: now
-  };
-  return withStore(
-    () => supabaseStore.setItemReadState(userKey, {
-      feed: row.feed,
-      itemId: id,
-      feedKey: key,
-      read: on,
-      readAt: row.readAt,
-      updatedAt: now
-    }),
-    () => {
-      const data = readJson('read-state.json', { byUser: {} });
-      const byUser = data.byUser || {};
-      const map = { ...(byUser[userKey] || {}) };
-      map[key] = row;
-      byUser[userKey] = map;
-      writeJson('read-state.json', { byUser, updatedAt: now });
-      return map[key];
-    }
-  );
+  }));
 }
 
 export async function overlayItemReadState(items, identity, { defaultUnread = false } = {}) {
