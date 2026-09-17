@@ -40,6 +40,8 @@ import {
 import { buildBlackbaudBookmarklet } from './blackbaudBookmarklet.js';
 import LandingPage from './LandingPage.jsx';
 import CalendarBoard from './CalendarBoard.jsx';
+import ClassDetailModal from './ClassDetailModal.jsx';
+import CourseGradeList from './CourseGradeList.jsx';
 import {
   classifyAssignment,
   formatAssignmentDate,
@@ -132,50 +134,6 @@ function AssignmentScoreChip({ earned, max, letter, className = '' }) {
         <span className="text-[11px] tabular-nums text-base-content/60">{score.raw}</span>
       ) : null}
     </span>
-  );
-}
-
-function CourseGradeList({ groups, mode }) {
-  if (!groups.length) return null;
-  return (
-    <div className="space-y-4">
-      {groups.map((group) => (
-        <div key={group.key} className="overflow-x-auto">
-          {groups.length > 1 && (
-            <h3 className="font-semibold text-sm mb-2">{group.title}</h3>
-          )}
-          <table className="table table-sm">
-            <thead>
-              <tr>
-                <th>Class</th>
-                <th>Teacher</th>
-                <th className="text-right">Grade</th>
-              </tr>
-            </thead>
-            <tbody>
-              {group.rows.map((c, idx) => {
-                const value = courseGradeValue(c, mode);
-                const band = gradeBandFromLetterOrPercent(c.letterGrade, c.percentage || c.numericGrade);
-                return (
-                <tr key={`${group.key}-${c.course || idx}`}>
-                  <td className="font-medium">{decodeHtmlEntities(c.course)}</td>
-                  <td className="text-base-content/70">
-                    {decodeHtmlEntities(c.teacher || 'Teacher TBA')}
-                    {c.room ? ` · Rm ${c.room}` : ''}
-                  </td>
-                  <td className="text-right">
-                    <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass(band)}`}>
-                      {value}
-                    </span>
-                  </td>
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -301,6 +259,7 @@ export default function App() {
 
   // Event & email detail modal state
   const [selectedEventForModal, setSelectedEventForModal] = useState(null);
+  const [selectedCourse, setSelectedCourse] = useState(null);
   const [copiedEmailText, setCopiedEmailText] = useState(false);
 
   // Persistent state: rehydrates from browser localStorage immediately
@@ -1827,7 +1786,7 @@ export default function App() {
                     </button>
                   </div>
                 ) : (
-                  <CourseGradeList groups={gradeGroups} mode={gradeDisplay} />
+                  <CourseGradeList groups={gradeGroups} mode={gradeDisplay} onSelectCourse={setSelectedCourse} />
                 )}
               </div>
               </div>
@@ -2583,8 +2542,8 @@ export default function App() {
                     )}
                   </button>
                   ) : (
-                    assignmentPercent(selectedTaskForModal.pointsEarned, selectedTaskForModal.maxPoints) != null
-                      || String(selectedTaskForModal.letter || selectedTaskForModal.letterGrade || '').trim() ? (
+                    (assignmentPercent(selectedTaskForModal.pointsEarned, selectedTaskForModal.maxPoints) != null
+                      || String(selectedTaskForModal.letter || selectedTaskForModal.letterGrade || '').trim()) ? (
                       <AssignmentScoreChip
                         earned={selectedTaskForModal.pointsEarned}
                         max={selectedTaskForModal.maxPoints}
@@ -2600,7 +2559,7 @@ export default function App() {
                               ? 'Assigned'
                               : 'Ungraded'}
                     </span>
-                    )}
+                    )
                   )}
                 </div>
                 {(String(selectedTaskForModal.id || '').startsWith('bb_') || selectedTaskForModal.comment || selectedTaskForModal.longDescription) && (
@@ -3063,6 +3022,13 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+      {selectedCourse && (
+        <ClassDetailModal
+          course={selectedCourse}
+          assignments={checklistItems}
+          onClose={() => setSelectedCourse(null)}
+        />
       )}
     </div>
   );

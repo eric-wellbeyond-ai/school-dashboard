@@ -12,7 +12,10 @@ import {
   verifyAndDiscoverProfiles,
   syncBlackbaudData,
   studentsFromContext,
-  getAssignmentDetail
+  getAssignmentDetail,
+  getClassPage,
+  fetchProfilePhoto,
+  isSessionExpiredError
 } from './services/blackbaudService.js';
 import { runWithWlaSession } from './services/wlaContext.js';
 import {
@@ -589,6 +592,43 @@ app.get('/api/blackbaud/assignment/:id', async (req, res) => {
   } catch (err) {
     console.warn('[Blackbaud] Assignment detail failed:', err.message);
     res.status(502).json({ error: 'Could not load assignment details.' });
+  }
+});
+
+app.get('/api/blackbaud/class/:sectionId', async (req, res) => {
+  if (!req.wla?.cookie) {
+    return res.status(401).json({ error: 'Sign in with Blackbaud to view class details.' });
+  }
+  try {
+    const detail = await runWithWlaSession(req.wla, () => getClassPage({
+      sectionId: req.params.sectionId,
+      leadSectionId: req.query.leadSectionId,
+      associationId: req.query.associationId,
+      teacherUserId: req.query.teacherUserId
+    }));
+    res.json(detail);
+  } catch (err) {
+    console.warn('[Blackbaud] Class page failed:', err.message);
+    if (isSessionExpiredError(err)) {
+      return res.status(401).json({ error: 'Blackbaud session expired. Sign in again.', needsReauth: true });
+    }
+    res.status(502).json({ error: 'Could not load class details.' });
+  }
+});
+
+app.get('/api/blackbaud/profile-photo/:userId', async (req, res) => {
+  if (!req.wla?.cookie) {
+    return res.status(401).end();
+  }
+  try {
+    const photo = await runWithWlaSession(req.wla, () => fetchProfilePhoto(req.params.userId));
+    if (!photo?.buf) return res.status(404).end();
+    res.setHeader('Content-Type', photo.contentType || 'image/jpeg');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.send(photo.buf);
+  } catch (err) {
+    console.warn('[Blackbaud] Profile photo failed:', err.message);
+    res.status(502).end();
   }
 });
 

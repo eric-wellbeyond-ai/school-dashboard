@@ -25,8 +25,9 @@ import {
   toDateKey,
   classifyAssignment,
   formatAssignmentDate,
-  isAssignmentDone
+  isAssignmentGraded
 } from '../../src/lib/assignmentBuckets.js';
+import { assignmentPercent } from '../../src/lib/gradeColors.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -156,6 +157,23 @@ async function blackbaudRequest(endpoint, options = {}) {
   return res.json();
 }
 
+export function isSessionExpiredError(err) {
+  const msg = String(err?.message || '');
+  return /SESSION_EXPIRED|session cookie has expired|token t is not valid|Invalid Blackbaud session|redirected to login/i.test(msg);
+}
+
+export function sessionExpiredPayload(message) {
+  return {
+    connected: false,
+    needsReauth: true,
+    message: message || 'Blackbaud session expired. Sign in again with Log in with Blackbaud.',
+    students: [],
+    grades: null,
+    assignments: [],
+    missingAssignments: []
+  };
+}
+
 /**
  * Map a Blackbaud user/child record onto Ben / Jade / first name.
  */
@@ -186,6 +204,7 @@ export function studentsFromContext(data = {}) {
         id,
         name: `${first || nick} ${last}`.trim(),
         student,
+        photoUrl: profilePhotoUrl(item),
         gradYear: item.GradYear || null,
         schoolLevel: student === 'Ben' ? 'High School' : student === 'Jade' ? 'Middle School' : 'Academy'
       });
@@ -200,6 +219,7 @@ export function studentsFromContext(data = {}) {
       id: userId,
       name: `${ui.FirstName || ''} ${ui.LastName || ''}`.trim(),
       student,
+      photoUrl: profilePhotoUrl(ui),
       schoolLevel: student === 'Ben' ? 'High School' : student === 'Jade' ? 'Middle School' : 'Academy'
     });
   }
@@ -364,15 +384,22 @@ export async function getStudentClassesAndGrades(studentId, personaId = 1) {
         const title = decodeHtmlEntities(c.sectionidentifier || c.course_title || c.GroupName || 'Course');
         const teacher = decodeHtmlEntities(c.groupownername || c.Owner || '');
         const teacherEmail = c.groupowneremail || null;
+        const teacherUserId = c.groupownerid || c.OwnerId || c.ownerid || null;
+        const teacherPhoto = teacherUserId
+          ? `${BASE_URL}/api/user/profilephoto?userId=${teacherUserId}`
+          : null;
         const rawGrade = c.cumgrade;
         const numGrade = (rawGrade !== null && rawGrade !== undefined && rawGrade !== '') ? parseFloat(rawGrade) : null;
         const letterGrade = toLetterGrade(numGrade);
 
+        const photoRel = c.photofilenameurl || c.ThumbFilenameUrl || c.largefilenameurl || c.CoursePhoto || null;
         return {
           id: c.sectionid || `cls_${Math.random()}`,
           course: title,
           teacher: teacher,
           teacherEmail: teacherEmail,
+          teacherUserId,
+          teacherPhoto,
           letterGrade: letterGrade,
           percentage: (numGrade !== null && !isNaN(numGrade)) ? `${Math.round(numGrade)}%` : (c.CumulativeDisplay || null),
           numericGrade: numGrade,
@@ -380,7 +407,12 @@ export async function getStudentClassesAndGrades(studentId, personaId = 1) {
           schoolLevel: c.schoollevel || null,
           currentTerm: c.currentterm || activeTerm?.DurationDescription || 'Current Term',
           sectionId: c.sectionid,
+          leadSectionId: c.leadsectionid || c.LeadSectionId || c.sectionid,
+          associationId: c.associationid || c.AssociationId || null,
           markingPeriodId: c.markingperiodid,
+          coursePhoto: photoRel
+            ? (String(photoRel).startsWith('http') ? photoRel : `https://bbk12e1-cdn.myschoolcdn.com${photoRel}`)
+            : null,
           overdueCount: c.OverdueCount || 0,
           upcomingCount: c.UpcomingCount || 0
         };
@@ -388,6 +420,7 @@ export async function getStudentClassesAndGrades(studentId, personaId = 1) {
     }
     return [];
   } catch (err) {
+    if (isSessionExpiredError(err)) throw err;
     console.warn(`[Blackbaud] Failed to fetch grades for student ${studentId}:`, err.message);
     return [];
   }
@@ -401,17 +434,31 @@ function shortCourseName(title) {
 function mapHydrateAssignment(meta, grade, course, studentId, studentName, now) {
   const assignedAt = parsePortalDate(meta.SortDateAssigned || meta.DateAssigned);
   const dueAt = parsePortalDate(meta.SortDateDue || meta.DateDue);
-  const done = isAssignmentDone(grade);
-  const status = classifyAssignment({ assignedAt, dueAt, done, now });
   const title = decodeHtmlEntities(meta.AssignShort || meta.AbbrDescription || meta.ShortDescription || 'Assignment');
   const comment = decodeHtmlEntities(grade.Comment || '');
-  const points = grade.PointsEarned;
+  const pointsRaw = grade.PointsEarned ?? grade.pointsEarned;
+  const points = (typeof pointsRaw === 'number' && !Number.isNaN(pointsRaw))
+    ? pointsRaw
+    : (Number.isFinite(Number(pointsRaw)) && String(pointsRaw).trim() !== '' ? Number(pointsRaw) : null);
+  const maxPoints = meta.MaxPoints || grade.MaxPoints || null;
+  const percent = assignmentPercent(points, maxPoints);
+  const graded = isAssignmentGraded({
+    ...grade,
+    pointsEarned: points,
+    maxPoints,
+    letter: grade.Letter || grade.letter
+  });
+  const status = classifyAssignment({ assignedAt, dueAt, done: graded, graded, now });
   return {
     id: `bb_${meta.AssignmentId || grade.AssignmentId}_${studentId}`,
     assignmentId: meta.AssignmentId || grade.AssignmentId,
     title,
     course: shortCourseName(course.course),
+    courseId: course.id || course.sectionId,
+    sectionId: course.sectionId,
     teacher: decodeHtmlEntities(course.teacher || ''),
+    teacherEmail: course.teacherEmail || null,
+    teacherPhoto: course.teacherPhoto || null,
     student: studentName,
     type: decodeHtmlEntities(meta.AssignmentType || grade.AssignmentType || 'Assignment'),
     assignedDate: assignedAt ? formatAssignmentDate(assignedAt) : '',
@@ -419,15 +466,18 @@ function mapHydrateAssignment(meta, grade, course, studentId, studentName, now) 
     assignedDateISO: toDateKey(assignedAt),
     dueDateISO: toDateKey(dueAt),
     status,
-    done,
-    completed: done,
+    done: graded,
+    completed: graded,
+    graded,
     isMissing: grade.Missing === true,
     late: grade.Late === true,
     incomplete: grade.Incomplete === true,
     exempt: grade.Exempt === true,
     dropped: grade.Dropped === true,
-    pointsEarned: typeof points === 'number' ? points : null,
-    maxPoints: meta.MaxPoints || grade.MaxPoints || null,
+    pointsEarned: points,
+    maxPoints,
+    percent,
+    percentage: percent,
     comment,
     source: 'Blackbaud',
     priority: status === 'overdue' ? 'high' : status === 'dueSoon' ? 'medium' : 'low'
@@ -453,6 +503,7 @@ export async function getStudentAssignments(studentId, studentName, classes = []
         return mapHydrateAssignment(meta, grade, course, studentId, studentName, now);
       }).filter(Boolean);
     } catch (classErr) {
+      if (isSessionExpiredError(classErr)) throw classErr;
       console.warn(`[Blackbaud] Hydrate gradebook failed for section ${course.sectionId}:`, classErr.message);
       return [];
     }
@@ -590,4 +641,255 @@ export async function syncBlackbaudData() {
   }
 
   return results;
+}
+
+async function blackbaudRequestSoft(endpoint, options = {}) {
+  const session = options.session || await getBlackbaudSession();
+  if (!session?.cookie) {
+    return { ok: false, status: 401, forbidden: true, expired: true, data: null };
+  }
+
+  const cleanCookie = formatCookieString(session.cookie);
+  const url = endpoint.startsWith('http') ? endpoint : `${BASE_URL}${endpoint}`;
+  const headers = {
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+    'Referer': `${BASE_URL}/`,
+    'X-Requested-With': 'XMLHttpRequest',
+    'Cookie': cleanCookie,
+    ...(options.headers || {})
+  };
+
+  let res;
+  try {
+    res = await fetch(url, { method: 'GET', headers });
+  } catch (err) {
+    return { ok: false, status: 0, data: null, error: err.message };
+  }
+
+  if (res.status === 401) {
+    return { ok: false, status: 401, expired: true, data: null };
+  }
+  if (res.status === 403) {
+    return { ok: false, status: 403, forbidden: true, data: null };
+  }
+
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('text/html')) {
+    return { ok: false, status: res.status, data: null };
+  }
+  if (!res.ok) {
+    return { ok: false, status: res.status, data: null };
+  }
+  try {
+    return { ok: true, status: res.status, data: await res.json() };
+  } catch {
+    return { ok: false, status: res.status, data: null };
+  }
+}
+
+function firstRecord(data) {
+  if (Array.isArray(data)) return data[0] || null;
+  if (data && typeof data === 'object') return data;
+  return null;
+}
+
+function asList(data) {
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.Items)) return data.Items;
+  if (data && Array.isArray(data.topics)) return data.topics;
+  if (data && typeof data === 'object') return [data];
+  return [];
+}
+
+function pickText(...values) {
+  for (const value of values) {
+    const text = decodeHtmlEntities(String(value || '').trim());
+    if (text) return text;
+  }
+  return '';
+}
+
+function normalizeBulletinItem(item, index) {
+  const title = pickText(item.Headline, item.Name, item.Title, item.ShortDescription, item.ContentName);
+  const body = pickText(
+    item.LongDescription,
+    item.Description,
+    item.LongText,
+    item.ShortDescription,
+    item.AlbumDescription
+  );
+  return {
+    id: item.ContentItemId || item.ContentId || item.Id || `bb_${index}`,
+    title: title || 'Class post',
+    body,
+    date: item.PublishDate || item.CreateDate || item.Date || null,
+    author: pickText(item.CreateName, item.Author, item.ModifyName) || null,
+    url: item.Url || null
+  };
+}
+
+function normalizeTopic(item, index) {
+  return {
+    id: item.TopicID || item.TopicIndexID || item.Id || `topic_${index}`,
+    title: pickText(item.Name, item.Title, item.TopicName) || 'Topic',
+    description: pickText(item.Description, item.LongDescription, item.ShortDescription),
+    publishDate: item.PublishDate || null,
+    thumbUrl: item.ThumbFilename
+      ? (String(item.ThumbFilename).startsWith('http')
+        ? item.ThumbFilename
+        : `https://bbk12e1-cdn.myschoolcdn.com${item.ThumbFilename}`)
+      : null
+  };
+}
+
+async function firstOk(urls) {
+  let forbidden = false;
+  let expired = false;
+  for (const url of urls) {
+    const result = await blackbaudRequestSoft(url);
+    if (result.ok && result.data != null) {
+      return { ...result, forbidden, expired };
+    }
+    if (result.forbidden) forbidden = true;
+    if (result.expired) expired = true;
+  }
+  return { ok: false, data: null, forbidden, expired };
+}
+
+export async function fetchProfilePhoto(userId) {
+  const session = await getBlackbaudSession();
+  if (!session?.cookie || !userId) return null;
+  const headers = {
+    'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+    'Referer': `${BASE_URL}/`,
+    'Cookie': formatCookieString(session.cookie)
+  };
+  const res = await fetch(`${BASE_URL}/api/user/profilephoto?userId=${encodeURIComponent(userId)}`, { headers });
+  if (!res.ok) return null;
+  const contentType = res.headers.get('content-type') || 'image/jpeg';
+  if (contentType.includes('text/html')) return null;
+  if (contentType.includes('application/json')) {
+    const json = await res.json().catch(() => null);
+    const rel = json?.ThumbFilenameUrl || json?.LargeFilenameUrl || json?.url;
+    if (!rel) return null;
+    const abs = String(rel).startsWith('http') ? rel : `https://bbk12e1-cdn.myschoolcdn.com${rel}`;
+    const img = await fetch(abs, { headers });
+    if (!img.ok) return null;
+    return {
+      buf: Buffer.from(await img.arrayBuffer()),
+      contentType: img.headers.get('content-type') || 'image/jpeg'
+    };
+  }
+  return {
+    buf: Buffer.from(await res.arrayBuffer()),
+    contentType
+  };
+}
+
+/**
+ * Class bulletin, topics, and teacher contact. Parent assignment2/class APIs often 403.
+ */
+export async function getClassPage({ sectionId, leadSectionId, associationId, teacherUserId } = {}) {
+  const sid = encodeURIComponent(sectionId);
+  const infoHit = await firstOk([
+    `/api/datadirect/SectionInfoView?format=json&sectionId=${sid}&associationId=${encodeURIComponent(associationId || 1)}`,
+    `/api/datadirect/SectionInfoView?format=json&sectionId=${sid}&associationId=1`,
+    `/api/datadirect/SectionInfoView?format=json&sectionId=${sid}&associationId=9`,
+    `/api/datadirect/SectionInfoView?format=json&sectionId=${sid}`
+  ]);
+  const info = firstRecord(infoHit.data);
+  const assoc = info?.AssociationId || associationId || 1;
+  const lead = info?.LeadSectionId || leadSectionId || sectionId;
+  const leadEnc = encodeURIComponent(lead);
+
+  const [bulletinHit, topicsHit, discussionHit, assignmentHit, teacherHit] = await Promise.all([
+    firstOk([
+      `/api/datadirect/BulletinBoardContentGet?format=json&sectionId=${sid}&associationId=${assoc}&pendingInd=false`,
+      `/api/datadirect/BulletinBoardContentGet?format=json&sectionId=${leadEnc}&associationId=${assoc}&pendingInd=false`,
+      `/api/class/bulletinboard/${sid}`,
+      `/api/class/bulletinboard/${leadEnc}`
+    ]),
+    firstOk([
+      `/api/datadirect/sectiontopicsget/${leadEnc}?format=json&active=true&future=false&expired=false&sharedTopics=true`,
+      `/api/datadirect/sectiontopicsget/${sid}?format=json&active=true&future=false&expired=false&sharedTopics=true`,
+      `/api/datadirect/GroupPossibleTopicsGet?leadSectionId=${leadEnc}&durationId=${encodeURIComponent(info?.DurationId || 0)}&active=true&future=false&expired=false`,
+      `/api/datadirect/GroupPossibleTopicsGet?leadSectionId=${sid}&durationId=0`
+    ]),
+    firstOk([
+      `/api/discussion/discussionboardget/?format=json&sectionId=${sid}`,
+      `/api/discussion/GetDiscussionBoard?format=json&sectionId=${sid}`
+    ]),
+    firstOk([
+      `/api/assignment2/forsection/${sid}/?format=json`
+    ]),
+    teacherUserId
+      ? blackbaudRequestSoft(`/api/user/${encodeURIComponent(teacherUserId)}?format=json`)
+      : Promise.resolve({ ok: false, data: null })
+  ]);
+
+  const bulletin = asList(bulletinHit.data).map(normalizeBulletinItem).filter((item) => item.title || item.body);
+  if (info?.Description) {
+    const intro = pickText(info.Description, info.CourseTopic);
+    if (intro && !bulletin.some((item) => item.body === intro)) {
+      bulletin.unshift({
+        id: 'section-intro',
+        title: 'Class overview',
+        body: intro,
+        date: info.StartDate || null,
+        author: pickText(info.Teacher) || null,
+        url: null
+      });
+    }
+  }
+
+  const topics = asList(topicsHit.data).map(normalizeTopic);
+  const discussions = asList(discussionHit.data).map((item, index) => ({
+    id: item.DiscussionId || item.Id || `disc_${index}`,
+    title: pickText(item.Name, item.Title, item.Subject) || 'Discussion',
+    description: pickText(item.Description, item.Preview, item.Body),
+    publishDate: item.PublishDate || item.Date || null
+  }));
+  if (discussions.length && !topics.length) {
+    topics.push(...discussions.map((d) => ({
+      id: d.id,
+      title: d.title,
+      description: d.description,
+      publishDate: d.publishDate,
+      thumbUrl: null
+    })));
+  }
+
+  const teacherUser = firstRecord(teacherHit.data) || {};
+  const teacherName = pickText(
+    `${teacherUser.FirstName || ''} ${teacherUser.LastName || ''}`.trim(),
+    teacherUser.NickName
+  );
+  const teacherPhotoCdn = profilePhotoUrl(teacherUser);
+
+  return {
+    sectionId: Number(sectionId) || sectionId,
+    leadSectionId: lead,
+    associationId: assoc,
+    room: info?.Room || null,
+    duration: info?.Duration || null,
+    description: pickText(info?.Description) || null,
+    teacher: {
+      name: teacherName || null,
+      email: teacherUser.Email || null,
+      userId: teacherUser.UserId || teacherUserId || null,
+      photoUrl: teacherPhotoCdn || (teacherUserId ? `/api/blackbaud/profile-photo/${teacherUserId}` : null)
+    },
+    bulletin,
+    topics,
+    forbidden: {
+      bulletin: Boolean(bulletinHit.forbidden && bulletin.length === 0),
+      topics: Boolean(topicsHit.forbidden && topics.length === 0),
+      assignments: Boolean(assignmentHit.forbidden)
+    },
+    expired: Boolean(infoHit.expired || bulletinHit.expired || topicsHit.expired),
+    portalUrl: `${BASE_URL}/app/parent#academicclass/${sectionId}/bulletinboard`
+  };
 }
