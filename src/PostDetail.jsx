@@ -23,6 +23,14 @@ function looksLikeHtml(value) {
   return /<\/?[a-z][\s\S]*>/i.test(String(value || ''));
 }
 
+function isDeadPostImage(image) {
+  const src = String(image?.src || '').trim();
+  const alt = String(image?.alt || image?.caption || '').trim();
+  if (!src || src === '?' || src === '#') return true;
+  if (alt === '?' || alt === '??') return true;
+  return /question[_\s-]?mark|nophoto|no[_-]?photo|placeholder|ftpimages\/0\//i.test(`${src} ${alt}`);
+}
+
 function sanitizeArticleHtml(html) {
   if (!html || typeof document === 'undefined') return '';
   const parser = new DOMParser();
@@ -44,6 +52,23 @@ function sanitizeArticleHtml(html) {
     if (el.tagName === 'A') {
       el.setAttribute('target', '_blank');
       el.setAttribute('rel', 'noopener noreferrer');
+    }
+  });
+  root.querySelectorAll('img').forEach((img) => {
+    const src = String(img.getAttribute('src') || '').trim();
+    const alt = String(img.getAttribute('alt') || '').trim();
+    if (!src || src === '?' || alt === '?' || isDeadPostImage({ src, alt })) {
+      img.remove();
+      return;
+    }
+    const href = img.getAttribute('data-original') || src;
+    if (!img.closest('a') && href) {
+      const wrap = doc.createElement('a');
+      wrap.setAttribute('href', href);
+      wrap.setAttribute('target', '_blank');
+      wrap.setAttribute('rel', 'noopener noreferrer');
+      img.parentNode?.insertBefore(wrap, img);
+      wrap.appendChild(img);
     }
   });
   return root.innerHTML;
@@ -71,10 +96,12 @@ export function toPostItem(item, extra = {}) {
     author: item.author || extra.author || '',
     html,
     description,
-    images: Array.isArray(item.images) ? item.images : [],
+    images: Array.isArray(item.images) ? item.images.filter((image) => !isDeadPostImage(image)) : [],
     files: Array.isArray(item.files) ? item.files : (item.attachments || []),
     links: Array.isArray(item.links) ? item.links : [],
-    imageUrl: item.imageUrl || extra.imageUrl || null,
+    imageUrl: item.imageUrl && !isDeadPostImage({ src: item.imageUrl, alt: item.title })
+      ? item.imageUrl
+      : (extra.imageUrl && !isDeadPostImage({ src: extra.imageUrl }) ? extra.imageUrl : null),
     url: item.url || extra.url || null,
     feed: extra.feed || item.feed || item.kind || 'post',
     viewed: extra.viewed != null ? extra.viewed : item.viewed !== false,
@@ -85,16 +112,18 @@ export function toPostItem(item, extra = {}) {
 
 export default function PostDetail({ post, onClose, onToggleRead }) {
   const closeRef = useRef(null);
+  const htmlRef = useRef(null);
   const titleId = 'post-detail-title';
   const unread = post?.viewed === false;
   const html = looksLikeHtml(post?.html) ? sanitizeArticleHtml(post.html)
     : (looksLikeHtml(post?.description) ? sanitizeArticleHtml(post.description) : '');
   const plain = html ? '' : decodeHtml(post?.description || post?.body || '');
-  const images = post?.images || [];
+  const images = (post?.images || []).filter((image) => !isDeadPostImage(image));
   const files = post?.files || [];
   const links = (post?.links || []).filter((link) => link?.url && link.url !== post?.url);
-  const cover = post?.imageUrl && !images.some((image) => image.src === post.imageUrl)
-    ? { src: post.imageUrl, alt: post.title || '', caption: '' }
+  const cover = post?.imageUrl && !isDeadPostImage({ src: post.imageUrl, alt: post.title })
+    && !images.some((image) => image.src === post.imageUrl)
+    ? { src: post.imageUrl, alt: post.title || '', caption: '', href: post.imageUrl }
     : null;
   const media = cover ? [cover, ...images] : images;
   const meta = [post?.date, post?.author, post?.student && post.student !== 'All' ? post.student : null]
@@ -116,6 +145,22 @@ export default function PostDetail({ post, onClose, onToggleRead }) {
       if (prev && typeof prev.focus === 'function') prev.focus();
     };
   }, [onClose]);
+
+  useEffect(() => {
+    const root = htmlRef.current;
+    if (!root) return undefined;
+    const imgs = [...root.querySelectorAll('img')];
+    const onError = (event) => {
+      const img = event.currentTarget;
+      img.hidden = true;
+      const frame = img.closest('a');
+      if (frame && frame.querySelectorAll('img:not([hidden])').length === 0) frame.hidden = true;
+    };
+    imgs.forEach((img) => img.addEventListener('error', onError));
+    return () => {
+      imgs.forEach((img) => img.removeEventListener('error', onError));
+    };
+  }, [html]);
 
   if (!post) return null;
 
@@ -155,25 +200,42 @@ export default function PostDetail({ post, onClose, onToggleRead }) {
 
           {media.length > 0 ? (
             <div className="post-detail-media">
-              {media.map((image, index) => (
-                <figure key={image.src || index}>
+              {media.map((image, index) => {
+                const href = image.href || image.src;
+                const picture = (
                   <img
                     src={image.src}
                     alt={image.caption ? '' : (image.alt || '')}
                     onError={(event) => {
-                      event.currentTarget.hidden = true;
+                      const node = event.currentTarget;
+                      node.hidden = true;
+                      const frame = node.closest('a, figure');
+                      if (frame) frame.hidden = true;
                     }}
                   />
-                  {(image.caption || image.note) ? (
-                    <figcaption>{[image.caption, image.note].filter(Boolean).join(' — ')}</figcaption>
-                  ) : null}
-                </figure>
-              ))}
+                );
+                return (
+                  <figure key={image.src || index}>
+                    {href ? (
+                      <a href={href} target="_blank" rel="noopener noreferrer">
+                        {picture}
+                      </a>
+                    ) : picture}
+                    {(image.caption || image.note) ? (
+                      <figcaption>{[image.caption, image.note].filter(Boolean).join(' — ')}</figcaption>
+                    ) : null}
+                  </figure>
+                );
+              })}
             </div>
           ) : null}
 
           {html ? (
-            <div className="post-detail-html" dangerouslySetInnerHTML={{ __html: html }} />
+            <div
+              ref={htmlRef}
+              className="post-detail-html"
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
           ) : plain ? (
             <p className="post-detail-plain">{plain}</p>
           ) : null}

@@ -104,29 +104,51 @@ function asPost(item, index, prefix) {
   };
 }
 
+function isDeadPostImage(image) {
+  const src = String(image?.src || '').trim();
+  const alt = String(image?.alt || image?.caption || '').trim();
+  if (!src || src === '?' || src === '#') return true;
+  if (alt === '?' || alt === '??') return true;
+  return /question[_\s-]?mark|nophoto|no[_-]?photo|placeholder|ftpimages\/0\//i.test(`${src} ${alt}`);
+}
+
 function MediaImages({ images }) {
-  if (!images?.length) return null;
+  const visible = (images || []).filter((image) => !isDeadPostImage(image));
+  if (!visible.length) return null;
   return (
     <div className="class-detail-media mt-3 space-y-3">
-      {images.map((image, index) => (
-        <figure key={image.src || index} className="space-y-1.5">
+      {visible.map((image, index) => {
+        const href = image.href || image.src;
+        const picture = (
           <img
             src={image.src}
             alt={image.caption ? '' : (image.alt || '')}
             className="class-detail-media-img"
             onError={(event) => {
-              event.currentTarget.hidden = true;
+              const node = event.currentTarget;
+              node.hidden = true;
+              const frame = node.closest('a, figure');
+              if (frame) frame.hidden = true;
             }}
           />
-          {(image.caption || image.note) ? (
-            <figcaption className="text-[13px] text-zinc-400 leading-relaxed">
-              {[image.caption, image.note && image.note !== image.caption ? image.note : '']
-                .filter(Boolean)
-                .join(' — ')}
-            </figcaption>
-          ) : null}
-        </figure>
-      ))}
+        );
+        return (
+          <figure key={image.src || index} className="space-y-1.5">
+            {href ? (
+              <a href={href} target="_blank" rel="noreferrer">
+                {picture}
+              </a>
+            ) : picture}
+            {(image.caption || image.note) ? (
+              <figcaption className="text-[13px] text-zinc-400 leading-relaxed">
+                {[image.caption, image.note && image.note !== image.caption ? image.note : '']
+                  .filter(Boolean)
+                  .join(' — ')}
+              </figcaption>
+            ) : null}
+          </figure>
+        );
+      })}
     </div>
   );
 }

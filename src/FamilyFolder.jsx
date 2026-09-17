@@ -3,6 +3,7 @@ import {
   Calendar,
   CheckCircle2,
   ExternalLink,
+  Files,
   Folder,
   GraduationCap,
   Inbox,
@@ -314,6 +315,7 @@ export default function FamilyFolder({
   const [openMenu, setOpenMenu] = useState(null);
   const sourcesRef = useRef(null);
   const feedsRef = useRef(null);
+  const endRef = useRef(null);
   const signedInName = blackbaudStatus.displayName || blackbaudStatus.accountName || '';
   const signedFirst = firstName(signedInName);
   const blackbaudSync = formatSyncTime(blackbaudStatus.verifiedAt);
@@ -330,8 +332,9 @@ export default function FamilyFolder({
   const sourcesOpen = openMenu === 'sources';
   const notesOpen = openMenu === 'notes';
   const newsOpen = openMenu === 'news';
+  const resourcesOpen = openMenu === 'resources';
+  const profileOpen = openMenu === 'profile';
   const [notesFilter, setNotesFilter] = useState(selectedStudent === 'All' ? 'All' : selectedStudent);
-  const [schoolFeedTab, setSchoolFeedTab] = useState('news');
 
   useEffect(() => {
     setNotesFilter(selectedStudent === 'All' ? 'All' : selectedStudent);
@@ -340,9 +343,8 @@ export default function FamilyFolder({
   useEffect(() => {
     if (!openMenu) return undefined;
     const onDoc = (event) => {
-      const inSources = sourcesRef.current && sourcesRef.current.contains(event.target);
-      const inFeeds = feedsRef.current && feedsRef.current.contains(event.target);
-      if (!inSources && !inFeeds) setOpenMenu(null);
+      if (endRef.current && endRef.current.contains(event.target)) return;
+      setOpenMenu(null);
     };
     const onKey = (event) => {
       if (event.key === 'Escape') setOpenMenu(null);
@@ -364,7 +366,6 @@ export default function FamilyFolder({
   ];
 
   const visibleNotes = officialNotes.filter((item) => noteMatchesStudent(item, notesFilter));
-  const schoolFeedUnread = newsUnreadCount + resourcesUnreadCount;
   const noteFilters = isParentViewer && canSeeBen && canSeeJade
     ? [
       { id: 'All', label: 'Both', count: officialNotes.length },
@@ -372,11 +373,6 @@ export default function FamilyFolder({
       { id: 'Jade', label: 'Jade', count: officialNotes.filter((item) => noteMatchesStudent(item, 'Jade')).length }
     ]
     : [];
-  const schoolFeedTabs = [
-    { id: 'news', label: 'News', count: newsUnreadCount },
-    { id: 'resources', label: 'Resources', count: resourcesUnreadCount }
-  ];
-  const visibleSchoolItems = schoolFeedTab === 'resources' ? schoolResources : featuredNews;
 
   return (
     <div className="ff-shell flex-1 flex flex-col min-h-0 w-full">
@@ -435,78 +431,110 @@ export default function FamilyFolder({
           )}
         </div>
 
+        <div className="ff-topbar-end" ref={endRef}>
         <div className="ff-topbar-tools" data-slot="topbar-tools">
           {topbarTools}
           <div className="ff-feeds" ref={feedsRef}>
-          <button
-            type="button"
-            id="official-notes-button"
-            className="ff-feed-btn"
-            aria-label={notesUnreadCount ? `Official notes, ${notesUnreadCount} unread` : 'Official notes'}
-            aria-expanded={notesOpen}
-            aria-haspopup="dialog"
-            aria-controls="ff-notes-popover"
-            onClick={() => setOpenMenu(notesOpen ? null : 'notes')}
-          >
-            <Inbox className="w-5 h-5" aria-hidden="true" />
-            {notesUnreadCount > 0 ? (
-              <span className="ff-feed-badge" aria-hidden="true">
-                {notesUnreadCount > 99 ? '99+' : notesUnreadCount}
-              </span>
-            ) : null}
-          </button>
-          <button
-            type="button"
-            id="featured-news-button"
-            className="ff-feed-btn"
-            aria-label={schoolFeedUnread ? `School news and resources, ${schoolFeedUnread} unread` : 'School news and resources'}
-            aria-expanded={newsOpen}
-            aria-haspopup="dialog"
-            aria-controls="ff-news-popover"
-            onClick={() => setOpenMenu(newsOpen ? null : 'news')}
-          >
-            <Newspaper className="w-5 h-5" aria-hidden="true" />
-            {schoolFeedUnread > 0 ? (
-              <span className="ff-feed-badge" aria-hidden="true">
-                {schoolFeedUnread > 99 ? '99+' : schoolFeedUnread}
-              </span>
-            ) : null}
-          </button>
-          {notesOpen && (
-            <FeedListPopover
-              id="ff-notes-popover"
-              title="Official notes"
-              empty={blackbaudStatus.connected ? 'No official notes for this student.' : 'Sign in to load official notes.'}
-              items={visibleNotes}
-              filter={notesFilter}
-              filters={noteFilters}
-              filterLabel="Student"
-              onFilter={setNotesFilter}
-              onSelect={(item) => {
-                setOpenMenu(null);
-                onOpenOfficialNote(item);
-              }}
-            />
-          )}
-          {newsOpen && (
-            <FeedListPopover
-              id="ff-news-popover"
-              title="School"
-              empty={blackbaudStatus.connected
-                ? (schoolFeedTab === 'resources' ? 'No resources for this school.' : 'No school news yet.')
-                : 'Sign in to load school news and resources.'}
-              items={visibleSchoolItems}
-              filter={schoolFeedTab}
-              filters={schoolFeedTabs}
-              filterLabel="School content"
-              onFilter={setSchoolFeedTab}
-              onSelect={(item) => {
-                setOpenMenu(null);
-                if (schoolFeedTab === 'resources') onOpenResource(item);
-                else onOpenFeaturedItem(item);
-              }}
-            />
-          )}
+            <div className="ff-feed-slot">
+              <button
+                type="button"
+                id="official-notes-button"
+                className="ff-feed-btn"
+                aria-label={notesUnreadCount ? `Official notes, ${notesUnreadCount} unread` : 'Official notes'}
+                title="Official notes"
+                aria-expanded={notesOpen}
+                aria-haspopup="dialog"
+                aria-controls="ff-notes-popover"
+                onClick={() => setOpenMenu(notesOpen ? null : 'notes')}
+              >
+                <Inbox className="w-5 h-5" aria-hidden="true" />
+                {notesUnreadCount > 0 ? (
+                  <span className="ff-feed-badge" aria-hidden="true">
+                    {notesUnreadCount > 99 ? '99+' : notesUnreadCount}
+                  </span>
+                ) : null}
+              </button>
+              {notesOpen && (
+                <FeedListPopover
+                  id="ff-notes-popover"
+                  title="Official notes"
+                  empty={blackbaudStatus.connected ? 'No official notes for this student.' : 'Sign in to load official notes.'}
+                  items={visibleNotes}
+                  filter={notesFilter}
+                  filters={noteFilters}
+                  filterLabel="Student"
+                  onFilter={setNotesFilter}
+                  onSelect={(item) => {
+                    setOpenMenu(null);
+                    onOpenOfficialNote(item);
+                  }}
+                />
+              )}
+            </div>
+            <div className="ff-feed-slot">
+              <button
+                type="button"
+                id="featured-news-button"
+                className="ff-feed-btn"
+                aria-label={newsUnreadCount ? `News, ${newsUnreadCount} unread` : 'News'}
+                title="News"
+                aria-expanded={newsOpen}
+                aria-haspopup="dialog"
+                aria-controls="ff-news-popover"
+                onClick={() => setOpenMenu(newsOpen ? null : 'news')}
+              >
+                <Newspaper className="w-5 h-5" aria-hidden="true" />
+                {newsUnreadCount > 0 ? (
+                  <span className="ff-feed-badge" aria-hidden="true">
+                    {newsUnreadCount > 99 ? '99+' : newsUnreadCount}
+                  </span>
+                ) : null}
+              </button>
+              {newsOpen && (
+                <FeedListPopover
+                  id="ff-news-popover"
+                  title="News"
+                  empty={blackbaudStatus.connected ? 'No school news yet.' : 'Sign in to load school news.'}
+                  items={featuredNews}
+                  onSelect={(item) => {
+                    setOpenMenu(null);
+                    onOpenFeaturedItem(item);
+                  }}
+                />
+              )}
+            </div>
+            <div className="ff-feed-slot">
+              <button
+                type="button"
+                id="school-resources-button"
+                className="ff-feed-btn"
+                aria-label={resourcesUnreadCount ? `Resources, ${resourcesUnreadCount} unread` : 'Resources'}
+                title="Resources"
+                aria-expanded={resourcesOpen}
+                aria-haspopup="dialog"
+                aria-controls="ff-resources-popover"
+                onClick={() => setOpenMenu(resourcesOpen ? null : 'resources')}
+              >
+                <Files className="w-5 h-5" aria-hidden="true" />
+                {resourcesUnreadCount > 0 ? (
+                  <span className="ff-feed-badge" aria-hidden="true">
+                    {resourcesUnreadCount > 99 ? '99+' : resourcesUnreadCount}
+                  </span>
+                ) : null}
+              </button>
+              {resourcesOpen && (
+                <FeedListPopover
+                  id="ff-resources-popover"
+                  title="Resources"
+                  empty={blackbaudStatus.connected ? 'No resources for this school.' : 'Sign in to load resources.'}
+                  items={schoolResources}
+                  onSelect={(item) => {
+                    setOpenMenu(null);
+                    onOpenResource(item);
+                  }}
+                />
+              )}
+            </div>
           </div>
         </div>
 
@@ -532,10 +560,19 @@ export default function FamilyFolder({
             >
               <Plug className="w-5 h-5" aria-hidden="true" />
             </button>
-            <div className="ff-account-who">
+            <button
+              type="button"
+              className="ff-account-who"
+              aria-label={signedInName ? `Account, ${signedFirst}` : 'Account'}
+              title="Account"
+              aria-expanded={profileOpen}
+              aria-haspopup="menu"
+              aria-controls="ff-profile-menu"
+              onClick={() => setOpenMenu(profileOpen ? null : 'profile')}
+            >
               <ProfileAvatar name={signedInName || 'Family'} photoUrl={blackbaudStatus.photoUrl} size={28} />
               <span className="ff-account-name">{signedFirst}</span>
-            </div>
+            </button>
           </div>
           {sourcesOpen && (
             <div id="ff-sources-popover" className="ff-sources-pop" role="dialog" aria-label="Sources and settings">
@@ -631,14 +668,42 @@ export default function FamilyFolder({
                 >
                   {blackbaudStatus.connected ? 'Blackbaud settings' : 'Connect Blackbaud'}
                 </button>
-                {blackbaudStatus.connected && (
-                  <button type="button" onClick={onDisconnectBlackbaud} className="btn btn-ghost btn-xs">
-                    Sign out
-                  </button>
-                )}
               </div>
             </div>
           )}
+          {profileOpen && (
+            <div id="ff-profile-menu" className="ff-profile-pop" role="menu" aria-label="Account">
+              {signedInName ? (
+                <p className="ff-profile-kicker">{signedInName}</p>
+              ) : null}
+              {blackbaudStatus.connected ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="ff-profile-item"
+                  onClick={() => {
+                    setOpenMenu(null);
+                    onDisconnectBlackbaud();
+                  }}
+                >
+                  Sign out
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="ff-profile-item"
+                  onClick={() => {
+                    setOpenMenu(null);
+                    onOpenLanding();
+                  }}
+                >
+                  Sign in
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         </div>
       </header>
 
