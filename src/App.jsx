@@ -242,6 +242,16 @@ function familyFirstName(name) {
   return n.split(/\s+/)[0];
 }
 
+const BLACKBAUD_AUTO_SYNC_MS = 5 * 60 * 1000;
+
+function blackbaudSyncStudentKeys(status, selectedStudent) {
+  if (status?.role === 'student') {
+    return (status.allowedStudentKeys || []).filter(Boolean);
+  }
+  if (selectedStudent === 'Ben' || selectedStudent === 'Jade') return [selectedStudent];
+  return ['Ben', 'Jade'];
+}
+
 function isOwnFamilyComment(comment, status) {
   if (!comment) return false;
   if (comment.authorKey && status?.userKey
@@ -437,6 +447,7 @@ export default function App() {
   const seenCommentToasts = useRef(new Set());
   const knownCommentKeys = useRef(null);
   const identityRef = useRef(null);
+  const selectedStudentRef = useRef('All');
 
   const dismissToast = (id) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
@@ -520,6 +531,8 @@ export default function App() {
   const [macWebviewStarting, setMacWebviewStarting] = useState(false);
   const consumedBbHash = useRef(false);
   const portalSyncPoll = useRef(null);
+  const syncInFlightRef = useRef(false);
+  const reauthPromptedRef = useRef(false);
   const macKeysRef = useRef(null);
   const macFrameRef = useRef(null);
   const closedAuthPopup = useRef(false);
@@ -582,6 +595,7 @@ export default function App() {
   const [selectedPost, setSelectedPost] = useState(null);
   const [readOverrides, setReadOverrides] = useState({});
   identityRef.current = blackbaudStatus;
+  selectedStudentRef.current = selectedStudent;
 
   // Persist state to both localStorage and backend Express API only on deliberate user actions
   const persistDashboardState = (newTasks, newEvents, newDeletedKeys, newAssignments) => {
@@ -1229,6 +1243,7 @@ export default function App() {
       } catch {}
     }
     if (data.connected) {
+      reauthPromptedRef.current = false;
       setBlackbaudStatus(prev => ({
         ...prev,
         connected: true,
@@ -1356,7 +1371,7 @@ export default function App() {
     void handleSyncBlackbaud({ openPortal: true });
   };
 
-  const handleSyncBlackbaud = async ({ openPortal = false } = {}) => {
+  const handleSyncBlackbaud = async ({ openPortal = false, quiet = false } = {}) => {
     if (openPortal) {
       closedAuthPopup.current = false;
       setShowBlackbaudModal(true);
@@ -1379,15 +1394,21 @@ export default function App() {
       }
       return;
     }
+    if (syncInFlightRef.current) return;
+    syncInFlightRef.current = true;
     setIsSyncingBlackbaud(true);
-    showToast({
-      id: 'blackbaud-refresh',
-      type: 'info',
-      message: 'Refreshing from Blackbaud...',
-      duration: 12000
-    });
+    if (!quiet) {
+      showToast({
+        id: 'blackbaud-refresh',
+        type: 'info',
+        message: 'Refreshing from Blackbaud...',
+        duration: 12000
+      });
+    }
     try {
-      const res = await fetch('/api/blackbaud/sync');
+      const keys = blackbaudSyncStudentKeys(identityRef.current || blackbaudStatus, selectedStudentRef.current);
+      const qs = keys.length ? `?students=${encodeURIComponent(keys.join(','))}` : '';
+      const res = await fetch(`/api/blackbaud/sync${qs}`);
       let data = {};
       try {
         data = await res.json();
@@ -1402,11 +1423,16 @@ export default function App() {
         || /SESSION_EXPIRED|token t is not valid|re-authenticate|re-run the bookmarklet/i.test(msg);
       const needsReauth = tokenExpired || data.connected === false || /not connected/i.test(msg);
       if (needsReauth) {
+        setBlackbaudStatus((prev) => ({ ...prev, connected: false, verifiedAt: null }));
         showToast({
           id: 'blackbaud-refresh',
           type: 'error',
           message: "Couldn't refresh — sign in again"
         });
+        if (!reauthPromptedRef.current) {
+          reauthPromptedRef.current = true;
+          void promptBlackbaudReauth();
+        }
         return;
       }
       if (!res.ok) {
@@ -1420,11 +1446,13 @@ export default function App() {
       data = applyBlackbaudSync(data);
       noteIncomingComments(data.assignments || [], data.tasks || []);
       await loadSchoolFeeds();
-      showToast({
-        id: 'blackbaud-refresh',
-        type: 'success',
-        message: 'Grades and assignments updated'
-      });
+      if (!quiet) {
+        showToast({
+          id: 'blackbaud-refresh',
+          type: 'success',
+          message: 'Grades and assignments updated'
+        });
+      }
       void loadFamilyNotifications();
     } catch (err) {
       console.error('Failed to sync Blackbaud:', err);
@@ -1434,9 +1462,29 @@ export default function App() {
         message: "Couldn't refresh from Blackbaud"
       });
     } finally {
+      syncInFlightRef.current = false;
       setIsSyncingBlackbaud(false);
     }
   };
+
+  useEffect(() => {
+    if (view !== 'dashboard' || !blackbaudStatus.connected) return undefined;
+    const kick = () => {
+      if (document.visibilityState === 'hidden') return;
+      void handleSyncBlackbaud({ openPortal: false, quiet: true });
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') kick();
+    };
+    const start = window.setTimeout(kick, selectedStudent ? 400 : 2500);
+    const id = window.setInterval(kick, BLACKBAUD_AUTO_SYNC_MS);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearTimeout(start);
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [view, blackbaudStatus.connected, selectedStudent]);
 
   const loadReadState = async () => {
     try {
@@ -2039,8 +2087,13 @@ export default function App() {
         status: t.completed ? 'done' : 'assigned',
         source: t.source || 'Family'
       }));
-    return [...fromPortal, ...custom];
-  }, [blackbaudAssignments, tasks]);
+    const items = [...fromPortal, ...custom];
+    if (blackbaudStatus.role === 'student') {
+      const allowed = new Set(blackbaudStatus.allowedStudentKeys || []);
+      return items.filter((item) => allowed.has(item.student));
+    }
+    return items;
+  }, [blackbaudAssignments, tasks, blackbaudStatus.role, blackbaudStatus.allowedStudentKeys]);
 
   const scopedChecklist = checklistItems.filter((item) => (
     selectedStudent === 'All' || item.student === selectedStudent
@@ -2068,7 +2121,7 @@ export default function App() {
         ? { ...ev, sport: ev.sport || classified.sport, student: classified.student }
         : { ...ev };
       return { ...mapped, feed: ev.feed || 'calendar' };
-    });
+    }).filter((ev) => ev.feed !== 'inbox' && ev.source !== 'gmail' && !ev.emailFrom);
     return calendar;
   }, [calendarEvents]);
 

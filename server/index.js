@@ -20,6 +20,7 @@ import {
   fetchPhotoByUrl,
   isAllowedPhotoUrl,
   isSessionExpiredError,
+  sessionExpiredPayload,
   fetchOfficialNotes,
   fetchOfficialNoteDetail,
   fetchFeaturedContent,
@@ -113,24 +114,28 @@ async function attachIdentifiedSession(discovered, req, res) {
   return { record, claimToken, syncResult, identity: publicIdentity(record) };
 }
 
-async function mergeSyncIntoStore(result, identity) {
+async function mergeSyncIntoStore(result, identity, requestedKeys = []) {
   const stored = await getDashboardData();
   const grades = { ...(stored.grades || {}) };
   const allowedKeys = new Set(identity?.allowedStudentKeys || Object.keys(result.grades || {}));
+  const pulled = new Set();
   for (const [key, rows] of Object.entries(result.grades || {})) {
-    if (identity?.role !== 'student' || allowedKeys.has(key)) {
-      grades[key] = rows;
-    }
+    if (identity?.role === 'student' && !allowedKeys.has(key)) continue;
+    if (requestedKeys.length && identity?.role !== 'student' && !requestedKeys.includes(key)) continue;
+    grades[key] = rows;
+    pulled.add(key);
   }
-  const keepMissing = identity?.role === 'student'
-    ? (stored.missingAssignments || []).filter((m) => !allowedKeys.has(m.student))
-    : [];
+  for (const a of result.assignments || []) {
+    if (!a?.student) continue;
+    if (identity?.role === 'student' && !allowedKeys.has(a.student)) continue;
+    if (requestedKeys.length && identity?.role !== 'student' && !requestedKeys.includes(a.student)) continue;
+    pulled.add(a.student);
+  }
+  const keepMissing = (stored.missingAssignments || []).filter((m) => !pulled.has(m.student));
   const newMissing = (result.missingAssignments || []).filter((m) => (
     identity?.role !== 'student' || allowedKeys.has(m.student)
   ));
-  const keepAssignments = identity?.role === 'student'
-    ? (stored.assignments || []).filter((a) => !allowedKeys.has(a.student))
-    : [];
+  const keepAssignments = (stored.assignments || []).filter((a) => !pulled.has(a.student));
   const newAssignments = (result.assignments || [])
     .filter((a) => (
       identity?.role !== 'student' || allowedKeys.has(a.student)
@@ -160,6 +165,13 @@ async function mergeSyncIntoStore(result, identity) {
     missingAssignments,
     lastSyncedAt: result.lastSyncedAt
   }, identity);
+}
+
+function parseRequestedStudentKeys(query) {
+  return String(query || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s === 'Ben' || s === 'Jade');
 }
 const SCHOOL_APP_ROOT = path.resolve(__dirname, '..', '..');
 const MAC_AGENT = path.join(SCHOOL_APP_ROOT, 'mac_portal_agent.py');
@@ -813,7 +825,15 @@ app.get('/api/blackbaud/photo', async (req, res) => {
 
 app.get('/api/blackbaud/sync', async (req, res) => {
   try {
-    const result = await syncBlackbaudData();
+    const fromQuery = parseRequestedStudentKeys(req.query.students);
+    const allowed = Array.isArray(req.wla?.allowedStudentKeys) ? req.wla.allowedStudentKeys : [];
+    const studentKeys = req.wla?.role === 'student'
+      ? allowed
+      : (fromQuery.length ? fromQuery : (allowed.length ? allowed : ['Ben', 'Jade']));
+    const result = await syncBlackbaudData({ studentKeys });
+    if (result.needsReauth) {
+      return res.status(401).json(result);
+    }
     if (req.wla && (result.photoUrl || result.accountName || result.students)) {
       if (result.photoUrl) req.wla.photoUrl = result.photoUrl;
       if (result.firstName) req.wla.firstName = result.firstName;
@@ -828,7 +848,7 @@ app.get('/api/blackbaud/sync', async (req, res) => {
       return res.json(result);
     }
     const identity = req.wla || result;
-    const filtered = await mergeSyncIntoStore(result, identity);
+    const filtered = await mergeSyncIntoStore(result, identity, studentKeys);
     res.json({
       ...result,
       ...filtered,
@@ -836,6 +856,9 @@ app.get('/api/blackbaud/sync', async (req, res) => {
     });
   } catch (err) {
     console.error('Blackbaud sync error:', err);
+    if (isSessionExpiredError(err)) {
+      return res.status(401).json(sessionExpiredPayload(err.message));
+    }
     res.status(500).json({ error: err.message });
   }
 });

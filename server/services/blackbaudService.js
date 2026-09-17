@@ -711,7 +711,18 @@ export async function getStudentMissingAssignments(studentId, studentName, class
 /**
  * Get full Blackbaud snapshot for dashboard
  */
-export async function syncBlackbaudData() {
+export async function syncBlackbaudData(options = {}) {
+  try {
+    return await syncBlackbaudSnapshot(options);
+  } catch (err) {
+    if (isSessionExpiredError(err)) {
+      return sessionExpiredPayload(err.message);
+    }
+    throw err;
+  }
+}
+
+async function syncBlackbaudSnapshot(options = {}) {
   let session = await getBlackbaudSession();
   if (!session || (!session.cookie && session.source !== 'bookmarklet')) {
     return {
@@ -739,6 +750,9 @@ export async function syncBlackbaudData() {
     try {
       session = await verifyAndDiscoverProfiles(session.cookie);
     } catch (e) {
+      if (isSessionExpiredError(e)) {
+        return sessionExpiredPayload(e.message);
+      }
       console.warn('[Blackbaud] Auto-discovery during sync failed:', e.message);
       return {
         connected: false,
@@ -760,6 +774,17 @@ export async function syncBlackbaudData() {
   }
   const allowedIds = new Set(identity.allowedStudentIds || students.map((s) => s.id));
   students = students.filter((s) => allowedIds.has(s.id));
+  if (identity.role === 'student') {
+    students = students.filter((s) => allowedIds.has(s.id));
+  } else {
+    const requestedKeys = Array.isArray(options.studentKeys)
+      ? options.studentKeys.filter((k) => k === 'Ben' || k === 'Jade')
+      : [];
+    if (requestedKeys.length) {
+      const want = new Set(requestedKeys);
+      students = students.filter((s) => want.has(s.student));
+    }
+  }
 
   try {
     const ctx = await blackbaudRequest('/api/webapp/context');
@@ -778,10 +803,18 @@ export async function syncBlackbaudData() {
     }));
     for (const s of fromCtx) {
       if (allowedIds.has(s.id) && !students.some((row) => Number(row.id) === Number(s.id))) {
+        if (identity.role === 'student') continue;
+        const requestedKeys = Array.isArray(options.studentKeys)
+          ? options.studentKeys.filter((k) => k === 'Ben' || k === 'Jade')
+          : [];
+        if (requestedKeys.length && !requestedKeys.includes(s.student)) continue;
         students.push(s);
       }
     }
   } catch (err) {
+    if (isSessionExpiredError(err)) {
+      return sessionExpiredPayload(err.message);
+    }
     console.warn('[Blackbaud] Profile refresh failed:', err.message);
   }
 
