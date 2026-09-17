@@ -9,12 +9,14 @@ export { assignmentPercent };
 
 export function formatAssignmentScore(pointsEarned, maxPoints) {
   const percent = assignmentPercent(pointsEarned, maxPoints);
+  if (percent == null) {
+    return { percent: null, percentLabel: null, raw: null };
+  }
   const earned = Number(pointsEarned);
   const possible = Number(maxPoints);
-  const hasRatio = Number.isFinite(earned) && Number.isFinite(possible) && possible > 0;
   return {
     percent,
-    percentLabel: percent == null ? null : `${Math.round(percent)}%`,
-    raw: hasRatio ? `${earned}/${possible}` : null
+    percentLabel: `${Math.round(percent)}%`,
+    raw: `${earned}/${possible}`
   };
 }
