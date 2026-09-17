@@ -37,10 +37,12 @@ export function gradeBandFromLetterOrPercent(letter, percent) {
   return 'f';
 }
 
+/** CSS classes from index.css — complete names Tailwind/DaisyUI JIT cannot strip. */
 export function gradeToneClass(band) {
-  if (band === 'a') return 'text-success bg-success/10 border-success/30';
-  if (band === 'b') return 'text-info bg-info/10 border-info/30';
-  if (band === 'c') return 'text-warning bg-warning/10 border-warning/30';
-  if (band === 'd' || band === 'f') return 'text-error bg-error/10 border-error/30';
-  return 'text-base-content bg-base-200 border-base-300';
+  if (band === 'a') return 'grade-a';
+  if (band === 'b') return 'grade-b';
+  if (band === 'c') return 'grade-c';
+  if (band === 'd') return 'grade-d';
+  if (band === 'f') return 'grade-f';
+  return 'grade-none';
 }

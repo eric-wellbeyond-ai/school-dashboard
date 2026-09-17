@@ -517,6 +517,48 @@ body {
     width: 0.75rem;
     height: 0.75rem;
   }
+
+  /* Gradeway zinc-dark chips. Always emitted (not DaisyUI/JIT tokens). */
+  .grade-a,
+  .grade-b,
+  .grade-c,
+  .grade-d,
+  .grade-f,
+  .grade-none {
+    border-width: 1px;
+    border-style: solid;
+  }
+
+  .grade-a {
+    color: #4ade80;
+    background: rgba(34, 197, 94, 0.16);
+    border-color: #166534;
+  }
+
+  .grade-b {
+    color: #60a5fa;
+    background: rgba(37, 99, 235, 0.2);
+    border-color: #1d4ed8;
+  }
+
+  .grade-c {
+    color: #facc15;
+    background: rgba(234, 179, 8, 0.16);
+    border-color: #a16207;
+  }
+
+  .grade-d,
+  .grade-f {
+    color: #f87171;
+    background: rgba(239, 68, 68, 0.16);
+    border-color: #991b1b;
+  }
+
+  .grade-none {
+    color: #a1a1aa;
+    background: #27272a;
+    border-color: #3f3f46;
+  }
 }
 
 @keyframes wla-spin {
@@ -548,5 +590,36 @@ body {
   .modal-box,
   .wla-calendar-board {
     border-color: #52525b;
+  }
+
+  .grade-a {
+    color: #bbf7d0;
+    background: #14532d;
+    border-color: #4ade80;
+  }
+
+  .grade-b {
+    color: #bfdbfe;
+    background: #1e3a8a;
+    border-color: #60a5fa;
+  }
+
+  .grade-c {
+    color: #fef08a;
+    background: #713f12;
+    border-color: #facc15;
+  }
+
+  .grade-d,
+  .grade-f {
+    color: #fecaca;
+    background: #7f1d1d;
+    border-color: #f87171;
+  }
+
+  .grade-none {
+    color: #f4f4f5;
+    background: #3f3f46;
+    border-color: #a1a1aa;
   }
 }
