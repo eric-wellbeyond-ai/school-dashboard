@@ -88,7 +88,11 @@ const ICONS = {
 export function ToastViewport({ toasts, onDismiss, onActivate }) {
   if (!toasts?.length) return null;
   return (
-    <div className="wla-toasts" aria-live="polite" aria-relevant="additions text">
+    <div
+      className="wla-toasts fixed bottom-4 right-4 z-[80]"
+      aria-live="polite"
+      aria-relevant="additions text"
+    >
       {toasts.map((toast) => {
         const Icon = ICONS[toast.type] || Info;
         const interactive = Boolean(toast.assignmentId);
