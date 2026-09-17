@@ -4,6 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { spawn, execSync } from 'child_process';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { google } from 'googleapis';
 import { fetchSportsYouCalendar } from './services/sportsyouCalendar.js';
@@ -29,14 +30,17 @@ import {
 import { runWithWlaSession } from './services/wlaContext.js';
 import {
   SESSION_COOKIE,
+  LOGIN_COOKIE,
   parseCookies,
   sessionCookieHeader,
+  loginCookieHeader,
+  appendSetCookie,
   identifyUser,
   publicIdentity,
   stageLogin,
   takeClaim,
   createSession,
-  getSession,
+  getSessionAsync,
   deleteSession,
   persistSessions,
   filterPayloadForIdentity,
@@ -80,9 +84,10 @@ app.use(express.json({ limit: '2mb' }));
 
 app.use((req, res, next) => {
   const cookies = parseCookies(req);
-  const session = getSession(cookies[SESSION_COOKIE]);
-  req.wla = session;
-  runWithWlaSession(session, () => next());
+  Promise.resolve(getSessionAsync(cookies[SESSION_COOKIE])).then((session) => {
+    req.wla = session || null;
+    runWithWlaSession(session || null, () => next());
+  }).catch(next);
 });
 
 function killMacWebview() {
@@ -106,7 +111,7 @@ async function attachIdentifiedSession(discovered, req, res) {
   const syncResult = await runWithWlaSession(record, () => syncBlackbaudData());
   if (!isPythonAgent(req)) {
     const id = createSession(record);
-    res.setHeader('Set-Cookie', sessionCookieHeader(id));
+    appendSetCookie(res, sessionCookieHeader(id));
   }
   return { record, claimToken, syncResult, identity: publicIdentity(record) };
 }
@@ -174,6 +179,19 @@ const SCHOOL_APP_ROOT = path.resolve(__dirname, '..', '..');
 const MAC_AGENT = path.join(SCHOOL_APP_ROOT, 'mac_portal_agent.py');
 const MAC_WEBVIEW_LOCAL = `http://127.0.0.1:${process.env.MAC_WEBVIEW_PORT || '5055'}`;
 let macWebviewProc = null;
+let portalLogin = { nonce: null, startedAt: 0 };
+
+function requesterOwnsPortalLogin(req) {
+  const cookies = parseCookies(req);
+  return Boolean(portalLogin.nonce && cookies[LOGIN_COOKIE] === portalLogin.nonce);
+}
+
+function withRequesterClaimToken(snapshot, req) {
+  return {
+    ...snapshot,
+    claimToken: requesterOwnsPortalLogin(req) ? (snapshot.claimToken || null) : null
+  };
+}
 
 async function macWebviewHealth(url = MAC_WEBVIEW_LOCAL) {
   try {
@@ -182,6 +200,107 @@ async function macWebviewHealth(url = MAC_WEBVIEW_LOCAL) {
   } catch {
     return false;
   }
+}
+
+function sessionHasPortalT(record) {
+  const raw = String(record?.cookie || '').trim();
+  if (!raw) return false;
+  if (/\bt=/.test(raw)) return true;
+  if (!raw.includes('=') && raw.length > 20) return true;
+  return false;
+}
+
+function macProcessFlags() {
+  const flags = { playwrightRunning: false, chromeRunning: false };
+  if (process.env.VERCEL) return flags;
+  if (macWebviewProc && macWebviewProc.exitCode == null) flags.playwrightRunning = true;
+  let listing = '';
+  try {
+    listing = execSync('ps -ax -o command=', {
+      encoding: 'utf8',
+      timeout: 2000,
+      maxBuffer: 4 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+  } catch {
+    return flags;
+  }
+  for (const line of listing.split('\n')) {
+    if (/mac_portal_agent\.py/.test(line)) flags.playwrightRunning = true;
+    if (/playwright-westlake|playwright-login-/.test(line) && !/mac_portal_agent\.py/.test(line)) {
+      flags.chromeRunning = true;
+    }
+  }
+  return flags;
+}
+
+async function readMacWebviewSnapshot() {
+  const port = Number(process.env.MAC_WEBVIEW_PORT || 5055);
+  const processes = macProcessFlags();
+  const up = await macWebviewHealth();
+  const payload = {
+    port,
+    running: up,
+    canStart: !process.env.VERCEL,
+    posted: false,
+    tokenValid: false,
+    homeReady: false,
+    claimToken: null,
+    students: [],
+    gradeCount: 0,
+    playwrightRunning: up || processes.playwrightRunning,
+    chromeRunning: processes.chromeRunning,
+    ready: false,
+    url: ''
+  };
+  if (up) {
+    try {
+      const agentRes = await fetch(`http://127.0.0.1:${port}/status`, {
+        signal: AbortSignal.timeout(1500)
+      });
+      if (agentRes.ok) {
+        const agent = await agentRes.json();
+        payload.posted = Boolean(agent.posted);
+        payload.tokenValid = Boolean(agent.tokenValid);
+        payload.homeReady = Boolean(agent.homeReady);
+        payload.claimToken = agent.claimToken || null;
+        payload.url = agent.url || '';
+        payload.students = agent.students || [];
+        payload.gradeCount = Number(agent.gradeCount || 0);
+        payload.error = agent.error || null;
+        payload.ready = Boolean(agent.ready);
+        if (agent.ready || agent.url) payload.chromeRunning = true;
+      }
+    } catch {}
+  }
+  if (payload.running) payload.chromeRunning = payload.chromeRunning || payload.ready;
+  return payload;
+}
+
+function loginStatusFrom(webview, req) {
+  const dashboardConnected = sessionHasPortalT(req.wla);
+  const cookiePresent = dashboardConnected || Boolean(webview.tokenValid);
+  const playwrightRunning = Boolean(webview.playwrightRunning);
+  const chromeRunning = Boolean(webview.chromeRunning);
+  let state = 'idle';
+  if (dashboardConnected) state = 'connected';
+  else if ((playwrightRunning || chromeRunning) && webview.tokenValid) state = 'signed-in';
+  else if (playwrightRunning || chromeRunning) state = 'ready';
+  return {
+    playwrightRunning,
+    chromeRunning,
+    cookiePresent,
+    tokenValid: Boolean(webview.tokenValid) || dashboardConnected,
+    dashboardConnected,
+    lastCheck: new Date().toISOString(),
+    port: webview.port,
+    running: Boolean(webview.running),
+    posted: Boolean(webview.posted),
+    homeReady: Boolean(webview.homeReady),
+    claimToken: webview.claimToken || null,
+    canStart: Boolean(webview.canStart),
+    state
+  };
 }
 
 // Google OAuth2 setup
@@ -419,38 +538,17 @@ app.post('/api/auth/disconnect', async (req, res) => {
  * Status of the Mac Chromium login window. Does not start Chrome.
  */
 app.get('/api/blackbaud/mac-webview', async (req, res) => {
-  const port = Number(process.env.MAC_WEBVIEW_PORT || 5055);
-  const up = await macWebviewHealth();
-  const payload = {
-    port,
-    running: up,
-    canStart: !process.env.VERCEL,
-    posted: false,
-    tokenValid: false,
-    homeReady: false,
-    claimToken: null,
-    students: [],
-    gradeCount: 0
-  };
-  if (up) {
-    try {
-      const agentRes = await fetch(`http://127.0.0.1:${port}/status`, {
-        signal: AbortSignal.timeout(1500)
-      });
-      if (agentRes.ok) {
-        const agent = await agentRes.json();
-        payload.posted = Boolean(agent.posted);
-        payload.tokenValid = Boolean(agent.tokenValid);
-        payload.homeReady = Boolean(agent.homeReady);
-        payload.claimToken = agent.claimToken || null;
-        payload.url = agent.url || '';
-        payload.students = agent.students || [];
-        payload.gradeCount = Number(agent.gradeCount || 0);
-        payload.error = agent.error || null;
-      }
-    } catch {}
-  }
-  res.json(payload);
+  res.json(withRequesterClaimToken(await readMacWebviewSnapshot(), req));
+});
+
+/**
+ * Route: GET /api/blackbaud/login-status
+ * Playwright agent, Chromium on this Mac, and whether cookie t is already present.
+ * Does not return the t value. Does not treat SKY tokens as t.
+ */
+app.get('/api/blackbaud/login-status', async (req, res) => {
+  const webview = withRequesterClaimToken(await readMacWebviewSnapshot(), req);
+  res.json(loginStatusFrom(webview, req));
 });
 
 app.post('/api/blackbaud/mac-webview/start', async (req, res) => {
@@ -462,10 +560,23 @@ app.post('/api/blackbaud/mac-webview/start', async (req, res) => {
   if (!fs.existsSync(MAC_AGENT)) {
     return res.status(500).json({ error: `Missing ${MAC_AGENT}` });
   }
+  const port = Number(process.env.MAC_WEBVIEW_PORT || 5055);
+  const existing = await readMacWebviewSnapshot();
+  if (existing.running || existing.playwrightRunning) {
+    return res.json({
+      ok: true,
+      running: Boolean(existing.running),
+      starting: false,
+      reused: true,
+      port
+    });
+  }
   killMacWebview();
   await new Promise((resolve) => setTimeout(resolve, 400));
   try {
-    const profile = path.join(__dirname, `.playwright-login-${Date.now()}`);
+    const nonce = crypto.randomUUID();
+    portalLogin = { nonce, startedAt: Date.now() };
+    const profile = path.join(__dirname, `.playwright-login-${Date.now()}-${nonce.slice(0, 8)}`);
     macWebviewProc = spawn('python3', [MAC_AGENT], {
       cwd: SCHOOL_APP_ROOT,
       env: {
@@ -479,7 +590,8 @@ app.post('/api/blackbaud/mac-webview/start', async (req, res) => {
       console.warn('[Mac webview] exited', code);
       macWebviewProc = null;
     });
-    res.json({ ok: true, running: false, starting: true, port: Number(process.env.MAC_WEBVIEW_PORT || 5055) });
+    appendSetCookie(res, loginCookieHeader(nonce));
+    res.json({ ok: true, running: false, starting: true, port });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -501,7 +613,7 @@ app.get('/api/blackbaud/status', async (req, res) => {
         req.wla.photoUrl = live.photoUrl;
         if (live.accountName) req.wla.accountName = live.accountName;
         if (Array.isArray(live.students)) req.wla.students = live.students;
-        persistSessions();
+        persistSessions(req.wla);
       } catch (err) {
         console.warn('[Blackbaud] Profile hydrate skipped:', err.message);
       }
@@ -558,7 +670,8 @@ app.post('/api/blackbaud/claim', async (req, res) => {
       return res.status(401).json({ success: false, error: 'Sign-in expired. Use Log in with Blackbaud again.' });
     }
     const id = createSession(record);
-    res.setHeader('Set-Cookie', sessionCookieHeader(id));
+    appendSetCookie(res, sessionCookieHeader(id));
+    appendSetCookie(res, loginCookieHeader('', { clear: true }));
     res.json({ success: true, data: publicIdentity(record) });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -616,7 +729,8 @@ app.post('/api/blackbaud/disconnect', async (req, res) => {
   try {
     const cookies = parseCookies(req);
     deleteSession(cookies[SESSION_COOKIE]);
-    res.setHeader('Set-Cookie', sessionCookieHeader('', { clear: true }));
+    appendSetCookie(res, sessionCookieHeader('', { clear: true }));
+    appendSetCookie(res, loginCookieHeader('', { clear: true }));
     res.json({ success: true, message: 'Disconnected Blackbaud Portal' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -838,7 +952,7 @@ app.get('/api/blackbaud/sync', async (req, res) => {
       if (result.email) req.wla.email = result.email;
       if (result.accountName) req.wla.accountName = result.accountName;
       if (Array.isArray(result.students)) req.wla.students = result.students;
-      persistSessions();
+      persistSessions(req.wla);
     }
     if (!result.connected) {
       return res.json(result);

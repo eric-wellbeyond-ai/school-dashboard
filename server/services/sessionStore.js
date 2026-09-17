@@ -7,20 +7,37 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STORE_PATH = path.join(__dirname, '..', 'data', 'user-sessions.json');
 
 export const SESSION_COOKIE = 'wla_session';
+export const LOGIN_COOKIE = 'wla_login';
 
 export const BEN_ID = 5662183;
 export const JADE_ID = 5819113;
 export const ERIC_ID = 5662184;
 
+const SESSION_TTL_SECONDS = 2592000;
 const sessions = new Map();
 const claims = new Map();
+
+function kvConfig() {
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  return { url, token };
+}
+
+function kvSessionKey(id) {
+  return `wla_session_${id}`;
+}
+
+function cookieSuffix() {
+  const secure = process.env.VERCEL || process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `; HttpOnly; Path=/; SameSite=Lax${secure}`;
+}
 
 function loadStore() {
   try {
     if (!fs.existsSync(STORE_PATH)) return;
     const parsed = JSON.parse(fs.readFileSync(STORE_PATH, 'utf-8'));
     for (const [id, record] of Object.entries(parsed.sessions || {})) {
-      sessions.set(id, record);
+      sessions.set(id, { ...record, sessionId: id });
     }
   } catch (err) {
     console.warn('[Sessions] Failed to load store:', err.message);
@@ -38,7 +55,73 @@ function persistStore() {
   }
 }
 
+async function writeKvSession(id, record) {
+  const { url, token } = kvConfig();
+  if (!url || !token || !id) return;
+  try {
+    await fetch(`${url}/set/${encodeURIComponent(kvSessionKey(id))}/ex/${SESSION_TTL_SECONDS}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(record)
+    });
+  } catch (err) {
+    console.warn('[Sessions] KV write failed:', err.message);
+  }
+}
+
+async function readKvSession(id) {
+  const { url, token } = kvConfig();
+  if (!url || !token || !id) return null;
+  try {
+    const res = await fetch(`${url}/get/${encodeURIComponent(kvSessionKey(id))}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    let parsed = json?.result;
+    if (typeof parsed === 'string') {
+      try { parsed = JSON.parse(parsed); } catch { return null; }
+    }
+    if (parsed && typeof parsed === 'object' && parsed.cookie) {
+      return { ...parsed, sessionId: id };
+    }
+  } catch (err) {
+    console.warn('[Sessions] KV read failed:', err.message);
+  }
+  return null;
+}
+
+async function deleteKvSession(id) {
+  const { url, token } = kvConfig();
+  if (!url || !token || !id) return;
+  try {
+    await fetch(`${url}/del/${encodeURIComponent(kvSessionKey(id))}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }
+    });
+  } catch (err) {
+    console.warn('[Sessions] KV delete failed:', err.message);
+  }
+}
+
+async function deleteLegacyGlobalBlackbaudSession() {
+  const { url, token } = kvConfig();
+  if (!url || !token) return;
+  try {
+    await fetch(`${url}/del/blackbaud_session`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }
+    });
+  } catch (err) {
+    console.warn('[Sessions] Legacy KV cleanup failed:', err.message);
+  }
+}
+
 loadStore();
+void deleteLegacyGlobalBlackbaudSession();
 
 export function parseCookies(req) {
   const header = req.headers.cookie || '';
@@ -60,14 +143,34 @@ export function parseCookies(req) {
 
 export function sessionCookieHeader(id, { clear = false } = {}) {
   if (clear || !id) {
-    return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`;
+    return `${SESSION_COOKIE}=; Max-Age=0${cookieSuffix()}`;
   }
-  return `${SESSION_COOKIE}=${encodeURIComponent(id)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=2592000`;
+  return `${SESSION_COOKIE}=${encodeURIComponent(id)}; Max-Age=${SESSION_TTL_SECONDS}${cookieSuffix()}`;
+}
+
+export function loginCookieHeader(nonce, { clear = false } = {}) {
+  if (clear || !nonce) {
+    return `${LOGIN_COOKIE}=; Max-Age=0${cookieSuffix()}`;
+  }
+  return `${LOGIN_COOKIE}=${encodeURIComponent(nonce)}; Max-Age=600${cookieSuffix()}`;
+}
+
+export function appendSetCookie(res, value) {
+  const prev = res.getHeader('Set-Cookie');
+  if (!prev) {
+    res.setHeader('Set-Cookie', value);
+    return;
+  }
+  const list = Array.isArray(prev) ? prev : [prev];
+  res.setHeader('Set-Cookie', [...list, value]);
 }
 
 export function identifyUser(session = {}) {
   const uiName = String(session.accountName || session.parentName || '').toLowerCase();
-  const first = uiName.split(/\s+/).filter(Boolean)[0] || '';
+  const firstName = String(session.firstName || session.nickName || '').toLowerCase();
+  const email = String(session.email || '').toLowerCase();
+  const first = firstName || uiName.split(/\s+/).filter(Boolean)[0] || '';
+  const blob = `${uiName} ${firstName} ${email}`;
   const userId = Number(session.userId || 0);
   const parentAccess = {
     role: 'parent',
@@ -75,23 +178,25 @@ export function identifyUser(session = {}) {
     allowedStudentIds: [BEN_ID, JADE_ID]
   };
 
-  if (userId === ERIC_ID || first === 'eric') {
+  if (userId === ERIC_ID || first === 'eric' || email.includes('hifismith')) {
     return {
       userKey: 'eric',
       displayName: 'Eric',
       accountName: session.accountName || 'Eric',
+      userId: session.userId || ERIC_ID,
       ...parentAccess
     };
   }
-  if (/stefani|stephanie/.test(uiName)) {
+  if (/stefani|stephanie/.test(blob) || first === 'stefani' || email.includes('stefanicsmith')) {
     return {
       userKey: 'stefani',
       displayName: 'Stefani',
       accountName: session.accountName || 'Stefani',
+      userId: session.userId || null,
       ...parentAccess
     };
   }
-  if (userId === BEN_ID || first === 'ben' || /benjamin/.test(uiName)) {
+  if (userId === BEN_ID || first === 'ben' || /benjamin/.test(uiName) || /benjamin/.test(blob)) {
     return {
       userKey: 'ben',
       displayName: 'Ben',
@@ -183,14 +288,22 @@ export function takeClaim(token) {
   return row.record;
 }
 
-export function persistSessions() {
+export function persistSessions(record) {
+  if (record?.sessionId) {
+    sessions.set(record.sessionId, record);
+    persistStore();
+    void writeKvSession(record.sessionId, record);
+    return;
+  }
   persistStore();
 }
 
 export function createSession(record) {
   const id = crypto.randomUUID();
-  sessions.set(id, { ...record, createdAt: new Date().toISOString() });
+  const stored = { ...record, sessionId: id, createdAt: new Date().toISOString() };
+  sessions.set(id, stored);
   persistStore();
+  void writeKvSession(id, stored);
   return id;
 }
 
@@ -199,9 +312,23 @@ export function getSession(id) {
   return sessions.get(id) || null;
 }
 
+export async function getSessionAsync(id) {
+  if (!id) return null;
+  const cached = sessions.get(id);
+  if (cached) return cached;
+  const fromKv = await readKvSession(id);
+  if (fromKv) {
+    sessions.set(id, fromKv);
+    return fromKv;
+  }
+  return null;
+}
+
 export function deleteSession(id) {
-  if (id) sessions.delete(id);
+  if (!id) return;
+  sessions.delete(id);
   persistStore();
+  void deleteKvSession(id);
 }
 
 export function filterPayloadForIdentity(data, identity) {

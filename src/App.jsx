@@ -529,6 +529,13 @@ export default function App() {
   const [bookmarkletCopied, setBookmarkletCopied] = useState(false);
   const [macWebview, setMacWebview] = useState({ port: 5055, running: false, canStart: false });
   const [macWebviewStarting, setMacWebviewStarting] = useState(false);
+  const [loginStatus, setLoginStatus] = useState({
+    playwrightRunning: false,
+    chromeRunning: false,
+    cookiePresent: false,
+    lastCheck: null
+  });
+  const [loginBusy, setLoginBusy] = useState(false);
   const consumedBbHash = useRef(false);
   const portalSyncPoll = useRef(null);
   const syncInFlightRef = useRef(false);
@@ -951,7 +958,7 @@ export default function App() {
 
   const fetchBlackbaudStatus = async () => {
     try {
-      const res = await fetch('/api/blackbaud/status');
+      const res = await fetch('/api/blackbaud/status', { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setBlackbaudStatus(data);
@@ -978,6 +985,7 @@ export default function App() {
     try {
       const res = await fetch('/api/blackbaud/connect', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           cookie,
@@ -1040,7 +1048,7 @@ export default function App() {
 
   const refreshMacWebview = async () => {
     try {
-      const res = await fetch('/api/blackbaud/mac-webview');
+      const res = await fetch('/api/blackbaud/mac-webview', { credentials: 'include' });
       if (res.ok) {
         setMacWebview(await res.json());
       }
@@ -1050,10 +1058,10 @@ export default function App() {
   const startMacWebview = async () => {
     setMacWebviewStarting(true);
     try {
-      await fetch('/api/blackbaud/mac-webview/start', { method: 'POST' });
+      await fetch('/api/blackbaud/mac-webview/start', { method: 'POST', credentials: 'include' });
       for (let i = 0; i < 30; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 400));
-        const res = await fetch('/api/blackbaud/mac-webview');
+        const res = await fetch('/api/blackbaud/mac-webview', { credentials: 'include' });
         if (!res.ok) continue;
         const data = await res.json();
         setMacWebview(data);
@@ -1188,7 +1196,7 @@ export default function App() {
 
   const handleDisconnectBlackbaud = async () => {
     try {
-      await fetch('/api/blackbaud/disconnect', { method: 'POST' });
+      await fetch('/api/blackbaud/disconnect', { method: 'POST', credentials: 'include' });
       setBlackbaudStatus({ connected: false, students: [], role: null, displayName: null, allowedStudentKeys: [] });
       setBlackbaudGrades({ Ben: [], Jade: [] });
       setBlackbaudMissing([]);
@@ -1316,7 +1324,7 @@ export default function App() {
         return;
       }
       try {
-        const wvRes = await fetch('/api/blackbaud/mac-webview');
+        const wvRes = await fetch('/api/blackbaud/mac-webview', { credentials: 'include' });
         if (wvRes.ok) {
           const wv = await wvRes.json();
           setMacWebview(wv);
@@ -1325,6 +1333,7 @@ export default function App() {
               claimedMacToken.current = wv.claimToken;
               const claimRes = await fetch('/api/blackbaud/claim', {
                 method: 'POST',
+                credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ claimToken: wv.claimToken })
               });
@@ -1333,7 +1342,7 @@ export default function App() {
                 setBlackbaudStatus({ connected: true, ...(claimed.data || {}) });
               }
             }
-            const syncRes = await fetch('/api/blackbaud/sync');
+            const syncRes = await fetch('/api/blackbaud/sync', { credentials: 'include' });
             const data = applyBlackbaudSync(await syncRes.json());
             await fetchBlackbaudStatus();
             await loadDashboardState();
@@ -1352,13 +1361,21 @@ export default function App() {
     });
     setShowBlackbaudModal(true);
     startPortalGradePoll();
-    let running = macWebview.running;
+    let running = macWebview.running || loginStatus.playwrightRunning || loginStatus.chromeRunning;
     try {
-      const wvRes = await fetch('/api/blackbaud/mac-webview');
+      const [wvRes, loginRes] = await Promise.all([
+        fetch('/api/blackbaud/mac-webview', { credentials: 'include' }),
+        fetch('/api/blackbaud/login-status', { credentials: 'include' })
+      ]);
       if (wvRes.ok) {
         const wv = await wvRes.json();
         setMacWebview(wv);
-        running = Boolean(wv.running);
+        running = Boolean(wv.running || wv.playwrightRunning || wv.chromeRunning);
+      }
+      if (loginRes.ok) {
+        const login = await loginRes.json();
+        setLoginStatus(login);
+        running = running || Boolean(login.playwrightRunning || login.chromeRunning || login.running);
       }
     } catch {}
     if (!running) {
@@ -1366,12 +1383,112 @@ export default function App() {
     }
   };
 
-  const handleLoginWithBlackbaud = () => {
+  const applyLoginProbe = ({ status, login, webview }) => {
+    if (status && typeof status.connected === 'boolean') setBlackbaudStatus(status);
+    if (login) setLoginStatus(login);
+    if (webview) setMacWebview(webview);
+  };
+
+  const claimMacSession = async (claimToken) => {
+    if (!claimToken) return false;
+    if (claimedMacToken.current === claimToken) return true;
+    const claimRes = await fetch('/api/blackbaud/claim', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ claimToken })
+    });
+    if (!claimRes.ok) return false;
+    claimedMacToken.current = claimToken;
+    const claimed = await claimRes.json();
+    setBlackbaudStatus({ connected: true, ...(claimed.data || {}) });
+    return true;
+  };
+
+  const handleReconnectBlackbaud = async () => {
+    setLoginBusy(true);
+    try {
+      const [statusRes, loginRes, wvRes] = await Promise.all([
+        fetch('/api/blackbaud/status', { credentials: 'include' }),
+        fetch('/api/blackbaud/login-status', { credentials: 'include' }),
+        fetch('/api/blackbaud/mac-webview', { credentials: 'include' })
+      ]);
+      const status = statusRes.ok ? await statusRes.json() : null;
+      const login = loginRes.ok ? await loginRes.json() : null;
+      const wv = wvRes.ok ? await wvRes.json() : null;
+      applyLoginProbe({ status, login, webview: wv });
+      if (status?.connected || login?.dashboardConnected) {
+        setView('dashboard');
+        return;
+      }
+      const claimToken = wv?.claimToken || login?.claimToken;
+      if (claimToken && await claimMacSession(claimToken)) {
+        await fetchBlackbaudStatus();
+        await loadDashboardState();
+        setView('dashboard');
+        setAuthBanner({
+          type: 'success',
+          message: 'Blackbaud is connected. Chromium stays running on this Mac.'
+        });
+        return;
+      }
+      setShowBlackbaudModal(true);
+      startPortalGradePoll();
+    } catch (err) {
+      setAuthBanner({
+        type: 'error',
+        message: 'Could not reconnect to Blackbaud on this Mac.'
+      });
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+
+  const handleLoginWithBlackbaud = async () => {
+    setLoginBusy(true);
+    try {
+      const [statusRes, loginRes, wvRes] = await Promise.all([
+        fetch('/api/blackbaud/status', { credentials: 'include' }),
+        fetch('/api/blackbaud/login-status', { credentials: 'include' }),
+        fetch('/api/blackbaud/mac-webview', { credentials: 'include' })
+      ]);
+      const status = statusRes.ok ? await statusRes.json() : null;
+      const login = loginRes.ok ? await loginRes.json() : null;
+      const wv = wvRes.ok ? await wvRes.json() : null;
+      applyLoginProbe({ status, login, webview: wv });
+      if (status?.connected || login?.dashboardConnected) {
+        setView('dashboard');
+        return;
+      }
+      const chromeUp = Boolean(
+        login?.playwrightRunning
+        || login?.chromeRunning
+        || login?.running
+        || wv?.running
+        || wv?.playwrightRunning
+        || wv?.chromeRunning
+      );
+      if (chromeUp && (login?.tokenValid || wv?.tokenValid)) {
+        await handleReconnectBlackbaud();
+        return;
+      }
+      if (chromeUp) {
+        setShowBlackbaudModal(true);
+        startPortalGradePoll();
+        return;
+      }
+    } catch {
+      /* fall through to a fresh sign-in */
+    } finally {
+      setLoginBusy(false);
+    }
     claimedMacToken.current = null;
     void handleSyncBlackbaud({ openPortal: true });
   };
 
-  const handleSyncBlackbaud = async ({ openPortal = false, quiet = false } = {}) => {
+  const handleSyncBlackbaud = async (options = {}) => {
+    const openPortal = options?.openPortal === true;
+    const quiet = options?.quiet === true;
     if (openPortal) {
       closedAuthPopup.current = false;
       setShowBlackbaudModal(true);
@@ -1380,18 +1497,7 @@ export default function App() {
         type: 'info',
         message: 'Opening the Mac sign-in. It stays open through redirects and closes once /app/parent or /app/student loads.'
       });
-      let running = macWebview.running;
-      try {
-        const wvRes = await fetch('/api/blackbaud/mac-webview');
-        if (wvRes.ok) {
-          const wv = await wvRes.json();
-          setMacWebview(wv);
-          running = Boolean(wv.running);
-        }
-      } catch {}
-      if (!running) {
-        void startMacWebview();
-      }
+      void startMacWebview();
       return;
     }
     if (syncInFlightRef.current) return;
@@ -1408,7 +1514,7 @@ export default function App() {
     try {
       const keys = blackbaudSyncStudentKeys(identityRef.current || blackbaudStatus, selectedStudentRef.current);
       const qs = keys.length ? `?students=${encodeURIComponent(keys.join(','))}` : '';
-      const res = await fetch(`/api/blackbaud/sync${qs}`);
+      const res = await fetch(`/api/blackbaud/sync${qs}`, { credentials: 'include' });
       let data = {};
       try {
         data = await res.json();
@@ -2228,9 +2334,11 @@ export default function App() {
         <LandingPage
           onLogin={handleLoginWithBlackbaud}
           onOpenDashboard={() => setView('dashboard')}
+          onReconnect={handleReconnectBlackbaud}
+          onProbe={applyLoginProbe}
           connected={Boolean(blackbaudStatus.connected)}
           account={blackbaudStatus}
-          signingIn={macWebviewStarting || showBlackbaudModal}
+          signingIn={macWebviewStarting || showBlackbaudModal || loginBusy}
         />
       )}
       <div
@@ -2280,7 +2388,7 @@ export default function App() {
           acknowledgedEventsCount={acknowledgedEventsCount}
           onSelectEvent={handleSelectCalendarEvent}
           calendarEventsCount={(calendarEvents || []).length}
-          onRefreshBlackbaud={handleSyncBlackbaud}
+          onRefreshBlackbaud={(opts) => handleSyncBlackbaud({ ...(opts || {}), openPortal: false })}
           onBlackbaudSettings={() => setShowBlackbaudModal(true)}
           onDisconnectBlackbaud={handleDisconnectBlackbaud}
           onOpenLanding={() => setView('landing')}
