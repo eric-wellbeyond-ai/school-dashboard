@@ -25,7 +25,8 @@ import {
   fetchOfficialNoteDetail,
   fetchFeaturedContent,
   fetchNewsDetail,
-  fetchResources
+  fetchResources,
+  portalTFromCookie
 } from './services/blackbaudService.js';
 import { runWithWlaSession } from './services/wlaContext.js';
 import {
@@ -91,6 +92,7 @@ app.use((req, res, next) => {
 });
 
 function killMacWebview() {
+  // Stops the harvest Chrome only. Never deletes wla_session rows or stored t.
   if (macWebviewProc) {
     try { macWebviewProc.kill('SIGTERM'); } catch {}
     macWebviewProc = null;
@@ -179,11 +181,20 @@ const SCHOOL_APP_ROOT = path.resolve(__dirname, '..', '..');
 const MAC_AGENT = path.join(SCHOOL_APP_ROOT, 'mac_portal_agent.py');
 const MAC_WEBVIEW_LOCAL = `http://127.0.0.1:${process.env.MAC_WEBVIEW_PORT || '5055'}`;
 let macWebviewProc = null;
-let portalLogin = { nonce: null, startedAt: 0 };
+const portalLogins = new Map();
+let harvestNonce = null;
+
+function prunePortalLogins() {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [nonce, row] of portalLogins) {
+    if (!row?.startedAt || row.startedAt < cutoff) portalLogins.delete(nonce);
+  }
+}
 
 function requesterOwnsPortalLogin(req) {
   const cookies = parseCookies(req);
-  return Boolean(portalLogin.nonce && cookies[LOGIN_COOKIE] === portalLogin.nonce);
+  const nonce = cookies[LOGIN_COOKIE];
+  return Boolean(nonce && nonce === harvestNonce && portalLogins.has(nonce));
 }
 
 function withRequesterClaimToken(snapshot, req) {
@@ -203,11 +214,7 @@ async function macWebviewHealth(url = MAC_WEBVIEW_LOCAL) {
 }
 
 function sessionHasPortalT(record) {
-  const raw = String(record?.cookie || '').trim();
-  if (!raw) return false;
-  if (/\bt=/.test(raw)) return true;
-  if (!raw.includes('=') && raw.length > 20) return true;
-  return false;
+  return Boolean(portalTFromCookie(record?.cookie));
 }
 
 function browserLooksClosed(error) {
@@ -589,8 +596,10 @@ app.post('/api/blackbaud/mac-webview/start', async (req, res) => {
   killMacWebview();
   await new Promise((resolve) => setTimeout(resolve, 400));
   try {
+    prunePortalLogins();
     const nonce = crypto.randomUUID();
-    portalLogin = { nonce, startedAt: Date.now() };
+    harvestNonce = nonce;
+    portalLogins.set(nonce, { startedAt: Date.now() });
     const profile = path.join(__dirname, `.playwright-login-${Date.now()}-${nonce.slice(0, 8)}`);
     macWebviewProc = spawn('python3', [MAC_AGENT], {
       cwd: SCHOOL_APP_ROOT,
@@ -950,12 +959,15 @@ app.get('/api/blackbaud/photo', async (req, res) => {
 
 app.get('/api/blackbaud/sync', async (req, res) => {
   try {
+    if (!sessionHasPortalT(req.wla)) {
+      return res.status(401).json(sessionExpiredPayload());
+    }
     const fromQuery = parseRequestedStudentKeys(req.query.students);
     const allowed = Array.isArray(req.wla?.allowedStudentKeys) ? req.wla.allowedStudentKeys : [];
     const studentKeys = req.wla?.role === 'student'
       ? allowed
       : (fromQuery.length ? fromQuery : (allowed.length ? allowed : ['Ben', 'Jade']));
-    const result = await syncBlackbaudData({ studentKeys });
+    const result = await runWithWlaSession(req.wla, () => syncBlackbaudData({ studentKeys }));
     if (result.needsReauth) {
       return res.status(401).json(result);
     }

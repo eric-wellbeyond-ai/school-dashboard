@@ -7,12 +7,15 @@ import {
   identifyUser,
   publicIdentity,
   filterPayloadForIdentity,
+  createSession,
+  getSession,
+  deleteSession,
   ERIC_ID,
   BEN_ID,
   JADE_ID
 } from './sessionStore.js';
 import { runWithWlaSession } from './wlaContext.js';
-import { getBlackbaudSession } from './blackbaudService.js';
+import { getBlackbaudSession, portalTFromCookie, formatCookieString } from './blackbaudService.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -64,15 +67,35 @@ test('public identity never includes cookie t', () => {
   assert.equal(serialized.includes('"t='), false);
 });
 
-test('ALS wlaContext keeps concurrent parent t values isolated', async () => {
-  const eric = { cookie: 't=eric-only', userKey: 'eric' };
-  const stefani = { cookie: 't=stefani-only', userKey: 'stefani' };
-  const [fromEric, fromStefani] = await Promise.all([
-    runWithWlaSession(eric, () => getBlackbaudSession()),
-    runWithWlaSession(stefani, () => getBlackbaudSession())
-  ]);
-  assert.equal(fromEric.cookie, 't=eric-only');
-  assert.equal(fromStefani.cookie, 't=stefani-only');
+test('ALS wlaContext keeps N concurrent session t values isolated', async () => {
+  const jobs = Array.from({ length: 8 }, (_, i) => {
+    const session = { cookie: `t=session-${i}`, userKey: `user${i}` };
+    return runWithWlaSession(session, () => getBlackbaudSession());
+  });
+  const results = await Promise.all(jobs);
+  results.forEach((live, i) => {
+    assert.equal(live.cookie, `t=session-${i}`);
+  });
+});
+
+test('session store is an unbounded map keyed by session id', () => {
+  const ids = [];
+  for (let i = 0; i < 6; i += 1) {
+    ids.push(createSession({ cookie: `t=store-${i}`, userKey: `guest${i}` }));
+  }
+  assert.equal(new Set(ids).size, 6);
+  ids.forEach((id, i) => {
+    assert.equal(getSession(id).cookie, `t=store-${i}`);
+  });
+  assert.equal(getSession(ids[0]).cookie, 't=store-0');
+  ids.forEach((id) => deleteSession(id));
+});
+
+test('Cookie header always carries harvested t', () => {
+  assert.equal(portalTFromCookie('t=abc-token'), 'abc-token');
+  assert.equal(portalTFromCookie('sd=1; t=abc-token; persona=parent'), 'abc-token');
+  assert.equal(formatCookieString('abc-token-without-equals-prefix-xxx'), 't=abc-token-without-equals-prefix-xxx');
+  assert.match(formatCookieString('sd=1; t=abc-token'), /t=abc-token/);
 });
 
 test('blackbaudService has no process-global cachedSession', () => {

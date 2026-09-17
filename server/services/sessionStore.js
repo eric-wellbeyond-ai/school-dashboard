@@ -14,6 +14,7 @@ export const JADE_ID = 5819113;
 export const ERIC_ID = 5662184;
 
 const SESSION_TTL_SECONDS = 2592000;
+/** Unbounded map keyed by session id. Not a singleton or two-slot cache. */
 const sessions = new Map();
 const claims = new Map();
 
@@ -305,6 +306,10 @@ export function createSession(record) {
   persistStore();
   void writeKvSession(id, stored);
   return id;
+}
+
+export function sessionCount() {
+  return sessions.size;
 }
 
 export function getSession(id) {

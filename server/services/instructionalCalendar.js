@@ -49,6 +49,7 @@ export function parseInstructionalIcs(icsText) {
 }
 
 export async function fetchInstructionalCalendar(url = process.env.INSTRUCTIONAL_CALENDAR_URL || DEFAULT_CALENDAR_URL) {
+  // Public signed ICS URL — no portal cookie t required.
   const href = toHttpsCalendarUrl(url, DEFAULT_CALENDAR_URL);
   const text = await fetchIcsText(href, 'instructional calendar');
   return upcomingFromToday(parseInstructionalIcs(text));

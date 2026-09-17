@@ -69,12 +69,35 @@ export function toCdnPhotoUrl(value) {
   return `${CDN_HOST}${SCHOOL_FTP_PREFIX}/${raw.replace(/^\/+/, '')}`;
 }
 
+export function isPlaceholderPhoto(url, extra = '') {
+  const raw = String(url || '').trim();
+  const hint = String(extra || '').trim();
+  if (!raw || raw === '?' || raw === '#' || raw === 'undefined' || raw === 'null') return true;
+  if (hint === '?' || hint === '??') return true;
+  const hay = `${raw} ${hint}`.toLowerCase();
+  if (/question[_\s-]?mark|no[_-]?photo|nophoto|no[_-]?image|placeholder|missing[_-]?image|unknown[_-]?user|default[_-]?user|large_user\.|small_user\.|ftpimages\/0\//i.test(hay)) {
+    return true;
+  }
+  try {
+    const u = new URL(raw, BASE_URL);
+    const file = decodeURIComponent((u.pathname.split('/').pop() || '').split('?')[0]);
+    if (file === '?' || file === '.' || file === '') return true;
+  } catch {
+    return true;
+  }
+  return false;
+}
+
 export function dashboardPhotoSrc(absUrl) {
-  if (!absUrl) return null;
+  if (!absUrl || isPlaceholderPhoto(absUrl)) return null;
   try {
     const u = new URL(absUrl, BASE_URL);
     if (!isAllowedPhotoHost(u.hostname)) return null;
-    if (/fileaccess/i.test(u.pathname) || /profilephoto/i.test(u.pathname)) {
+    const needsProxy = /fileaccess/i.test(u.pathname)
+      || /profilephoto/i.test(u.pathname)
+      || u.hostname === 'myschoolapp.com'
+      || u.hostname.endsWith('.myschoolapp.com');
+    if (needsProxy) {
       return `/api/blackbaud/photo?url=${encodeURIComponent(u.href)}`;
     }
     return u.href;
@@ -104,13 +127,21 @@ export function proxiedPhotoSrc(absUrl) {
 function rewriteHtmlPhotos(html) {
   return String(html || '').replace(/<img\b[^>]*>/gi, (tag) => {
     const src = htmlAttr(tag, 'src');
+    const alt = htmlAttr(tag, 'alt');
     const abs = resolvePortalUrl(src);
-    const proxied = abs ? (dashboardPhotoSrc(abs) || proxiedPhotoSrc(abs)) : null;
-    if (!proxied) return tag;
-    if (/\bsrc\s*=/i.test(tag)) {
-      return tag.replace(/\bsrc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i, `src="${proxied}"`);
+    if (!abs || isPlaceholderPhoto(abs, alt)) return '';
+    const proxied = dashboardPhotoSrc(abs) || proxiedPhotoSrc(abs);
+    if (!proxied) return '';
+    let next = tag;
+    if (/\bsrc\s*=/i.test(next)) {
+      next = next.replace(/\bsrc\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/i, `src="${proxied}"`);
+    } else {
+      next = next.replace(/<img\b/i, `<img src="${proxied}"`);
     }
-    return tag.replace(/<img\b/i, `<img src="${proxied}"`);
+    if (!/\bdata-original\s*=/i.test(next)) {
+      next = next.replace(/<img\b/i, `<img data-original="${abs}"`);
+    }
+    return next;
   });
 }
 
@@ -163,17 +194,31 @@ export async function getBlackbaudSession() {
   return null;
 }
 
+/** Harvested portal cookie `t` from a session cookie header. SKY tokens are not `t`. */
+export function portalTFromCookie(raw) {
+  const str = String(raw || '').trim();
+  if (!str) return '';
+  const named = str.match(/(?:^|;\s*)t=([^;]+)/i);
+  if (named?.[1]) return named[1].trim();
+  if (!str.includes('=') && str.length > 20) return str;
+  return '';
+}
+
 /**
- * Clean and format cookie header string
+ * Cookie header for myschoolapp. Always includes harvested `t` when present.
  */
 export function formatCookieString(rawCookie) {
-  if (!rawCookie) return '';
-  const str = rawCookie.trim();
-  // If user pasted just a token value like 'ABCDEF1234...' without 't=' prefix
-  if (!str.includes('=') && str.length > 20) {
-    return `t=${str}`;
-  }
-  return str;
+  const str = String(rawCookie || '').trim();
+  if (!str) return '';
+  const t = portalTFromCookie(str);
+  if (!t) return str;
+  if (/(?:^|;\s*)t=/.test(str)) return str;
+  return `t=${t}`;
+}
+
+function portalCookieHeader(session) {
+  const cookie = formatCookieString(session?.cookie);
+  return portalTFromCookie(cookie) ? cookie : '';
 }
 
 /**
@@ -181,11 +226,11 @@ export function formatCookieString(rawCookie) {
  */
 async function blackbaudRequest(endpoint, options = {}) {
   const session = options.session || await getBlackbaudSession();
-  if (!session || !session.cookie) {
-    throw new Error('No active Blackbaud session. Please connect your Westlake account.');
+  const cleanCookie = portalCookieHeader(session);
+  if (!cleanCookie) {
+    throw new Error('SESSION_EXPIRED: No harvested Blackbaud session cookie t on this request.');
   }
 
-  const cleanCookie = formatCookieString(session.cookie);
   const url = endpoint.startsWith('http') ? endpoint : `${BASE_URL}${endpoint}`;
 
   const headers = {
@@ -708,7 +753,7 @@ async function syncBlackbaudSnapshot(options = {}) {
 
   const identity = session.userKey ? session : identifyUser(session);
   let students = session.students || [];
-  if (identity.userKey === 'eric' || identity.userKey === 'stefani') {
+  if (identity.role === 'parent') {
     const byId = new Map(students.map((s) => [s.id, s]));
     if (!byId.has(BEN_ID)) students = [...students, { id: BEN_ID, student: 'Ben', name: 'Ben' }];
     if (!byId.has(JADE_ID)) students = [...students, { id: JADE_ID, student: 'Jade', name: 'Jade' }];
@@ -820,11 +865,10 @@ async function syncBlackbaudSnapshot(options = {}) {
 
 async function blackbaudRequestSoft(endpoint, options = {}) {
   const session = options.session || await getBlackbaudSession();
-  if (!session?.cookie) {
+  const cleanCookie = portalCookieHeader(session);
+  if (!cleanCookie) {
     return { ok: false, status: 401, forbidden: true, expired: true, data: null };
   }
-
-  const cleanCookie = formatCookieString(session.cookie);
   const url = endpoint.startsWith('http') ? endpoint : `${BASE_URL}${endpoint}`;
   const headers = {
     'Accept': 'application/json, text/plain, */*',
@@ -1008,8 +1052,8 @@ function extractRichContent(html, extra = {}) {
 
   const pushImage = (url, alt = '', caption = '') => {
     const abs = resolvePortalUrl(url);
-    if (!abs || !isAllowedPhotoUrl(abs)) return;
-    const src = proxiedPhotoSrc(abs);
+    if (!abs || !isAllowedPhotoUrl(abs) || isPlaceholderPhoto(abs, `${alt} ${caption}`)) return;
+    const src = dashboardPhotoSrc(abs) || proxiedPhotoSrc(abs);
     if (!src || seenImg.has(src)) return;
     seenImg.add(src);
     images.push({
@@ -1129,7 +1173,9 @@ function normalizeBulletinItem(item, index) {
   ].filter((value) => value && typeof value === 'string').join('\n');
   const rich = extractRichContent(html, { attachments: attachmentsFromRecord(item) });
   const cover = item.LargeFilenameUrl || item.CoverFilenameUrl || item.FilenameUrl || item.LinkImageUrl || item.ThumbFilenameUrl;
-  if (cover) mergeRich(rich, extractRichContent('', { attachments: [{ url: cover, FileName: cover, Title: title }] }));
+  if (cover && !isPlaceholderPhoto(cover, title)) {
+    mergeRich(rich, extractRichContent('', { attachments: [{ url: cover, FileName: cover, Title: title }] }));
+  }
   const url = item.Url || item.url || null;
   if (url && !rich.links.some((link) => link.url === url) && url !== rich.text) {
     rich.links.push({ url, label: pickText(item.UrlDisplay, shortDesc, title) || url });
@@ -1360,12 +1406,13 @@ async function hydrateTeacherPhotos(userIds = []) {
 
 export async function fetchProfilePhoto(userId) {
   const session = await getBlackbaudSession();
-  if (!session?.cookie || !userId) return null;
+  const cookie = portalCookieHeader(session);
+  if (!cookie || !userId) return null;
   const headers = {
     'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
     'Referer': `${BASE_URL}/`,
-    'Cookie': formatCookieString(session.cookie)
+    'Cookie': cookie
   };
   const cdnUrl = await fetchUserPhotoUrl(userId);
   const targets = [
@@ -1400,13 +1447,14 @@ export async function fetchProfilePhoto(userId) {
 
 export async function fetchPhotoByUrl(rawUrl) {
   const session = await getBlackbaudSession();
-  if (!session?.cookie || !rawUrl) return null;
+  const cookie = portalCookieHeader(session);
+  if (!cookie || !rawUrl) return null;
   if (!isAllowedPhotoUrl(rawUrl)) return null;
   const headers = {
     'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
     'Referer': `${BASE_URL}/`,
-    'Cookie': formatCookieString(session.cookie)
+    'Cookie': cookie
   };
 
   let current = new URL(String(rawUrl), BASE_URL).href;
@@ -1662,8 +1710,14 @@ function articleMedia(item, html) {
   const rich = extractRichContent(html, { attachments: attachmentsFromRecord(item) });
   const cover = newsImageUrl(item);
   if (cover && !(rich.images || []).some((image) => image.src === cover)) {
-    rich.images.unshift({ src: cover, alt: '', caption: '', href: cover });
+    rich.images.unshift({
+      src: cover,
+      alt: pickText(item.Name, item.Headline, item.Title) || '',
+      caption: '',
+      href: cover
+    });
   }
+  rich.images = (rich.images || []).filter((image) => image?.src && !isPlaceholderPhoto(image.src, image.alt));
   return rich;
 }
 
@@ -1746,7 +1800,10 @@ export async function fetchOfficialNoteDetail(rawId) {
 function newsImageUrl(item) {
   const raw = item?.LargeFilenameUrl || item?.ThumbFilenameUrl || item?.ZoomFilenameUrl
     || item?.PhotoList?.[0]?.LargeFilenameUrl || item?.PhotoList?.[0]?.ThumbFilenameUrl;
-  return dashboardPhotoSrc(toCdnPhotoUrl(raw) || resolvePortalUrl(raw));
+  if (isPlaceholderPhoto(raw, item?.ThumbFilename || item?.Filename || '')) return null;
+  const abs = toCdnPhotoUrl(raw) || resolvePortalUrl(raw);
+  if (!abs || isPlaceholderPhoto(abs)) return null;
+  return dashboardPhotoSrc(abs);
 }
 
 function normalizeFeaturedNews(item, index) {
