@@ -87,6 +87,13 @@ body {
   background: var(--wla-bg);
 }
 
+.app-topbar {
+  background: #09090b;
+  border-bottom: 1px solid #27272a;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .avatar {
   border-radius: 9999px;
   object-fit: cover;
@@ -475,6 +482,19 @@ body {
     background: var(--wla-elevated);
     padding: 1.5rem;
     box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+  }
+
+  .modal-box.class-detail-modal {
+    max-height: 90vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .class-detail-panel {
+    max-height: min(56vh, 36rem);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .modal-action {

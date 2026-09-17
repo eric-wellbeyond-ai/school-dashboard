@@ -67,28 +67,44 @@ function formatPostDate(value) {
 
 function asPost(item, index, prefix) {
   if (!item || typeof item !== 'object') return null;
+  const desc = /^(yes|no)$/i.test(String(item.Description || '').trim()) ? '' : item.Description;
   const title = decode(
-    item.title || item.Headline || item.Name || item.Title || item.Subject || item.ShortDescription || ''
+    item.title || item.Headline || item.Name || item.Title || item.Subject || item.ShortDescription
+    || (desc && String(desc).replace(/<[^>]+>/g, '').trim().length < 90 ? desc : '')
+    || item.UrlDisplay || ''
   );
   const body = decode(
-    item.body || item.description || item.LongDescription || item.Description || item.Preview || item.Message || ''
+    item.body || item.LongText || item.LongDescription || item.BriefDescription
+    || item.description || item.Preview || item.Message || (desc && desc !== title ? desc : '') || item.Url || ''
   );
   if (!title && !body) return null;
   return {
-    id: String(item.id || item.ContentItemId || item.DiscussionId || `${prefix}_${index}`),
+    id: String(item.id || item.AlbumID || item.LinkID || item.ItemID || item.ContentItemId || item.DiscussionId || `${prefix}_${index}`),
     title: title || 'Class post',
     body: body && body !== title ? body : (title ? '' : body),
     author: decode(item.author || item.CreateName || item.Author || ''),
-    date: formatPostDate(item.date || item.publishDate || item.PublishDate || item.CreateDate || '')
+    date: formatPostDate(item.date || item.publishDate || item.PublishDate || item.CreateDate || item.InsertDate || ''),
+    url: item.url || item.Url || ''
   };
 }
 
 function postsFromDetail(detail) {
-  const buckets = [detail?.bulletin, detail?.posts, detail?.discussions];
+  const buckets = [];
+  const pushBucket = (value) => {
+    if (Array.isArray(value)) buckets.push(value);
+    else if (value && typeof value === 'object') {
+      for (const key of ['bulletin', 'posts', 'discussions', 'Items', 'News', 'items', 'value', 'MessageList', 'Conversation']) {
+        if (Array.isArray(value[key])) buckets.push(value[key]);
+      }
+    }
+  };
+  pushBucket(detail?.bulletin);
+  pushBucket(detail?.posts);
+  pushBucket(detail?.discussions);
+  pushBucket(detail);
   const posts = [];
   const seen = new Set();
   buckets.forEach((bucket, bucketIndex) => {
-    if (!Array.isArray(bucket)) return;
     bucket.forEach((item, index) => {
       const post = asPost(item, index, `p${bucketIndex}`);
       if (!post) return;
@@ -372,6 +388,16 @@ export default function ClassDetailModal({ course, assignments = [], onClose }) 
                           <p className="mt-2 text-[15px] text-zinc-300 leading-relaxed whitespace-pre-wrap">
                             {post.body}
                           </p>
+                        ) : null}
+                        {post.url && post.url !== post.body ? (
+                          <a
+                            href={post.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-2 inline-flex text-[13px] text-sky-400 hover:text-sky-300 break-all"
+                          >
+                            {post.url}
+                          </a>
                         ) : null}
                       </li>
                     ))}

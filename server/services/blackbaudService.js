@@ -893,34 +893,46 @@ async function collectLists(urls) {
   return { items, forbidden, expired, ok: items.length > 0 };
 }
 
+function isFlagDescription(value) {
+  return FLAG_DESCRIPTION.test(String(value || '').trim());
+}
+
 function normalizeBulletinItem(item, index) {
+  if (!item || typeof item !== 'object') return { id: `bb_${index}`, title: '', body: '', date: null, author: null, url: null };
+  const desc = isFlagDescription(item.Description) ? '' : item.Description;
+  const shortDesc = pickText(item.ShortDescription);
   const title = pickText(
+    item.title,
     item.Headline,
-    item.Name,
     item.Title,
     item.Subject,
-    item.ShortDescription,
-    item.BriefDescription,
-    item.ContentName
+    shortDesc,
+    desc && String(desc).replace(/<[^>]+>/g, '').trim().length < 90 ? desc : '',
+    item.Name && !CONTENT_TYPE_TITLES.test(item.Name) ? item.Name : '',
+    item.UrlDisplay
   );
   const body = pickText(
-    item.LongDescription,
-    item.Description,
+    item.body,
     item.LongText,
+    item.LongDescription,
+    item.BriefDescription,
     item.Body,
     item.Message,
     item.HtmlContent,
     item.ContentBody,
     item.RichText,
-    item.Comment,
+    desc && pickText(desc) !== title ? desc : '',
     item.AlbumDescription,
-    item.ShortDescription
+    item.Url
   );
   return {
-    id: item.ContentItemId || item.ContentId || item.Id || `bb_${index}`,
+    id: item.AlbumID || item.LinkID || item.ItemID || item.EditableTextId || item.ContentItemId
+      || item.ContentId || item.Id || `bb_${index}`,
     title: title || (body ? 'Class post' : ''),
     body: body && body !== title ? body : (title ? '' : body),
-    date: formatDisplayDate(item.PublishDate || item.CreateDate || item.Date || item.DatePosted),
+    date: formatDisplayDate(
+      item.PublishDate || item.PublishDateDisplay || item.CreateDate || item.Date || item.DatePosted || item.InsertDate
+    ),
     author: pickText(
       item.CreateName,
       item.Author,
@@ -932,6 +944,75 @@ function normalizeBulletinItem(item, index) {
     ) || null,
     url: item.Url || null
   };
+}
+
+async function fetchSectionBulletin(sectionId, leadSectionId) {
+  const ids = [...new Set([leadSectionId, sectionId].filter(Boolean).map(String))];
+  const kinds = ['news', 'text', 'announcement', 'link'];
+  const labels = [2, 1];
+  let forbidden = false;
+  let expired = false;
+  const items = [];
+  const seen = new Set();
+  const used = [];
+
+  const jobs = [];
+  for (const id of ids) {
+    for (const label of labels) {
+      for (const kind of kinds) {
+        jobs.push(`/api/${kind}/forsection/${encodeURIComponent(id)}/?format=json&contextLabelId=${label}`);
+      }
+    }
+  }
+
+  const hits = await Promise.all(jobs.map(async (url) => ({ url, hit: await blackbaudRequestSoft(url) })));
+  for (const { url, hit } of hits) {
+    if (hit.forbidden) forbidden = true;
+    if (hit.expired) expired = true;
+    const list = asList(hit.data);
+    const htmlPosts = hit.html ? postsFromBulletinHtml(hit.html) : [];
+    const combined = list.length ? list : htmlPosts;
+    if (!combined.length) continue;
+    let added = 0;
+    combined.forEach((item, index) => {
+      const mapped = normalizeBulletinItem(item, items.length + index);
+      if (!(mapped.title || mapped.body)) return;
+      const key = String(mapped.id || mapped.title);
+      if (seen.has(key)) return;
+      seen.add(key);
+      items.push(mapped);
+      added += 1;
+    });
+    if (added) used.push(url);
+  }
+
+  return { items, forbidden, expired, endpoints: used };
+}
+
+function postsFromBulletinHtml(html) {
+  const posts = [];
+  const tileRe = /<(?:div|article|section)[^>]*(?:bb-tile|bulletin-board|news-item|announcement)[^>]*>([\s\S]*?)<\/(?:div|article|section)>/gi;
+  let match;
+  let index = 0;
+  while ((match = tileRe.exec(html)) && index < 40) {
+    const chunk = match[1];
+    const title = pickText(
+      (chunk.match(/<(?:h[1-4]|header)[^>]*>([\s\S]*?)<\/(?:h[1-4]|header)>/i) || [])[1]
+    );
+    const body = pickText(chunk);
+    if (title || (body && body.length > 12)) {
+      posts.push({
+        id: `html_${index}`,
+        title: title || 'Class post',
+        body: body && body !== title ? body : '',
+        date: null,
+        author: null,
+        url: null
+      });
+    }
+    index += 1;
+  }
+  return posts;
 }
 
 function normalizeTopic(item, index) {
@@ -1081,14 +1162,7 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
   const leadEnc = encodeURIComponent(lead);
 
   const [bulletinHit, topicsHit, discussionHit, assignmentHit, teacherHit] = await Promise.all([
-    collectLists([
-      `/api/datadirect/BulletinBoardContentGet?format=json&sectionId=${sid}&associationId=${assoc}&pendingInd=false`,
-      `/api/datadirect/BulletinBoardContentGet?format=json&sectionId=${leadEnc}&associationId=${assoc}&pendingInd=false`,
-      `/api/datadirect/BulletinBoardContentGet?format=json&sectionId=${sid}&associationId=1&pendingInd=false`,
-      `/api/datadirect/BulletinBoardContentGet?format=json&sectionId=${sid}&associationId=9&pendingInd=false`,
-      `/api/class/bulletinboard/${sid}`,
-      `/api/class/bulletinboard/${leadEnc}`
-    ]),
+    fetchSectionBulletin(sectionId, lead),
     collectLists([
       `/api/datadirect/sectiontopicsget/${leadEnc}?format=json&active=true&future=false&expired=false&sharedTopics=true`,
       `/api/datadirect/sectiontopicsget/${sid}?format=json&active=true&future=false&expired=false&sharedTopics=true`,
@@ -1109,7 +1183,10 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
       : Promise.resolve({ ok: false, data: null })
   ]);
 
-  const bulletin = bulletinHit.items.map(normalizeBulletinItem).filter((item) => item.title || item.body);
+  const bulletin = [...(bulletinHit.items || [])];
+  if (bulletin.length) {
+    console.info(`[Blackbaud] Class ${sectionId} bulletin: ${bulletin.length} post(s) from ${bulletinHit.endpoints?.[0] || 'forsection'}`);
+  }
   const discussions = discussionHit.items.map(normalizeDiscussion);
   if (info?.Description) {
     const intro = pickText(info.Description, info.CourseTopic);
@@ -1172,6 +1249,7 @@ export async function getClassPage({ sectionId, leadSectionId, associationId, te
       photoUrl: teacherPhoto
     },
     bulletin,
+    bulletinSource: bulletinHit.endpoints?.[0] || null,
     topics,
     discussions,
     forbidden: {
