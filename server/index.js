@@ -6,7 +6,7 @@ import fs from 'fs';
 import { spawn, execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { google } from 'googleapis';
-import { parseEmailPayloads } from './services/parserService.js';
+import { fetchSportsYouCalendar } from './services/sportsyouCalendar.js';
 import { getDashboardData, saveDashboardData } from './services/storageService.js';
 import {
   verifyAndDiscoverProfiles,
@@ -624,10 +624,21 @@ app.get('/api/blackbaud/sync', async (req, res) => {
 // Dashboard State Persistence Endpoints
 // ----------------------------------------------------
 
-/**
- * Route: GET /api/dashboard/state
- * Returns stored tasks, events, and last synced timestamp
- */
+app.get('/api/calendar/sportsyou', async (req, res) => {
+  try {
+    const events = await fetchSportsYouCalendar();
+    const identity = req.wla;
+    const allowed = new Set(identity?.allowedStudentKeys || []);
+    const visible = (!identity || identity.role === 'parent')
+      ? events
+      : events.filter((event) => event.student === 'All' || allowed.has(event.student));
+    res.json({ events: visible, source: 'sportsYou' });
+  } catch (err) {
+    console.error('sportsYou calendar failed:', err.message);
+    res.status(502).json({ error: 'Could not load sportsYou calendar', events: [] });
+  }
+});
+
 app.get('/api/dashboard/state', async (req, res) => {
   try {
     const data = await getDashboardData();

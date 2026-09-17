@@ -98,6 +98,7 @@ function cleanDeep(obj) {
 }
 
 const GRADE_DISPLAY_KEY = 'school_dashboard_grade_display';
+const CALENDAR_ACK_KEY = 'school_dashboard_calendar_acked';
 
 function courseGradeValue(course, mode) {
   const letter = String(course?.letterGrade || '').trim();
@@ -295,6 +296,8 @@ export default function App() {
   });
 
   const [eventFilter, setEventFilter] = useState('active'); // 'active' | 'acknowledged'
+  const [eventSource, setEventSource] = useState('calendar'); // 'calendar' | 'inbox' | 'all'
+  const [calendarEvents, setCalendarEvents] = useState([]);
 
   // Persist state to both localStorage and backend Express API only on deliberate user actions
   const persistDashboardState = (newTasks, newEvents, newDeletedKeys, newAssignments) => {
@@ -317,6 +320,43 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tasks: t, events: ev, deletedEventKeys: dk, assignments: a })
     }).catch(err => console.warn('Failed to save dashboard state:', err));
+  };
+
+  const applyCalendarAcks = (list) => {
+    let acks = {};
+    try {
+      acks = JSON.parse(localStorage.getItem(CALENDAR_ACK_KEY) || '{}');
+    } catch {}
+    return (list || []).map((ev) => (
+      acks[ev.id]
+        ? { ...ev, acknowledged: true, acknowledgedAt: acks[ev.id] }
+        : ev
+    ));
+  };
+
+  const persistCalendarAck = (eventId, acknowledgedAt) => {
+    let acks = {};
+    try {
+      acks = JSON.parse(localStorage.getItem(CALENDAR_ACK_KEY) || '{}');
+    } catch {}
+    if (acknowledgedAt) acks[eventId] = acknowledgedAt;
+    else delete acks[eventId];
+    try {
+      localStorage.setItem(CALENDAR_ACK_KEY, JSON.stringify(acks));
+    } catch {}
+  };
+
+  const loadSportsYouCalendar = async () => {
+    try {
+      const res = await fetch('/api/calendar/sportsyou');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data.events)) {
+        setCalendarEvents(applyCalendarAcks(data.events));
+      }
+    } catch (err) {
+      console.warn('sportsYou calendar unavailable:', err.message);
+    }
   };
 
   // Sync Inbox function calling backend Express API
@@ -371,6 +411,7 @@ export default function App() {
           message: data.message
         });
       }
+      await loadSportsYouCalendar();
     } catch (err) {
       console.error('Failed to sync with server API:', err);
       setAuthBanner({
@@ -455,6 +496,7 @@ export default function App() {
   useEffect(() => {
     window.name = 'school-dashboard';
     fetchAuthStatus();
+    loadSportsYouCalendar();
     (async () => {
       const status = await fetchBlackbaudStatus();
       if (status?.connected) {
@@ -1167,21 +1209,29 @@ export default function App() {
   // Acknowledge an event (marks acknowledged and removes from active view)
   const acknowledgeEvent = (eventId, e) => {
     if (e) e.stopPropagation();
-    setEvents(prev => {
-      const updated = prev.map(ev => {
-        if (ev.id === eventId) {
-          return {
-            ...ev,
-            acknowledged: true,
-            acknowledgedAt: new Date().toISOString()
-          };
-        }
-        return ev;
+    const acknowledgedAt = new Date().toISOString();
+    if (String(eventId).startsWith('sy_')) {
+      persistCalendarAck(eventId, acknowledgedAt);
+      setCalendarEvents((prev) => prev.map((ev) => (
+        ev.id === eventId ? { ...ev, acknowledged: true, acknowledgedAt } : ev
+      )));
+    } else {
+      setEvents(prev => {
+        const updated = prev.map(ev => {
+          if (ev.id === eventId) {
+            return {
+              ...ev,
+              acknowledged: true,
+              acknowledgedAt
+            };
+          }
+          return ev;
+        });
+        persistDashboardState(undefined, updated);
+        return updated;
       });
-      persistDashboardState(undefined, updated);
-      return updated;
-    });
-    setSelectedEventForModal(prev => (prev && prev.id === eventId ? { ...prev, acknowledged: true, acknowledgedAt: new Date().toISOString() } : prev));
+    }
+    setSelectedEventForModal(prev => (prev && prev.id === eventId ? { ...prev, acknowledged: true, acknowledgedAt } : prev));
     setAuthBanner({
       type: 'success',
       message: 'Event acknowledged and removed from active schedule.'
@@ -1194,20 +1244,27 @@ export default function App() {
   // Restore an acknowledged event back to active
   const restoreEvent = (eventId, e) => {
     if (e) e.stopPropagation();
-    setEvents(prev => {
-      const updated = prev.map(ev => {
-        if (ev.id === eventId) {
-          return {
-            ...ev,
-            acknowledged: false,
-            acknowledgedAt: null
-          };
-        }
-        return ev;
+    if (String(eventId).startsWith('sy_')) {
+      persistCalendarAck(eventId, null);
+      setCalendarEvents((prev) => prev.map((ev) => (
+        ev.id === eventId ? { ...ev, acknowledged: false, acknowledgedAt: null } : ev
+      )));
+    } else {
+      setEvents(prev => {
+        const updated = prev.map(ev => {
+          if (ev.id === eventId) {
+            return {
+              ...ev,
+              acknowledged: false,
+              acknowledgedAt: null
+            };
+          }
+          return ev;
+        });
+        persistDashboardState(undefined, updated);
+        return updated;
       });
-      persistDashboardState(undefined, updated);
-      return updated;
-    });
+    }
     setSelectedEventForModal(prev => (prev && prev.id === eventId ? { ...prev, acknowledged: false, acknowledgedAt: null } : prev));
     setAuthBanner({
       type: 'info',
@@ -1223,11 +1280,13 @@ export default function App() {
     if (e) e.stopPropagation();
     const eventKey = (eventId || `${(eventTitle || '').toLowerCase().replace(/[^a-z0-9]/g, '')}_${eventDate || ''}`).toLowerCase();
 
-    const nextEvents = events.filter(ev => ev.id !== eventId);
+    const nextInbox = events.filter(ev => ev.id !== eventId);
+    const nextCalendar = calendarEvents.filter(ev => ev.id !== eventId);
     const nextKeys = Array.from(new Set([...deletedEventKeys, eventKey]));
-    setEvents(nextEvents);
+    setEvents(nextInbox);
+    setCalendarEvents(nextCalendar);
     setDeletedEventKeys(nextKeys);
-    persistDashboardState(undefined, nextEvents, nextKeys);
+    persistDashboardState(undefined, nextInbox, nextKeys);
     setSelectedEventForModal(prev => (prev && prev.id === eventId ? null : prev));
 
     setAuthBanner({
@@ -1292,8 +1351,21 @@ export default function App() {
       return dir * (assignmentSortValue(a) - assignmentSortValue(b));
     });
 
+  const scheduleEvents = useMemo(() => {
+    const inbox = (events || []).map((ev) => ({ ...ev, feed: ev.feed || 'inbox' }));
+    const calendar = calendarEvents || [];
+    if (eventSource === 'calendar') return calendar;
+    if (eventSource === 'inbox') return inbox;
+    const seen = new Set(calendar.map((ev) => `${(ev.title || '').toLowerCase().replace(/\s+/g, ' ').trim()}|${ev.date}`));
+    const extraInbox = inbox.filter((ev) => {
+      const key = `${(ev.title || '').toLowerCase().replace(/\s+/g, ' ').trim()}|${ev.date}`;
+      return !seen.has(key);
+    });
+    return [...calendar, ...extraInbox].sort((a, b) => (a.sortAt || 0) - (b.sortAt || 0) || String(a.date).localeCompare(String(b.date)));
+  }, [events, calendarEvents, eventSource]);
+
   // Filter events (excluding deleted, filtered by student and active/acknowledged tab)
-  const filteredEvents = events.filter(event => {
+  const filteredEvents = scheduleEvents.filter(event => {
     const key = (event.id || `${(event.title || '').toLowerCase().replace(/[^a-z0-9]/g, '')}_${event.date || ''}`).toLowerCase();
     if (deletedEventKeys.includes(key)) return false;
 
@@ -1305,12 +1377,12 @@ export default function App() {
     return true;
   });
 
-  const activeEventsCount = events.filter(ev => {
+  const activeEventsCount = scheduleEvents.filter(ev => {
     const key = (ev.id || `${(ev.title || '').toLowerCase().replace(/[^a-z0-9]/g, '')}_${ev.date || ''}`).toLowerCase();
     return !deletedEventKeys.includes(key) && !ev.acknowledged && (selectedStudent === 'All' || ev.student === selectedStudent || ev.student === 'All');
   }).length;
 
-  const acknowledgedEventsCount = events.filter(ev => {
+  const acknowledgedEventsCount = scheduleEvents.filter(ev => {
     const key = (ev.id || `${(ev.title || '').toLowerCase().replace(/[^a-z0-9]/g, '')}_${ev.date || ''}`).toLowerCase();
     return !deletedEventKeys.includes(key) && Boolean(ev.acknowledged) && (selectedStudent === 'All' || ev.student === selectedStudent || ev.student === 'All');
   }).length;
@@ -1966,7 +2038,31 @@ export default function App() {
                       Events
                       <span className="badge badge-ghost font-normal">{activeEventsCount} active</span>
                     </h2>
-                    <p className="text-sm text-base-content/70">sportsYou and Westlake calendar</p>
+                    <p className="text-sm text-base-content/70">sportsYou calendar and inbox</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                <div className="join">
+                  <button
+                    type="button"
+                    onClick={() => setEventSource('calendar')}
+                    className={`btn btn-sm join-item ${eventSource === 'calendar' ? 'btn-active' : ''}`}
+                  >
+                    Calendar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEventSource('inbox')}
+                    className={`btn btn-sm join-item ${eventSource === 'inbox' ? 'btn-active' : ''}`}
+                  >
+                    Inbox
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEventSource('all')}
+                    className={`btn btn-sm join-item ${eventSource === 'all' ? 'btn-active' : ''}`}
+                  >
+                    All
+                  </button>
                 </div>
                 <div className="join">
                   <button
@@ -1984,6 +2080,7 @@ export default function App() {
                     Acknowledged ({acknowledgedEventsCount})
                   </button>
                 </div>
+                </div>
               </div>
 
               {/* Event Cards List */}
@@ -1997,6 +2094,8 @@ export default function App() {
                     <p className="text-xs text-base-content/60 mt-1 max-w-xs mx-auto">
                       {eventFilter === 'acknowledged'
                         ? 'Events that you acknowledge from the active list will appear here.'
+                        : eventSource === 'calendar'
+                        ? 'Upcoming volleyball, boys basketball, cross country, and athletics from sportsYou.'
                         : !authStatus.authenticated
                         ? 'Connect your Gmail account to scan for games, practices, and school chapel schedules.'
                         : 'All scheduled events have been acknowledged or no upcoming events were found.'}
@@ -2119,8 +2218,14 @@ export default function App() {
                                 : 'bg-base-200 text-base-content border-base-300'
                             }`}
                           >
-                            {event.student}
+                            {event.student === 'All' ? 'Ben & Jade' : event.student}
                           </span>
+
+                          {event.sport && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-md font-medium bg-warning/10 text-warning border border-warning/30">
+                              {event.sport}
+                            </span>
+                          )}
 
                           {/* Source Pill */}
                           <span

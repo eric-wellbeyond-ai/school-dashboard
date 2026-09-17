@@ -226,7 +226,7 @@ export function filterPayloadForIdentity(data, identity) {
     ...data,
     grades,
     tasks: (data.tasks || []).filter((t) => allowed.has(t.student)),
-    events: (data.events || []).filter((e) => allowed.has(e.student)),
+    events: (data.events || []).filter((e) => allowed.has(e.student) || e.student === 'All'),
     assignments: (data.assignments || []).filter((a) => allowed.has(a.student)),
     missingAssignments: (data.missingAssignments || []).filter((m) => allowed.has(m.student))
   };
