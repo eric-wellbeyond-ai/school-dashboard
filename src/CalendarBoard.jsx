@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+import MapsLocationLink from './lib/MapsLocationLink.jsx';
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -101,6 +102,43 @@ function shiftCursor(mode, cursor, dir) {
   else if (mode === 'week') next.setDate(next.getDate() + (7 * dir));
   else next.setDate(next.getDate() + dir);
   return startOfDay(next);
+}
+
+function DayEventRow({ event, onSelect }) {
+  const loc = decode(event.location);
+  return (
+    <li>
+      <div className="relative w-full flex items-start gap-4 text-left px-4 py-3 hover:bg-zinc-900">
+        <button
+          type="button"
+          onClick={() => onSelect(event)}
+          className="absolute inset-0"
+          aria-label={decode(event.title)}
+        />
+        <div className="w-20 shrink-0 text-[13px] tabular-nums text-zinc-400 pt-0.5 pointer-events-none">
+          {event.time || 'All day'}
+        </div>
+        <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 pointer-events-none ${eventColor(event).split(' ')[0]}`} aria-hidden="true" />
+        <div className="min-w-0 relative z-[1] pointer-events-none">
+          <p className="text-sm font-semibold text-zinc-100">{decode(event.title)}</p>
+          <p className="text-[12px] text-zinc-400 mt-0.5">
+            {event.student === 'All' ? 'Ben & Jade' : event.student}
+            {event.sport ? ` · ${event.sport}` : ''}
+            {loc ? (
+              <>
+                {' · '}
+                <MapsLocationLink
+                  address={loc}
+                  linkClassName="text-sky-400 hover:text-sky-300 hover:underline"
+                  plainClassName="text-zinc-400"
+                />
+              </>
+            ) : null}
+          </p>
+        </div>
+      </div>
+    </li>
+  );
 }
 
 function EventChip({ event, onSelect, compact = false }) {
@@ -271,26 +309,7 @@ export default function CalendarBoard({ events, onSelect }) {
           ) : (
             <ul className="divide-y divide-zinc-800">
               {dayEvents.map((event) => (
-                <li key={event.id}>
-                  <button
-                    type="button"
-                    onClick={() => selectEvent(event)}
-                    className="w-full flex items-start gap-4 text-left px-4 py-3 hover:bg-zinc-900"
-                  >
-                    <div className="w-20 shrink-0 text-[13px] tabular-nums text-zinc-400 pt-0.5">
-                      {event.time || 'All day'}
-                    </div>
-                    <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${eventColor(event).split(' ')[0]}`} aria-hidden="true" />
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-zinc-100">{decode(event.title)}</p>
-                      <p className="text-[12px] text-zinc-400 mt-0.5">
-                        {event.student === 'All' ? 'Ben & Jade' : event.student}
-                        {event.sport ? ` · ${event.sport}` : ''}
-                        {event.location ? ` · ${decode(event.location)}` : ''}
-                      </p>
-                    </div>
-                  </button>
-                </li>
+                <DayEventRow key={event.id} event={event} onSelect={selectEvent} />
               ))}
             </ul>
           )}

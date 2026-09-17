@@ -56,6 +56,7 @@ import {
   gradeToneClass
 } from './lib/gradeColors.js';
 import { formatAssignmentScore } from './lib/assignmentScore.js';
+import MapsLocationLink from './lib/MapsLocationLink.jsx';
 
 /**
  * Decode all HTML entities (named, decimal, hex) and strip raw HTML tags
@@ -2872,11 +2873,17 @@ export default function App() {
                     <Clock className="w-3.5 h-3.5 text-base-content/70" />
                     {selectedEventForModal.time}
                   </span>
-                  <span className="text-base-content/50">&bull;</span>
-                  <span className="flex items-center gap-1 text-base-content">
-                    <MapPin className="w-3.5 h-3.5 text-error" />
-                    {decodeHtmlEntities(selectedEventForModal.location)}
-                  </span>
+                  {decodeHtmlEntities(selectedEventForModal.location) ? (
+                    <>
+                      <span className="text-base-content/50">&bull;</span>
+                      <MapsLocationLink
+                        address={decodeHtmlEntities(selectedEventForModal.location)}
+                        icon={<MapPin className="w-3.5 h-3.5 text-error shrink-0" aria-hidden="true" />}
+                        linkClassName="flex items-center gap-1 text-sky-400 hover:text-sky-300 hover:underline"
+                        plainClassName="flex items-center gap-1 text-base-content"
+                      />
+                    </>
+                  ) : null}
                 </div>
 
                 {/* Actions: Acknowledge & Delete */}
