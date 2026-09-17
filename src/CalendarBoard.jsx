@@ -111,7 +111,7 @@ function EventChip({ event, onSelect, compact = false }) {
         e.stopPropagation();
         onSelect(event);
       }}
-      className={`w-full text-left rounded px-1.5 ${compact ? 'py-0.5 text-[10px]' : 'py-1 text-[12px]'} font-medium truncate ${eventColor(event)}`}
+      className={`w-full text-left rounded-md px-1.5 ${compact ? 'py-0.5 text-[11px] min-h-6' : 'py-1 text-[12px] min-h-7'} font-medium truncate ${eventColor(event)}`}
       title={`${event.time || ''} ${decode(event.title)}`.trim()}
     >
       {!compact && event.time && event.time !== 'All day' ? (
@@ -144,19 +144,19 @@ export default function CalendarBoard({ events, onSelect }) {
   const selectEvent = typeof onSelect === 'function' ? onSelect : () => {};
 
   return (
-    <div className="mt-4 min-h-[28rem]">
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+    <div className="wla-calendar mt-4 min-h-[28rem]">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <div className="flex items-center gap-1">
           <button type="button" className="btn btn-ghost btn-sm btn-square" aria-label="Previous" onClick={() => setCursor((d) => shiftCursor(mode, d, -1))}>
-            <ChevronLeft className="w-4 h-4" />
+            <ChevronLeft className="w-4 h-4" aria-hidden="true" />
           </button>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setCursor(startOfDay(new Date()))}>
             Today
           </button>
           <button type="button" className="btn btn-ghost btn-sm btn-square" aria-label="Next" onClick={() => setCursor((d) => shiftCursor(mode, d, 1))}>
-            <ChevronRight className="w-4 h-4" />
+            <ChevronRight className="w-4 h-4" aria-hidden="true" />
           </button>
-          <h3 className="ml-2 text-sm font-semibold">{rangeLabel(mode, cursor)}</h3>
+          <h3 className="ml-2 text-[15px] font-semibold tracking-tight text-zinc-50">{rangeLabel(mode, cursor)}</h3>
         </div>
         <div className="join" role="radiogroup" aria-label="Calendar view">
           {['month', 'week', 'day'].map((id) => (
@@ -175,10 +175,10 @@ export default function CalendarBoard({ events, onSelect }) {
       </div>
 
       {mode === 'month' && (
-        <div className="rounded-xl border border-zinc-800 overflow-hidden">
+        <div className="wla-calendar-board">
           <div className="grid grid-cols-7 bg-zinc-900 border-b border-zinc-800">
             {WEEKDAYS.map((day) => (
-              <div key={day} className="px-2 py-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 text-center">
+              <div key={day} className="px-2 py-2.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-zinc-400 text-center">
                 {day}
               </div>
             ))}
@@ -192,11 +192,12 @@ export default function CalendarBoard({ events, onSelect }) {
               return (
                 <div
                   key={ymd(day)}
-                  className={`min-h-[7.5rem] p-1.5 text-left border-t border-r border-zinc-800 ${inMonth ? 'bg-zinc-950' : 'bg-zinc-950/40'} ${isToday ? 'ring-1 ring-inset ring-blue-500' : ''}`}
+                  className={`min-h-[7.5rem] p-1.5 text-left border-t border-r border-zinc-800 ${inMonth ? 'bg-zinc-950' : 'bg-zinc-950/50'} ${isToday ? 'ring-1 ring-inset ring-blue-500' : ''}`}
                 >
                   <button
                     type="button"
-                    className={`inline-flex w-6 h-6 items-center justify-center rounded-full text-[12px] font-semibold ${isToday ? 'bg-blue-600 text-white' : inMonth ? 'text-zinc-200' : 'text-zinc-600'}`}
+                    className={`inline-flex w-7 h-7 items-center justify-center rounded-full text-[13px] font-semibold ${isToday ? 'bg-blue-600 text-white' : inMonth ? 'text-zinc-200' : 'text-zinc-500'}`}
+                    aria-current={isToday ? 'date' : undefined}
                     aria-label={`Open ${day.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`}
                     onClick={() => {
                       setCursor(startOfDay(day));
@@ -212,7 +213,7 @@ export default function CalendarBoard({ events, onSelect }) {
                     {extra > 0 && (
                       <button
                         type="button"
-                        className="block w-full text-left text-[10px] text-zinc-500 px-1"
+                        className="block w-full text-left text-[11px] text-zinc-400 px-1 min-h-6"
                         onClick={() => {
                           setCursor(startOfDay(day));
                           setMode('day');
@@ -230,7 +231,7 @@ export default function CalendarBoard({ events, onSelect }) {
       )}
 
       {mode === 'week' && (
-        <div className="rounded-xl border border-zinc-800 overflow-hidden">
+        <div className="wla-calendar-board">
           <div className="grid grid-cols-7">
             {weekDays.map((day) => {
               const isToday = sameDay(day, today);
@@ -239,18 +240,19 @@ export default function CalendarBoard({ events, onSelect }) {
                 <div key={ymd(day)} className="border-r border-zinc-800 last:border-r-0 min-h-[22rem]">
                   <button
                     type="button"
-                    className={`w-full px-2 py-2 border-b border-zinc-800 text-center ${isToday ? 'bg-blue-600/15' : 'bg-zinc-900'}`}
+                    className={`w-full px-2 py-2.5 border-b border-zinc-800 text-center ${isToday ? 'bg-blue-600/15' : 'bg-zinc-900'}`}
+                    aria-current={isToday ? 'date' : undefined}
                     onClick={() => {
                       setCursor(startOfDay(day));
                       setMode('day');
                     }}
                   >
-                    <div className="text-[11px] uppercase tracking-wide text-zinc-500">{WEEKDAYS[day.getDay()]}</div>
+                    <div className="text-[11px] uppercase tracking-[0.06em] text-zinc-400">{WEEKDAYS[day.getDay()]}</div>
                     <div className={`text-sm font-semibold ${isToday ? 'text-blue-400' : 'text-zinc-100'}`}>{day.getDate()}</div>
                   </button>
                   <div className="p-1.5 space-y-1">
                     {list.length === 0 ? (
-                      <p className="text-[11px] text-zinc-600 px-1 py-2">No events</p>
+                      <p className="text-[11px] text-zinc-500 px-1 py-2">No events</p>
                     ) : list.map((event) => (
                       <EventChip key={event.id} event={event} onSelect={selectEvent} />
                     ))}
@@ -263,9 +265,9 @@ export default function CalendarBoard({ events, onSelect }) {
       )}
 
       {mode === 'day' && (
-        <div className="rounded-xl border border-zinc-800 overflow-hidden bg-zinc-950">
+        <div className="wla-calendar-board bg-zinc-950">
           {dayEvents.length === 0 ? (
-            <p className="text-sm text-zinc-500 text-center py-16">No events this day</p>
+            <p className="text-sm text-zinc-400 text-center py-16">No events this day</p>
           ) : (
             <ul className="divide-y divide-zinc-800">
               {dayEvents.map((event) => (
@@ -278,10 +280,10 @@ export default function CalendarBoard({ events, onSelect }) {
                     <div className="w-20 shrink-0 text-[13px] tabular-nums text-zinc-400 pt-0.5">
                       {event.time || 'All day'}
                     </div>
-                    <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${eventColor(event).split(' ')[0]}`} />
+                    <span className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${eventColor(event).split(' ')[0]}`} aria-hidden="true" />
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-zinc-100">{decode(event.title)}</p>
-                      <p className="text-[12px] text-zinc-500 mt-0.5">
+                      <p className="text-[12px] text-zinc-400 mt-0.5">
                         {event.student === 'All' ? 'Ben & Jade' : event.student}
                         {event.sport ? ` · ${event.sport}` : ''}
                         {event.location ? ` · ${decode(event.location)}` : ''}
