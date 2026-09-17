@@ -1535,16 +1535,23 @@ export default function App() {
       } catch {}
       return next;
     });
-    setBlackbaudMissing((prev) => {
-      const next = on
-        ? (prev || []).filter((m) => m.id !== taskId)
-        : prev;
-      try {
-        localStorage.setItem('school_dashboard_blackbaud_missing', JSON.stringify(next));
-      } catch {}
-      return next;
+    setSelectedTaskForModal((prev) => {
+      if (!prev || prev.id !== taskId) return prev;
+      const next = { ...prev, ...patch, completed: on };
+      if (on) return { ...next, status: 'done' };
+      const status = classifyAssignment({
+        assignedAt: parsePortalDate(next.assignedDateISO || next.assignedDate),
+        dueAt: parsePortalDate(next.dueDateISO || next.dueDate),
+        doneOverride: false,
+        acknowledged: false,
+        isMissing: next.isMissing === true,
+        pointsEarned: next.pointsEarned ?? next.PointsEarned,
+        maxPoints: next.maxPoints ?? next.MaxPoints,
+        letter: next.letter || next.Letter || next.letterGrade,
+        grade: next
+      });
+      return { ...next, status };
     });
-    setSelectedTaskForModal((prev) => (prev && prev.id === taskId ? { ...prev, ...patch, status: on ? 'done' : 'missing' } : prev));
   };
 
   const handleMissingAck = async (task, acknowledged) => {
@@ -2621,20 +2628,20 @@ export default function App() {
                                 : 'Ungraded'}
                     </span>
                     )}
-                    {selectedTaskForModal.status === 'missing' && (
+                    {(selectedTaskForModal.status === 'missing' || selectedTaskForModal.status === 'overdue') && (
                       <button
                         type="button"
                         className="btn btn-sm btn-outline"
                         onClick={() => void handleMissingAck(selectedTaskForModal, true)}
                       >
                         <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                        Acknowledge
+                        Mark as done
                       </button>
                     )}
-                    {selectedTaskForModal.acknowledged && (
+                    {(selectedTaskForModal.acknowledged || selectedTaskForModal.doneOverride) && (
                       <>
                         <p className="text-[12px] text-base-content/70">
-                          Acked by {selectedTaskForModal.acknowledgedBy || 'family'}
+                          Marked done by {selectedTaskForModal.acknowledgedBy || 'family'}
                           {selectedTaskForModal.acknowledgedAt
                             ? ` · ${formatAckStamp(selectedTaskForModal.acknowledgedAt)}`
                             : ''}
@@ -2644,7 +2651,7 @@ export default function App() {
                           className="btn btn-ghost btn-xs"
                           onClick={() => void handleMissingAck(selectedTaskForModal, false)}
                         >
-                          Undo acknowledge
+                          Undo
                         </button>
                       </>
                     )}

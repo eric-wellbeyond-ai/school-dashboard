@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
-  Circle,
   ExternalLink,
   Folder,
   GraduationCap,
@@ -10,6 +9,7 @@ import {
   Link as LinkIcon,
   MessageCircle,
   Newspaper,
+  Plug,
   Plus,
   RefreshCw,
   Sparkles,
@@ -106,21 +106,9 @@ function snippetLine(text, max = 140) {
   return `${clean.slice(0, max).trim()}…`;
 }
 
-function newsMatchesLevel(item, filter) {
-  if (filter === 'All') return true;
-  const level = item.level || 'All';
-  return level === filter || level === 'All';
-}
-
 function noteMatchesStudent(item, filter) {
   if (filter === 'All') return true;
   return item.student === filter || item.student === 'All';
-}
-
-function defaultNewsFilter(selectedStudent) {
-  if (selectedStudent === 'Ben') return 'HS';
-  if (selectedStudent === 'Jade') return 'MS';
-  return 'All';
 }
 
 function FeedListPopover({
@@ -174,7 +162,7 @@ function FeedListPopover({
                   {[
                     item.date,
                     item.author || (item.student && item.student !== 'All' ? item.student : null),
-                    item.level && item.level !== 'All' ? item.level : null
+                    item.type && item.feed === 'resources' ? item.type : null
                   ].filter(Boolean).join(' · ')}
                 </span>
                 {item.snippet ? (
@@ -232,6 +220,20 @@ function lateBadgeTone(days) {
   return 'is-mild';
 }
 
+function AssignmentDoneCheck({ checked, label, onToggle }) {
+  return (
+    <label className="ff-done-check">
+      <span className="sr-only">{label}</span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onToggle}
+        onClick={(event) => event.stopPropagation()}
+      />
+    </label>
+  );
+}
+
 export default function FamilyFolder({
   blackbaudStatus,
   isSyncingBlackbaud,
@@ -283,10 +285,13 @@ export default function FamilyFolder({
   topbarTools,
   officialNotes = [],
   featuredNews = [],
+  schoolResources = [],
   notesUnreadCount = 0,
-  newsCount = 0,
+  newsUnreadCount = 0,
+  resourcesUnreadCount = 0,
   onOpenOfficialNote,
-  onOpenFeaturedItem
+  onOpenFeaturedItem,
+  onOpenResource
 }) {
   const [openMenu, setOpenMenu] = useState(null);
   const sourcesRef = useRef(null);
@@ -304,11 +309,10 @@ export default function FamilyFolder({
   const notesOpen = openMenu === 'notes';
   const newsOpen = openMenu === 'news';
   const [notesFilter, setNotesFilter] = useState(selectedStudent === 'All' ? 'All' : selectedStudent);
-  const [newsFilter, setNewsFilter] = useState(defaultNewsFilter(selectedStudent));
+  const [schoolFeedTab, setSchoolFeedTab] = useState('news');
 
   useEffect(() => {
     setNotesFilter(selectedStudent === 'All' ? 'All' : selectedStudent);
-    setNewsFilter(defaultNewsFilter(selectedStudent));
   }, [selectedStudent]);
 
   useEffect(() => {
@@ -338,7 +342,7 @@ export default function FamilyFolder({
   ];
 
   const visibleNotes = officialNotes.filter((item) => noteMatchesStudent(item, notesFilter));
-  const visibleNews = featuredNews.filter((item) => newsMatchesLevel(item, newsFilter));
+  const schoolFeedUnread = newsUnreadCount + resourcesUnreadCount;
   const noteFilters = isParentViewer && canSeeBen && canSeeJade
     ? [
       { id: 'All', label: 'Both', count: officialNotes.length },
@@ -346,11 +350,11 @@ export default function FamilyFolder({
       { id: 'Jade', label: 'Jade', count: officialNotes.filter((item) => noteMatchesStudent(item, 'Jade')).length }
     ]
     : [];
-  const newsFilters = [
-    { id: 'All', label: 'All', count: featuredNews.length },
-    { id: 'HS', label: 'HS', count: featuredNews.filter((item) => newsMatchesLevel(item, 'HS')).length },
-    { id: 'MS', label: 'MS', count: featuredNews.filter((item) => newsMatchesLevel(item, 'MS')).length }
+  const schoolFeedTabs = [
+    { id: 'news', label: 'News', count: newsUnreadCount },
+    { id: 'resources', label: 'Resources', count: resourcesUnreadCount }
   ];
+  const visibleSchoolItems = schoolFeedTab === 'resources' ? schoolResources : featuredNews;
 
   return (
     <div className="ff-shell flex-1 flex flex-col min-h-0 w-full">
@@ -433,16 +437,16 @@ export default function FamilyFolder({
             type="button"
             id="featured-news-button"
             className="ff-feed-btn"
-            aria-label={newsCount ? `Featured content, ${newsCount} items` : 'Featured content'}
+            aria-label={schoolFeedUnread ? `School news and resources, ${schoolFeedUnread} unread` : 'School news and resources'}
             aria-expanded={newsOpen}
             aria-haspopup="dialog"
             aria-controls="ff-news-popover"
             onClick={() => setOpenMenu(newsOpen ? null : 'news')}
           >
             <Newspaper className="w-5 h-5" aria-hidden="true" />
-            {newsCount > 0 ? (
-              <span className="ff-feed-badge is-count" aria-hidden="true">
-                {newsCount > 99 ? '99+' : newsCount}
+            {schoolFeedUnread > 0 ? (
+              <span className="ff-feed-badge" aria-hidden="true">
+                {schoolFeedUnread > 99 ? '99+' : schoolFeedUnread}
               </span>
             ) : null}
           </button>
@@ -465,16 +469,19 @@ export default function FamilyFolder({
           {newsOpen && (
             <FeedListPopover
               id="ff-news-popover"
-              title="Featured content"
-              empty={blackbaudStatus.connected ? 'No featured stories for this school.' : 'Sign in to load featured content.'}
-              items={visibleNews}
-              filter={newsFilter}
-              filters={newsFilters}
-              filterLabel="School"
-              onFilter={setNewsFilter}
+              title="School"
+              empty={blackbaudStatus.connected
+                ? (schoolFeedTab === 'resources' ? 'No resources for this school.' : 'No school news yet.')
+                : 'Sign in to load school news and resources.'}
+              items={visibleSchoolItems}
+              filter={schoolFeedTab}
+              filters={schoolFeedTabs}
+              filterLabel="School content"
+              onFilter={setSchoolFeedTab}
               onSelect={(item) => {
                 setOpenMenu(null);
-                onOpenFeaturedItem(item);
+                if (schoolFeedTab === 'resources') onOpenResource(item);
+                else onOpenFeaturedItem(item);
               }}
             />
           )}
@@ -491,19 +498,22 @@ export default function FamilyFolder({
             <p className="ff-sync-line is-quiet">Not synced</p>
           )}
           <div className="ff-account">
+            <button
+              type="button"
+              className="ff-feed-btn ff-sources-toggle"
+              aria-label="Sources"
+              title="Sources"
+              aria-expanded={sourcesOpen}
+              aria-haspopup="dialog"
+              aria-controls="ff-sources-popover"
+              onClick={() => setOpenMenu(sourcesOpen ? null : 'sources')}
+            >
+              <Plug className="w-5 h-5" aria-hidden="true" />
+            </button>
             <div className="ff-account-who">
               <ProfileAvatar name={signedInName || 'Family'} photoUrl={blackbaudStatus.photoUrl} size={28} />
               <span className="ff-account-name">{signedFirst}</span>
             </div>
-            <button
-              type="button"
-              className="ff-sources-toggle"
-              aria-expanded={sourcesOpen}
-              aria-controls="ff-sources-popover"
-              onClick={() => setOpenMenu(sourcesOpen ? null : 'sources')}
-            >
-              Sources
-            </button>
           </div>
           {sourcesOpen && (
             <div id="ff-sources-popover" className="ff-sources-pop" role="dialog" aria-label="Sources and settings">
@@ -690,26 +700,32 @@ export default function FamilyFolder({
                   autoFocus
                 />
                 <div className="grid grid-cols-3 gap-2">
-                  <select
-                    value={newTaskStudent}
-                    onChange={(e) => setNewTaskStudent(e.target.value)}
-                    className="select select-bordered select-sm"
-                  >
-                    {canSeeBen && <option value="Ben">Ben (High School)</option>}
-                    {canSeeJade && <option value="Jade">Jade (Middle School)</option>}
-                  </select>
-                  <select
-                    value={newTaskCourse}
-                    onChange={(e) => setNewTaskCourse(e.target.value)}
-                    className="select select-bordered select-sm"
-                  >
-                    <option value="Mathematics">Mathematics</option>
-                    <option value="Science">Science</option>
-                    <option value="English / ELA">English / ELA</option>
-                    <option value="History / Social Studies">History</option>
-                    <option value="Bible Studies">Bible Studies</option>
-                    <option value="Athletics">Athletics</option>
-                  </select>
+                  <label className="ff-select-wrap">
+                    <span className="sr-only">Student</span>
+                    <select
+                      value={newTaskStudent}
+                      onChange={(e) => setNewTaskStudent(e.target.value)}
+                      className="select select-bordered select-sm ff-select"
+                    >
+                      {canSeeBen && <option value="Ben">Ben (High School)</option>}
+                      {canSeeJade && <option value="Jade">Jade (Middle School)</option>}
+                    </select>
+                  </label>
+                  <label className="ff-select-wrap">
+                    <span className="sr-only">Course</span>
+                    <select
+                      value={newTaskCourse}
+                      onChange={(e) => setNewTaskCourse(e.target.value)}
+                      className="select select-bordered select-sm ff-select"
+                    >
+                      <option value="Mathematics">Mathematics</option>
+                      <option value="Science">Science</option>
+                      <option value="English / ELA">English / ELA</option>
+                      <option value="History / Social Studies">History</option>
+                      <option value="Bible Studies">Bible Studies</option>
+                      <option value="Athletics">Athletics</option>
+                    </select>
+                  </label>
                   <input
                     type="text"
                     placeholder="Due (e.g. Friday)"
@@ -762,6 +778,14 @@ export default function FamilyFolder({
                     const late = daysLate(task);
                     const showLate = (task.status === 'overdue' || task.status === 'missing') && late > 0;
                     const status = statusLabel(task.status);
+                    const familyFiled = task.acknowledged === true || task.doneOverride === true;
+                    const showCheck = task.status === 'overdue'
+                      || task.status === 'missing'
+                      || (task.status === 'done' && (familyFiled || (isCustom && task.completed)));
+                    const isChecked = isCustom ? Boolean(task.completed) : familyFiled;
+                    const checkLabel = isChecked
+                      ? `Restore ${decodeHtml(task.title)}`
+                      : `Mark ${decodeHtml(task.title)} as done`;
                     const showScore = task.status === 'missing' || task.isMissing || isZeroCreditMissing(task)
                       || assignmentPercent(task.pointsEarned, task.maxPoints) != null
                       || String(task.letter || task.letterGrade || '').trim();
@@ -769,8 +793,8 @@ export default function FamilyFolder({
                       <li key={task.id} className="ff-assign-row">
                         {showLate ? (
                           <span className={`ff-late-badge ${lateBadgeTone(late)}`} aria-label={`${late} days late`}>
-                            <span className="tabular-nums">{late}</span>
-                            <span>days late</span>
+                            <span className="ff-late-num tabular-nums">{late}</span>
+                            <span className="ff-late-unit">Days late</span>
                           </span>
                         ) : (
                           <span className="ff-late-badge is-empty" aria-hidden="true" />
@@ -801,6 +825,7 @@ export default function FamilyFolder({
                                 {task.student}
                               </span>
                               {task.course ? ` · ${decodeHtml(task.course)}` : ''}
+                              {task.type ? ` · ${decodeHtml(task.type)}` : ''}
                             </span>
                             {task.comment ? (
                               <span className="ff-assign-note">Teacher note: {decodeHtml(task.comment)}</span>
@@ -819,10 +844,9 @@ export default function FamilyFolder({
                               </span>
                             ) : null}
                           </span>
-                          <span className="ff-assign-type">{task.type ? decodeHtml(task.type) : ''}</span>
                           <span className="ff-assign-due">
                             <span className={`ff-status-label ${status.className}`}>{status.text}</span>
-                            <span className="tabular-nums">{task.dueDate || 'No due date'}</span>
+                            <span className="ff-assign-due-date tabular-nums">{task.dueDate || 'No due date'}</span>
                             {showScore ? (
                               <AssignmentScoreChip
                                 earned={task.pointsEarned}
@@ -833,46 +857,25 @@ export default function FamilyFolder({
                             ) : task.assignedDate && task.status === 'assigned' ? (
                               <span className="ff-assign-note">Assigned {task.assignedDate}</span>
                             ) : null}
-                            {task.acknowledged && task.acknowledgedBy ? (
+                            {familyFiled && task.acknowledgedBy ? (
                               <span className="ff-assign-note">
-                                Acked by {task.acknowledgedBy}
+                                Done by {task.acknowledgedBy}
                                 {task.acknowledgedAt ? ` · ${formatAckStamp(task.acknowledgedAt)}` : ''}
                               </span>
                             ) : null}
                           </span>
                         </button>
-                        {isCustom ? (
-                          <button
-                            type="button"
-                            className="ff-ack-btn"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onToggleTask(task.id);
+                        {showCheck ? (
+                          <AssignmentDoneCheck
+                            checked={isChecked}
+                            label={checkLabel}
+                            onToggle={() => {
+                              if (isCustom) onToggleTask(task.id);
+                              else void onMissingAck(task, !isChecked);
                             }}
-                            aria-label={task.completed ? 'Mark as open' : 'Mark as done'}
-                          >
-                            {task.completed ? (
-                              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                            ) : (
-                              <Circle className="w-5 h-5 text-zinc-500" />
-                            )}
-                          </button>
-                        ) : task.status === 'missing' ? (
-                          <button
-                            type="button"
-                            className="ff-ack-btn"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void onMissingAck(task, true);
-                            }}
-                            aria-label={`Acknowledge missing: ${decodeHtml(task.title)}`}
-                          >
-                            <Circle className="w-5 h-5 text-zinc-400" />
-                          </button>
+                          />
                         ) : (
-                          <span className="ff-ack-btn is-static" aria-hidden="true">
-                            <Circle className="w-5 h-5 text-zinc-700" />
-                          </span>
+                          <span className="ff-done-check is-empty" aria-hidden="true" />
                         )}
                       </li>
                     );

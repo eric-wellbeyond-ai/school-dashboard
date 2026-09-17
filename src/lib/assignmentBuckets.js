@@ -3,16 +3,17 @@
  * upcoming (future DateAssigned) is hidden until assigned.
  *
  * classifyAssignment order:
- * 1. missing — Blackbaud missing flag OR earned is exactly 0 with maxPoints > 0 (0/100),
- *    unless the family acknowledged it (doneOverride / acknowledged → done).
- * 2. done — graded (real points, letter that is not M, or earned/possible).
+ * 1. Family check (doneOverride / acknowledged) files overdue or missing into Done.
+ *    Ack persist is a family overlay; it does not change Blackbaud missing flags.
+ * 2. missing — Blackbaud missing flag OR earned is exactly 0 with maxPoints > 0 (0/100).
+ * 3. done — graded (real points, letter that is not M, or earned/possible).
  *    Graded with only a creation date (no due date) is Done, not Assigned.
- * 3. assigned — ungraded and no due date (creation date only is fine).
- * 4. overdue — due before today
- * 5. upcoming — DateAssigned after today (hidden)
- * 6. dueSoon — due today through Friday of the current week
- * 7. assigned — DateAssigned is missing or has arrived
- * 8. upcoming
+ * 4. assigned — ungraded and no due date (creation date only is fine).
+ * 5. overdue — due before today
+ * 6. upcoming — DateAssigned after today (hidden)
+ * 7. dueSoon — due today through Friday of the current week
+ * 8. assigned — DateAssigned is missing or has arrived
+ * 9. upcoming
  */
 
 export function parsePortalDate(value) {
@@ -205,7 +206,7 @@ export function classifyAssignment({
   );
   const isGraded = graded === true || isAssignmentGraded(gradeFields);
 
-  // 1. Family acknowledge / mark-done forces Done even for portal missing or 0/max.
+  // 1. Family check files overdue/missing into Done; undo clears this overlay.
   if (familyDone) return 'done';
   // 2. Blackbaud missing flag or exact 0/max → Missing (not Done/F).
   if (missingWork) return 'missing';
