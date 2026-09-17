@@ -97,6 +97,51 @@ function cleanDeep(obj) {
   return obj;
 }
 
+const GRADE_DISPLAY_KEY = 'school_dashboard_grade_display';
+
+function courseGradeValue(course, mode) {
+  const letter = String(course?.letterGrade || '').trim();
+  const percent = String(course?.percentage || '').trim();
+  if (mode === 'percent') return percent || letter || '—';
+  return letter || percent || '—';
+}
+
+function CourseGradeList({ groups, mode }) {
+  if (!groups.length) return null;
+  return (
+    <div className="space-y-4">
+      {groups.map((group) => (
+        <div key={group.key} className="overflow-x-auto">
+          {groups.length > 1 && (
+            <h3 className="font-semibold text-sm mb-2">{group.title}</h3>
+          )}
+          <table className="table table-sm">
+            <thead>
+              <tr>
+                <th>Class</th>
+                <th>Teacher</th>
+                <th className="text-right">Grade</th>
+              </tr>
+            </thead>
+            <tbody>
+              {group.rows.map((c, idx) => (
+                <tr key={`${group.key}-${c.course || idx}`}>
+                  <td className="font-medium">{decodeHtmlEntities(c.course)}</td>
+                  <td className="text-base-content/70">
+                    {decodeHtmlEntities(c.teacher || 'Teacher TBA')}
+                    {c.room ? ` · Rm ${c.room}` : ''}
+                  </td>
+                  <td className="text-right font-semibold tabular-nums">{courseGradeValue(c, mode)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ProfileAvatar({ name, photoUrl, size = 28, className = '' }) {
   const [broken, setBroken] = useState(false);
   const initial = String(name || '?').trim().charAt(0).toUpperCase() || '?';
@@ -109,7 +154,7 @@ function ProfileAvatar({ name, photoUrl, size = 28, className = '' }) {
         width={size}
         height={size}
         onError={() => setBroken(true)}
-        className={`rounded-full object-cover shrink-0 ${className}`}
+        className={`avatar rounded-full object-cover shrink-0 ${className}`}
         style={{ width: dim, height: dim }}
       />
     );
@@ -117,7 +162,7 @@ function ProfileAvatar({ name, photoUrl, size = 28, className = '' }) {
   return (
     <span
       aria-hidden="true"
-      className={`inline-flex items-center justify-center rounded-full shrink-0 font-semibold bg-slate-800 text-slate-200 ${className}`}
+      className={`inline-flex items-center justify-center rounded-full shrink-0 font-semibold bg-base-200 text-base-content ${className}`}
       style={{ width: dim, height: dim, fontSize: Math.max(11, Math.round(size * 0.4)) }}
     >
       {initial}
@@ -202,10 +247,20 @@ export default function App() {
   const macFrameRef = useRef(null);
   const closedAuthPopup = useRef(false);
   const claimedMacToken = useRef(null);
+  const syncMenuRef = useRef(null);
   const [view, setView] = useState('landing');
   // Task collaboration & comment modal state
   const [selectedTaskForModal, setSelectedTaskForModal] = useState(null);
+  const [assignmentDetailLoading, setAssignmentDetailLoading] = useState(false);
+  const [assignmentDetailError, setAssignmentDetailError] = useState(false);
   const [commentText, setCommentText] = useState('');
+  const [gradeDisplay, setGradeDisplay] = useState(() => {
+    try {
+      return localStorage.getItem(GRADE_DISPLAY_KEY) === 'percent' ? 'percent' : 'letter';
+    } catch {
+      return 'letter';
+    }
+  });
 
   // Event & email detail modal state
   const [selectedEventForModal, setSelectedEventForModal] = useState(null);
@@ -443,11 +498,24 @@ export default function App() {
         if (selectedEventForModal) setSelectedEventForModal(null);
         if (selectedTaskForModal) setSelectedTaskForModal(null);
         if (showBlackbaudModal) setShowBlackbaudModal(false);
+        if (showAuthModal) setShowAuthModal(false);
+        if (syncDropdownOpen) setSyncDropdownOpen(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedEventForModal, selectedTaskForModal, showBlackbaudModal]);
+  }, [selectedEventForModal, selectedTaskForModal, showBlackbaudModal, showAuthModal, syncDropdownOpen]);
+
+  useEffect(() => {
+    if (!syncDropdownOpen) return undefined;
+    const onDoc = (e) => {
+      if (syncMenuRef.current && !syncMenuRef.current.contains(e.target)) {
+        setSyncDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [syncDropdownOpen]);
 
   useEffect(() => {
     if (!showBlackbaudModal) return undefined;
@@ -952,16 +1020,33 @@ export default function App() {
     }
   };
 
+  const setGradeDisplayMode = (mode) => {
+    setGradeDisplay(mode);
+    try {
+      localStorage.setItem(GRADE_DISPLAY_KEY, mode);
+    } catch {
+      /* ignore quota */
+    }
+  };
+
   // Open task detail & collaboration modal
   const handleOpenTaskModal = async (task) => {
     const fromPortal = (blackbaudAssignments || []).find((t) => t.id === task.id);
     const fromCustom = (tasks || []).find((t) => t.id === task.id);
     const current = fromPortal || fromCustom || task;
     setSelectedTaskForModal(current);
-    if (!current.assignmentId) return;
+    setAssignmentDetailError(false);
+    if (!current.assignmentId) {
+      setAssignmentDetailLoading(false);
+      return;
+    }
+    setAssignmentDetailLoading(true);
     try {
       const res = await fetch(`/api/blackbaud/assignment/${current.assignmentId}`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        setAssignmentDetailError(true);
+        return;
+      }
       const detail = await res.json();
       setSelectedTaskForModal((prev) => {
         if (!prev || prev.id !== current.id) return prev;
@@ -976,6 +1061,9 @@ export default function App() {
       });
     } catch (err) {
       console.warn('Assignment detail unavailable:', err.message);
+      setAssignmentDetailError(true);
+    } finally {
+      setAssignmentDetailLoading(false);
     }
   };
 
@@ -1240,11 +1328,29 @@ export default function App() {
   const canSeeJade = allowedKeys.includes('Jade');
   const isParentViewer = blackbaudStatus.role !== 'student';
   const signedInName = blackbaudStatus.displayName || blackbaudStatus.accountName || '';
+  const gradeGroups = useMemo(() => {
+    const source = blackbaudGrades || {};
+    const extra = Object.keys(source).filter((key) => key !== 'Ben' && key !== 'Jade');
+    return ['Ben', 'Jade', ...extra]
+      .filter((key) => {
+        const rows = source[key];
+        if (!Array.isArray(rows) || rows.length === 0) return false;
+        if (selectedStudent !== 'All' && selectedStudent !== key) return false;
+        if (key === 'Ben') return canSeeBen;
+        if (key === 'Jade') return canSeeJade;
+        return allowedKeys.length === 0 || allowedKeys.includes(key);
+      })
+      .map((key) => ({
+        key,
+        title: key === 'Ben' ? 'Ben · High School' : key === 'Jade' ? 'Jade · Middle School' : key,
+        rows: source[key]
+      }));
+  }, [blackbaudGrades, selectedStudent, canSeeBen, canSeeJade, allowedKeys]);
 
   return (
-    <div className="wla-app min-h-screen bg-slate-900 text-slate-100 flex flex-col md:flex-row antialiased font-sans">
+    <div className={`wla-app min-h-dvh bg-base-200 text-base-content flex flex-col md:flex-row ${view === 'landing' ? '' : 'wla-shell'}`}>
       {view !== 'landing' && (
-      <a href="#wla-main" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-slate-100 focus:px-3 focus:py-2 focus:text-sm focus:text-[rgb(var(--wla-on-ink))]">
+      <a href="#wla-main" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 btn btn-sm">
         Skip to content
       </a>
       )}
@@ -1258,329 +1364,201 @@ export default function App() {
         />
       )}
       <div
-        className={view === 'landing' ? 'hidden' : 'flex-1 flex flex-col md:flex-row min-h-0 w-full'}
+        className={view === 'landing' ? 'hidden' : 'flex-1 flex flex-col md:flex-row min-h-0 w-full md:h-full md:overflow-hidden'}
         aria-hidden={view === 'landing' ? 'true' : undefined}
       >
       {/* ---------------------------------------------------- */}
       {/* Sidebar: Navigation & Launch Portals                 */}
       {/* ---------------------------------------------------- */}
-      <aside className="w-full md:w-72 bg-slate-950 border-r border-slate-800 flex flex-col justify-between p-5 shrink-0 wla-rule">
-        <div>
-          <div className="pb-6 border-b border-slate-800/80">
-            <p className="font-serif text-[11px] tracking-[0.16em] uppercase text-indigo-400">
-              Westlake Lutheran Academy
-            </p>
-            <h1 className="mt-1 font-serif text-xl font-semibold tracking-tight text-slate-100">
-              Family folder
-            </h1>
-            <p className="mt-1 text-[13px] text-slate-400">
-              {signedInName
-                ? `${signedInName}${blackbaudStatus.role ? ` · ${blackbaudStatus.role}` : ''}`
-                : 'Sign in to see grades'}
-            </p>
-          </div>
-
-          {/* Direct Launch Portals */}
-          <div className="mt-6">
-            <h2 className="text-[13px] font-semibold text-slate-400 px-1 mb-3">
-              Portals
-            </h2>
-            <div className="space-y-2">
-              {/* Blackbaud Parent Portal */}
-              <a
-                href="https://westlakelutheran.myschoolapp.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                id="link-blackbaud"
-                className="group flex items-center justify-between min-h-11 p-3 rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-600 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-blue-500/10 text-blue-400 flex items-center justify-center group-hover:bg-blue-500 group-hover:text-white transition-colors">
-                    <GraduationCap className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium text-slate-200 group-hover:text-white flex items-center gap-1.5">
-                      Blackbaud
-                      {blackbaudStatus.connected && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-sm shadow-emerald-500/50" title="Connected"></span>
-                      )}
-                    </div>
-                    <div className="text-[11px] text-slate-400">
-                      {blackbaudStatus.connected ? 'Connected • Live Grades' : 'Parent Portal'}
-                    </div>
-                  </div>
-                </div>
-                <ExternalLink className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
-              </a>
-
-              {/* Classlink Portal */}
-              <a
-                href="https://launchpad.classlink.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                id="link-classlink"
-                className="group flex items-center justify-between min-h-11 p-3 rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-600 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center group-hover:bg-emerald-500 group-hover:text-white transition-colors">
-                    <LinkIcon className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium text-slate-200 group-hover:text-white">ClassLink</div>
-                    <div className="text-[11px] text-slate-400">Single Sign-On</div>
-                  </div>
-                </div>
-                <ExternalLink className="w-4 h-4 text-slate-500 group-hover:text-emerald-400 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
-              </a>
-
-              {/* sportsYou Portal */}
-              <a
-                href="https://www.sportsyou.com/login"
-                target="_blank"
-                rel="noopener noreferrer"
-                id="link-sportsyou"
-                className="group flex items-center justify-between min-h-11 p-3 rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-600 transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center group-hover:bg-amber-500 group-hover:text-white transition-colors">
-                    <Trophy className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium text-slate-200 group-hover:text-white">sportsYou</div>
-                    <div className="text-[11px] text-slate-400">Athletics & Teams</div>
-                  </div>
-                </div>
-                <ExternalLink className="w-4 h-4 text-slate-500 group-hover:text-amber-400 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
-              </a>
-            </div>
-          </div>
-
-          {/* Student Overview Cards in Sidebar */}
-          <div className="mt-8">
-            <h2 className="text-[13px] font-semibold text-slate-400 px-1 mb-3">
-              Students
-            </h2>
-            <div className="space-y-2">
-              {canSeeBen && (
-              <button
-                type="button"
-                aria-pressed={selectedStudent === 'Ben'}
-                onClick={() => setSelectedStudent('Ben')}
-                className={`wla-tab w-full min-h-11 text-left px-3 py-2.5 rounded-lg border transition-colors flex items-center justify-between ${
-                  selectedStudent === 'Ben'
-                    ? 'border-slate-700 text-slate-100'
-                    : 'bg-slate-900/60 border-slate-800/80 text-slate-300 hover:border-slate-700 hover:bg-slate-900'
-                }`}
-              >
-                <div>
-                    <div className="text-[15px] font-semibold text-slate-100">Ben</div>
-                    <div className="text-[13px] text-slate-400">High school</div>
-                </div>
-                <span className="text-[13px] tabular-nums text-slate-400">
-                  {benOpenCount} open
-                </span>
-              </button>
-              )}
-
-              {canSeeJade && (
-              <button
-                type="button"
-                aria-pressed={selectedStudent === 'Jade'}
-                onClick={() => setSelectedStudent('Jade')}
-                className={`wla-tab w-full min-h-11 text-left px-3 py-2.5 rounded-lg border transition-colors flex items-center justify-between ${
-                  selectedStudent === 'Jade'
-                    ? 'border-slate-700 text-slate-100'
-                    : 'bg-slate-900/60 border-slate-800/80 text-slate-300 hover:border-slate-700 hover:bg-slate-900'
-                }`}
-              >
-                <div>
-                    <div className="text-[15px] font-semibold text-slate-100">Jade</div>
-                    <div className="text-[13px] text-slate-400">Middle school</div>
-                </div>
-                <span className="text-[13px] tabular-nums text-slate-400">
-                  {jadeOpenCount} open
-                </span>
-              </button>
+      <aside className="w-full md:w-72 md:h-full md:min-h-0 bg-base-200 border-r border-base-300 flex flex-col shrink-0 md:overflow-hidden">
+        <div className="flex-1 min-h-0 md:overflow-y-auto p-4">
+          <div className="flex items-start gap-3 px-2 pb-4">
+            <ProfileAvatar name={signedInName || 'Family'} photoUrl={blackbaudStatus.photoUrl} size={40} />
+            <div className="min-w-0">
+              <p className="text-xs uppercase tracking-wide text-base-content/60">Westlake Lutheran Academy</p>
+              <h1 className="text-lg font-semibold leading-tight">Family folder</h1>
+              <p className="text-sm text-base-content/70 truncate">
+                {signedInName
+                  ? `${signedInName}${blackbaudStatus.role ? ` · ${blackbaudStatus.role}` : ''}`
+                  : 'Sign in to see grades'}
+              </p>
+              {blackbaudStatus.email && (
+                <p className="text-xs text-base-content/50 truncate">{blackbaudStatus.email}</p>
               )}
             </div>
           </div>
+
+          <ul className="menu p-0">
+            <li className="menu-title">Portals</li>
+            <li>
+              <a href="https://westlakelutheran.myschoolapp.com" target="_blank" rel="noopener noreferrer" id="link-blackbaud">
+                <GraduationCap className="w-4 h-4" />
+                <span>
+                  Blackbaud
+                  <span className="block text-xs font-normal opacity-60">Parent portal</span>
+                </span>
+                {blackbaudStatus.connected && <span className="badge badge-success badge-xs" aria-label="Connected" />}
+                <ExternalLink className="w-3.5 h-3.5 ml-auto opacity-50" />
+              </a>
+            </li>
+            <li>
+              <a href="https://launchpad.classlink.com" target="_blank" rel="noopener noreferrer" id="link-classlink">
+                <LinkIcon className="w-4 h-4" />
+                <span>
+                  ClassLink
+                  <span className="block text-xs font-normal opacity-60">Single sign-on</span>
+                </span>
+                <ExternalLink className="w-3.5 h-3.5 ml-auto opacity-50" />
+              </a>
+            </li>
+            <li>
+              <a href="https://www.sportsyou.com/login" target="_blank" rel="noopener noreferrer" id="link-sportsyou">
+                <Trophy className="w-4 h-4" />
+                <span>
+                  sportsYou
+                  <span className="block text-xs font-normal opacity-60">Athletics &amp; teams</span>
+                </span>
+                <ExternalLink className="w-3.5 h-3.5 ml-auto opacity-50" />
+              </a>
+            </li>
+            <li className="menu-title">Students</li>
+            {canSeeBen && (
+              <li>
+                <button type="button" aria-pressed={selectedStudent === 'Ben'} className={selectedStudent === 'Ben' ? 'active' : ''} onClick={() => setSelectedStudent('Ben')}>
+                  <span>
+                    Ben
+                    <span className="block text-xs font-normal opacity-60">High school</span>
+                  </span>
+                  <span className="badge badge-ghost">{benOpenCount} open</span>
+                </button>
+              </li>
+            )}
+            {canSeeJade && (
+              <li>
+                <button type="button" aria-pressed={selectedStudent === 'Jade'} className={selectedStudent === 'Jade' ? 'active' : ''} onClick={() => setSelectedStudent('Jade')}>
+                  <span>
+                    Jade
+                    <span className="block text-xs font-normal opacity-60">Middle school</span>
+                  </span>
+                  <span className="badge badge-ghost">{jadeOpenCount} open</span>
+                </button>
+              </li>
+            )}
+          </ul>
         </div>
 
-        {/* Sync / Connectivity Status in Sidebar Footer */}
-        <div className="mt-8 pt-4 border-t border-slate-800/80 space-y-3">
-          {/* Gmail Status */}
-          <div>
-            <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
-              <span className="flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full ${authStatus.authenticated ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
-                {authStatus.authenticated ? 'Gmail Active' : 'Gmail Offline'}
-              </span>
-              <span className="font-mono text-[10px] text-slate-500">Inbox</span>
-            </div>
-            <button
-              onClick={handleConnectGoogle}
-              className="w-full min-h-11 py-2 px-2.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 text-[13px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <Shield className="w-3.5 h-3.5 text-indigo-400" />
-              <span>{authStatus.authenticated ? 'Gmail Connected' : 'Connect Google Inbox'}</span>
+        <div className="p-4 border-t border-base-300 space-y-2 shrink-0">
+          <button type="button" onClick={handleConnectGoogle} className="btn btn-outline btn-sm btn-block">
+            <Shield className="w-4 h-4" />
+            {authStatus.authenticated
+              ? 'Gmail connected'
+              : authStatus.configured
+                ? 'Connect Gmail'
+                : 'Gmail OAuth Setup'}
+          </button>
+          <button
+            type="button"
+            onClick={() => (blackbaudStatus.connected ? setShowBlackbaudModal(true) : setView('landing'))}
+            className="btn btn-outline btn-sm btn-block"
+          >
+            <GraduationCap className="w-4 h-4" />
+            {blackbaudStatus.connected ? 'Blackbaud settings' : 'Connect Blackbaud'}
+          </button>
+          {blackbaudStatus.connected && (
+            <button type="button" onClick={handleDisconnectBlackbaud} className="btn btn-ghost btn-xs btn-block">
+              Sign out
             </button>
-          </div>
-
-          {/* Blackbaud Portal Status */}
-          <div className="pt-2 border-t border-slate-900/80">
-            <div className="flex items-center justify-between text-xs text-slate-400 mb-1.5">
-              <span className="flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full ${blackbaudStatus.connected ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`}></span>
-                {blackbaudStatus.connected ? 'Blackbaud Synced' : 'Blackbaud Offline'}
-              </span>
-              <span className="text-[10px] text-amber-400/80 font-mono">myschoolapp</span>
-            </div>
-            <button
-              onClick={() => (blackbaudStatus.connected ? setShowBlackbaudModal(true) : setView('landing'))}
-              className="w-full min-h-11 py-2 px-2.5 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 text-[13px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <GraduationCap className="w-3.5 h-3.5 text-amber-400" />
-              <span>{blackbaudStatus.connected ? 'Blackbaud Settings' : 'Connect Blackbaud'}</span>
-            </button>
-            {blackbaudStatus.connected && (
-              <div className="pt-2 text-center space-y-1.5">
-                <p className="text-[11px] text-slate-400">
-                  Signed in as {signedInName || 'family member'}
-                  {blackbaudStatus.role ? ` · ${blackbaudStatus.role}` : ''}
-                </p>
-                <button
-                  type="button"
-                  onClick={handleDisconnectBlackbaud}
-                  className="text-[11px] text-slate-500 hover:text-white underline cursor-pointer"
-                >
-                  Sign out
-                </button>
-              </div>
-            )}
-          </div>
+          )}
         </div>
       </aside>
 
       {/* ---------------------------------------------------- */}
       {/* Main Content Area                                    */}
       {/* ---------------------------------------------------- */}
-      <main id="wla-main" className="flex-1 flex flex-col min-w-0 overflow-y-auto">
-        <header className="sticky top-0 z-20 backdrop-blur-md bg-slate-900/90 border-b border-slate-800 px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
+      <main id="wla-main" className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto bg-base-200">
+        <header className="navbar bg-base-100 border-b border-base-300 sticky top-0 z-20 min-h-16 px-4">
+          <div className="flex-1 min-w-0">
+            <div>
               <div className="flex items-center gap-2">
-                <h2 className="font-serif text-xl font-semibold text-slate-100 tracking-tight">Grades and schoolwork</h2>
-                <span className="text-xs px-2 py-0.5 rounded-md bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-medium">
-                  Fall 2026
-                </span>
+                <h2 className="text-lg font-semibold">Grades and schoolwork</h2>
+                <span className="badge badge-outline">Fall 2026</span>
               </div>
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-base-content/60 mt-0.5">
                 {lastSynced ? `Inbox synced at ${lastSynced}` : 'Ready to sync with school inbox & sportsYou'}
               </p>
+            </div>
           </div>
-
-          <div className="flex items-center gap-3">
-            {/* Google OAuth Connect / Status Button */}
+          <div className="flex-none gap-2">
             {authStatus.authenticated ? (
-              <div className="flex items-center gap-2 bg-slate-950/80 border border-emerald-500/40 px-3 py-2 rounded-xl text-xs text-emerald-400 shadow-sm">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="font-medium">Gmail Linked</span>
-                <button
-                  onClick={handleDisconnectGoogle}
-                  className="ml-1 text-[11px] text-slate-400 hover:text-red-400 underline cursor-pointer"
-                  title="Disconnect Google Account"
-                >
-                  Disconnect
-                </button>
+              <div className="flex items-center gap-2">
+                <span className="badge badge-success badge-outline">Gmail linked</span>
+                <button type="button" onClick={handleDisconnectGoogle} className="btn btn-ghost btn-xs" title="Disconnect Google Account">Disconnect</button>
               </div>
             ) : (
               <button
                 id="connect-google-btn"
+                type="button"
                 onClick={handleConnectGoogle}
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-200 hover:text-white text-xs font-semibold border border-slate-700/80 transition-all shadow-sm cursor-pointer"
+                className="btn btn-ghost btn-sm"
                 title="Connect Google Account for live Gmail inbox sync"
               >
-                <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
-                  <path
-                    fill="#4285F4"
-                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                  />
-                </svg>
-                <span>{authStatus.configured ? 'Connect Gmail' : 'Gmail OAuth Setup'}</span>
+                {authStatus.configured ? 'Connect Gmail' : 'Gmail OAuth Setup'}
               </button>
             )}
-
-            {/* Sync Inbox Button Group */}
-            <div className="relative inline-flex items-center shadow-lg shadow-indigo-600/25">
-              <button
-                id="sync-inbox-button"
-                onClick={() => handleSyncInbox('incremental')}
-                disabled={isSyncing}
-                title="Sync new emails since previous pull (capped at 2 weeks)"
-                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-l-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-sm font-semibold border-y border-l border-indigo-400/30 active:scale-[0.99] transition-all disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
-              >
-                <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-                <span>{isSyncing ? 'Syncing...' : 'Sync Inbox'}</span>
-              </button>
-              <button
-                type="button"
-                id="sync-options-dropdown-button"
-                onClick={() => setSyncDropdownOpen(prev => !prev)}
-                disabled={isSyncing}
-                title="Sync options (Incremental vs Full 14-Day)"
-                className="px-2 py-2.5 rounded-r-xl bg-indigo-700 hover:bg-indigo-600 text-white border-y border-r border-indigo-400/30 transition-all cursor-pointer disabled:opacity-60"
-              >
-                <ChevronDown className="w-3.5 h-3.5" />
-              </button>
-
-              {/* Sync Options Dropdown */}
+            <div className="relative" ref={syncMenuRef}>
+              <div className="join">
+                <button
+                  id="sync-inbox-button"
+                  type="button"
+                  onClick={() => handleSyncInbox('incremental')}
+                  disabled={isSyncing}
+                  title="Sync new emails since previous pull (capped at 2 weeks)"
+                  className="btn btn-primary btn-sm join-item"
+                >
+                  {isSyncing ? <span className="loading loading-spinner loading-xs" /> : <RefreshCw className="w-4 h-4" />}
+                  {isSyncing ? 'Syncing...' : 'Sync Inbox'}
+                </button>
+                <button
+                  type="button"
+                  id="sync-options-dropdown-button"
+                  onClick={() => setSyncDropdownOpen((prev) => !prev)}
+                  disabled={isSyncing}
+                  className="btn btn-primary btn-sm join-item"
+                  aria-label="Sync options"
+                  title="Sync options (Incremental vs Full 14-Day)"
+                >
+                  <ChevronDown className="w-4 h-4" />
+                </button>
+              </div>
               {syncDropdownOpen && (
-                <div className="absolute right-0 top-full mt-2 w-72 bg-slate-900 border border-slate-700/80 rounded-xl shadow-2xl z-50 p-2 text-xs backdrop-blur-xl">
-                  <div className="px-2.5 py-1 text-slate-400 font-semibold border-b border-slate-800 mb-1">
-                    Email Synchronization Window
-                  </div>
-                  <button
-                    onClick={() => handleSyncInbox('incremental')}
-                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-200 transition-colors flex flex-col cursor-pointer"
-                  >
-                    <span className="font-semibold text-white">Sync Since Last Pull</span>
-                    <span className="text-slate-400 text-[11px]">Syncs from previous pull (up to 2 weeks maximum)</span>
-                  </button>
-                  <button
-                    onClick={() => handleSyncInbox('full')}
-                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-200 transition-colors flex flex-col cursor-pointer mt-1"
-                  >
-                    <span className="font-semibold text-white">Full 14-Day Rescan</span>
-                    <span className="text-slate-400 text-[11px]">Re-analyzes all inbox emails over the last 14 days</span>
-                  </button>
-                  <div className="px-2.5 py-1 text-slate-400 font-semibold border-t border-b border-slate-800 my-1">
-                    School Portal Sync
-                  </div>
-                  <button
-                    onClick={() => {
-                      setSyncDropdownOpen(false);
-                      handleSyncBlackbaud();
-                    }}
-                    className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-slate-800 text-slate-200 transition-colors flex flex-col cursor-pointer"
-                  >
-                    <span className="font-semibold text-amber-300 flex items-center gap-1.5">
-                      <GraduationCap className="w-3.5 h-3.5" />
-                      Sync Blackbaud Portal
-                    </span>
-                    <span className="text-slate-400 text-[11px]">Opens the Mac Playwright sign-in and pulls live grades</span>
-                  </button>
-                </div>
+                <ul className="absolute right-0 top-full mt-2 menu bg-base-100 rounded-box z-50 w-72 p-2 shadow border border-base-300">
+                  <li className="menu-title">Email</li>
+                  <li>
+                    <button type="button" onClick={() => handleSyncInbox('incremental')}>
+                      <span>
+                        Sync since last pull
+                        <span className="block text-xs font-normal opacity-60">From previous pull, up to 2 weeks</span>
+                      </span>
+                    </button>
+                  </li>
+                  <li>
+                    <button type="button" onClick={() => handleSyncInbox('full')}>
+                      <span>
+                        Full 14-day rescan
+                        <span className="block text-xs font-normal opacity-60">Re-analyze inbox mail from the last 14 days</span>
+                      </span>
+                    </button>
+                  </li>
+                  <li className="menu-title">School portal</li>
+                  <li>
+                    <button type="button" onClick={() => { setSyncDropdownOpen(false); handleSyncBlackbaud(); }}>
+                      <span>
+                        Sync Blackbaud
+                        <span className="block text-xs font-normal opacity-60">Refresh grades and assignments</span>
+                      </span>
+                    </button>
+                  </li>
+                </ul>
               )}
             </div>
           </div>
@@ -1588,30 +1566,10 @@ export default function App() {
 
         {/* OAuth Feedback Banner */}
         {authBanner && (
-          <div className="px-6 pt-4">
-            <div
-              className={`p-3.5 rounded-xl border flex items-center justify-between text-xs font-medium shadow-md ${
-                authBanner.type === 'success'
-                  ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
-                  : authBanner.type === 'error'
-                  ? 'bg-red-950/70 border-red-500/50 text-red-300'
-                  : 'bg-blue-950/70 border-blue-500/50 text-blue-300'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                {authBanner.type === 'success' ? (
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                ) : (
-                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-                )}
-                <span>{authBanner.message}</span>
-              </div>
-              <button
-                onClick={() => setAuthBanner(null)}
-                className="text-slate-400 hover:text-slate-200 px-1 cursor-pointer"
-              >
-                &times;
-              </button>
+          <div className="px-4 pt-4">
+            <div role="alert" className={`alert ${authBanner.type === 'success' ? 'alert-success' : authBanner.type === 'error' ? 'alert-error' : 'alert-info'}`}>
+              <span>{authBanner.message}</span>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={() => setAuthBanner(null)} aria-label="Dismiss">Close</button>
             </div>
           </div>
         )}
@@ -1619,24 +1577,15 @@ export default function App() {
         {/* Dashboard Body */}
         <div className="p-6 space-y-6 max-w-7xl w-full mx-auto">
           {/* Top Controls: Student View Toggles & Summary Metrics */}
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-slate-950/70 p-4 rounded-2xl border border-slate-800/80 shadow-md">
-            {/* Student View Toggle Buttons */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 mr-1 flex items-center gap-1">
-                <Users className="w-3.5 h-3.5" /> View:
-              </span>
-              <div className="inline-flex p-1 bg-slate-900 rounded-xl border border-slate-800" role="group">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="join">
                 {isParentViewer && (
                 <button
                   id="toggle-all"
                   type="button"
                   aria-pressed={selectedStudent === 'All'}
                   onClick={() => setSelectedStudent('All')}
-                  className={`px-3.5 py-2 min-h-11 rounded-lg text-[13px] font-semibold transition-colors cursor-pointer ${
-                    selectedStudent === 'All'
-                      ? 'bg-indigo-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:bg-slate-800'
-                  }`}
+                  className={`btn join-item ${selectedStudent === 'All' ? 'btn-active' : ''}`}
                 >
                   All
                 </button>
@@ -1647,11 +1596,7 @@ export default function App() {
                   type="button"
                   aria-pressed={selectedStudent === 'Ben'}
                   onClick={() => setSelectedStudent('Ben')}
-                  className={`px-3.5 py-2 min-h-11 rounded-lg text-[13px] font-semibold transition-colors cursor-pointer ${
-                    selectedStudent === 'Ben'
-                      ? 'bg-blue-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:bg-slate-800'
-                  }`}
+                  className={`btn join-item ${selectedStudent === 'Ben' ? 'btn-active' : ''}`}
                 >
                   Ben
                 </button>
@@ -1662,365 +1607,176 @@ export default function App() {
                   type="button"
                   aria-pressed={selectedStudent === 'Jade'}
                   onClick={() => setSelectedStudent('Jade')}
-                  className={`px-3.5 py-2 min-h-11 rounded-lg text-[13px] font-semibold transition-colors cursor-pointer ${
-                    selectedStudent === 'Jade'
-                      ? 'bg-purple-600 text-white shadow-sm'
-                      : 'text-slate-400 hover:bg-slate-800'
-                  }`}
+                  className={`btn join-item ${selectedStudent === 'Jade' ? 'btn-active' : ''}`}
                 >
                   Jade
                 </button>
                 )}
-              </div>
             </div>
-
-            {/* Quick Metrics */}
-            <div className="flex items-center gap-4 text-xs">
-              <div className="flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800">
-                <span className="text-slate-400">Open:</span>
-                <span className="font-bold text-amber-400 font-mono text-sm">{pendingCount}</span>
-              </div>
-              <div className="flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800">
-                <span className="text-slate-400">Completed:</span>
-                <span className="font-bold text-emerald-400 font-mono text-sm">{completedCount}</span>
-              </div>
-              <div className="flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800">
-                <span className="text-slate-400">Events:</span>
-                <span className="font-bold text-indigo-400 font-mono text-sm">{filteredEvents.length}</span>
-              </div>
+            <div className="flex flex-wrap gap-2">
+              <span className="badge badge-lg badge-outline">Open {pendingCount}</span>
+              <span className="badge badge-lg badge-outline">Done {completedCount}</span>
+              <span className="badge badge-lg badge-outline">Events {filteredEvents.length}</span>
             </div>
           </div>
 
           {/* ---------------------------------------------------- */}
-          {/* Blackbaud Academic Performance & Course Grades       */}
+          {/* Classes (left) and assignments (right)                 */}
           {/* ---------------------------------------------------- */}
-          <section className="bg-slate-950/70 rounded-2xl border border-slate-800/80 p-5 shadow-lg">
-            {/* Header */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800/80">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500/20 to-blue-500/20 border border-amber-500/30 text-amber-400 flex items-center justify-center shadow-inner">
-                  <GraduationCap className="w-5 h-5" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-base font-bold text-white tracking-tight">Academic Course Grades</h2>
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono border border-slate-700/60">
-                      Fall Term 2026
-                    </span>
-                    {blackbaudStatus.connected ? (
-                      <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800/80">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                        Blackbaud Live
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-amber-950/70 text-amber-300 border border-amber-800/70">
-                        Portal Offline
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-slate-400">
-                    Westlake Lutheran Academy Portal (<span className="font-mono text-slate-300">westlakelutheran.myschoolapp.com</span>)
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            <section className="lg:col-span-4 card bg-base-100 border border-base-300 shadow-sm">
+              <div className="card-body p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h2 className="card-title text-base">Classes</h2>
+                  <p className="text-sm text-base-content/70">
+                    Fall 2026{blackbaudStatus.connected ? ' · Live' : ''}
                   </p>
                 </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex items-center gap-2">
-                {blackbaudStatus.connected ? (
-                  <>
-                    <button
-                      onClick={handleSyncBlackbaud}
-                      disabled={isSyncingBlackbaud}
-                      className="px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
-                      title="Sync grades and assignment center"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingBlackbaud ? 'animate-spin' : ''}`} />
-                      <span>{isSyncingBlackbaud ? 'Syncing...' : 'Sync Grades'}</span>
-                    </button>
-                    <button
-                      onClick={() => setShowBlackbaudModal(true)}
-                      className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold border border-slate-700 transition-colors cursor-pointer"
-                    >
-                      Portal Settings
-                    </button>
-                  </>
-                ) : (
-                    <button
-                      onClick={() => setView('landing')}
-                      className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-900/20 flex items-center gap-1.5 transition-all cursor-pointer"
-                    >
-                    <Key className="w-3.5 h-3.5" />
-                    <span>Log in with Blackbaud</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Missing Assignments Banner (if any) */}
-            {visibleMissing.length > 0 && (
-              <div className="mt-4 p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/40 flex items-start gap-3">
-                <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-                <div className="flex-1 min-w-0">
-                  <h4 className="text-xs font-bold text-amber-300">
-                    {visibleMissing.length} missing assignment{visibleMissing.length > 1 ? 's' : ''} in Blackbaud
-                  </h4>
-                  <div className="mt-2 space-y-1.5">
-                    {visibleMissing.map((m) => (
-                      <div key={m.id || `${m.title}-${m.course}`} className="flex items-center justify-between text-xs text-slate-300 bg-slate-900/60 p-2 rounded-lg border border-amber-900/40">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-semibold text-white truncate">{decodeHtmlEntities(m.AssignmentTitle || m.title || 'Missing Work')}</span>
-                          <span className="text-slate-500">&bull;</span>
-                          <span className="text-amber-300/90 text-[11px] truncate">{decodeHtmlEntities(m.ClassName || m.course || m.student)}</span>
-                        </div>
-                        <span className="text-[11px] text-slate-400 font-mono shrink-0 ml-2">
-                          Due: {m.DateDue || m.dueDate || 'Overdue'}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Grades View */}
-            <div className="mt-4">
-              {(!blackbaudGrades.Ben || blackbaudGrades.Ben.length === 0) && (!blackbaudGrades.Jade || blackbaudGrades.Jade.length === 0) &&
-              !Object.entries(blackbaudGrades).some(([key, rows]) => key !== 'Ben' && key !== 'Jade' && Array.isArray(rows) && rows.length > 0) ? (
-                /* Unconnected / Empty State Card */
-                <div className="p-6 rounded-xl bg-slate-900/40 border border-dashed border-slate-800 text-center flex flex-col items-center justify-center">
-                  <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mb-3">
-                    <BookOpen className="w-6 h-6" />
-                  </div>
-                  <h3 className="text-sm font-bold text-white mb-1">
-                    {blackbaudStatus.connected ? 'No Course Grades Synced Yet' : 'Live Gradebook & Academic Overview'}
-                  </h3>
-                  <p className="text-xs text-slate-400 max-w-lg mb-4 leading-relaxed">
-                    {blackbaudStatus.connected
-                      ? 'Click Sync Grades to refresh this account from Westlake.'
-                      : 'Use Log in with Blackbaud on the landing page. Chrome opens only after you click that button.'}
-                  </p>
-                  <button
-                    onClick={() => (blackbaudStatus.connected ? handleSyncBlackbaud({ openPortal: false }) : setView('landing'))}
-                    disabled={isSyncingBlackbaud || macWebviewStarting}
-                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingBlackbaud || macWebviewStarting ? 'animate-spin' : ''}`} />
-                    <span>{isSyncingBlackbaud ? 'Syncing…' : (blackbaudStatus.connected ? 'Sync Grades' : 'Log in with Blackbaud')}</span>
-                  </button>
-                </div>
-              ) : (
-                /* Course Cards Grid */
-                <div className="space-y-6">
-                  {/* Ben's Course Grades */}
-                  {(selectedStudent === 'All' || selectedStudent === 'Ben') && canSeeBen && (blackbaudGrades.Ben || []).length > 0 && (
-                    <div>
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
-                          <div className="w-6 h-6 rounded-full bg-blue-500/20 border border-blue-400/30 text-blue-300 flex items-center justify-center text-xs font-bold">
-                            B
-                          </div>
-                          <span className="text-xs font-bold text-white uppercase tracking-wider">
-                            Ben &bull; High School
-                          </span>
-                          <span className="text-[11px] text-slate-400 font-normal">
-                            ({(blackbaudGrades.Ben || []).length} Classes)
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                        {(blackbaudGrades.Ben || []).map((c, idx) => {
-                          const letter = c.letterGrade || '';
-                          const isA = letter.startsWith('A');
-                          const isB = letter.startsWith('B');
-                          const isC = letter.startsWith('C');
-                          return (
-                            <div
-                              key={idx}
-                              className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800/90 hover:border-slate-700/90 transition-all flex flex-col justify-between gap-2 shadow-sm"
-                            >
-                              <div>
-                                <div className="flex items-start justify-between gap-2">
-                                  <h4 className="text-xs font-bold text-white truncate" title={decodeHtmlEntities(c.course)}>
-                                    {decodeHtmlEntities(c.course)}
-                                  </h4>
-                                  {c.letterGrade && (
-                                    <span
-                                      className={`px-2 py-0.5 rounded-md text-xs font-bold border shrink-0 ${
-                                        isA
-                                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                                          : isB
-                                          ? 'bg-blue-500/15 text-blue-300 border-blue-500/30'
-                                          : isC
-                                          ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
-                                          : 'bg-slate-800 text-slate-300 border-slate-700'
-                                      }`}
-                                    >
-                                      {c.letterGrade}
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-[11px] text-slate-400 mt-1 truncate">
-                                  {decodeHtmlEntities(c.teacher || 'Teacher TBA')} {c.room ? `• Rm ${c.room}` : ''}
-                                </p>
-                              </div>
-                              {c.percentage && (
-                                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
-                                  <span className="text-slate-500">Cumulative:</span>
-                                  <span className="font-mono font-bold text-slate-200">{c.percentage}</span>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Jade's Course Grades */}
-                  {(selectedStudent === 'All' || selectedStudent === 'Jade') && canSeeJade && (blackbaudGrades.Jade || []).length > 0 && (
-                    <div className={selectedStudent === 'All' ? 'pt-4 border-t border-slate-800/80' : ''}>
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
-                          <div className="w-6 h-6 rounded-full bg-purple-500/20 border border-purple-400/30 text-purple-300 flex items-center justify-center text-xs font-bold">
-                            J
-                          </div>
-                          <span className="text-xs font-bold text-white uppercase tracking-wider">
-                            Jade &bull; Middle School
-                          </span>
-                          <span className="text-[11px] text-slate-400 font-normal">
-                            ({(blackbaudGrades.Jade || []).length} Classes)
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                        {(blackbaudGrades.Jade || []).map((c, idx) => {
-                          const letter = c.letterGrade || '';
-                          const isA = letter.startsWith('A');
-                          const isB = letter.startsWith('B');
-                          const isC = letter.startsWith('C');
-                          return (
-                            <div
-                              key={idx}
-                              className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800/90 hover:border-slate-700/90 transition-all flex flex-col justify-between gap-2 shadow-sm"
-                            >
-                              <div>
-                                <div className="flex items-start justify-between gap-2">
-                                  <h4 className="text-xs font-bold text-white truncate" title={decodeHtmlEntities(c.course)}>
-                                    {decodeHtmlEntities(c.course)}
-                                  </h4>
-                                  {c.letterGrade && (
-                                    <span
-                                      className={`px-2 py-0.5 rounded-md text-xs font-bold border shrink-0 ${
-                                        isA
-                                          ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
-                                          : isB
-                                          ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
-                                          : isC
-                                          ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
-                                          : 'bg-slate-800 text-slate-300 border-slate-700'
-                                      }`}
-                                    >
-                                      {c.letterGrade}
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-[11px] text-slate-400 mt-1 truncate">
-                                  {decodeHtmlEntities(c.teacher || 'Teacher TBA')} {c.room ? `• Rm ${c.room}` : ''}
-                                </p>
-                              </div>
-                              {c.percentage && (
-                                <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
-                                  <span className="text-slate-500">Cumulative:</span>
-                                  <span className="font-mono font-bold text-slate-200">{c.percentage}</span>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </section>
-
-          {/* Grid Layout: Assignments Checklist (Left) & Events Schedule (Right) */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* ---------------------------------------------------- */}
-            {/* Left Column: Assignment Checklist                    */}
-            {/* ---------------------------------------------------- */}
-            <section className="lg:col-span-7 bg-slate-950/60 rounded-2xl border border-slate-800/80 p-5 shadow-lg flex flex-col">
-              <div className="flex flex-col gap-4 pb-4 border-b border-slate-800/80">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
-                      <CheckSquare className="w-4 h-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <h2 className="text-base font-bold text-white">Assignment Checklist</h2>
-                      <p className="text-[13px] text-slate-400">
-                        {childLabel} · Westlake portal
-                        {taskFilter === 'dueSoon' ? ` · through ${fridayLabel}` : ''}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (selectedStudent === 'Ben' || selectedStudent === 'Jade') setNewTaskStudent(selectedStudent);
-                      setIsAddingTask(!isAddingTask);
-                    }}
-                    className="min-h-11 min-w-11 inline-flex items-center justify-center rounded-lg border border-slate-700 text-slate-300 hover:text-slate-100"
-                    aria-expanded={isAddingTask}
-                    aria-label="Add family reminder"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
-                </div>
-
-                <div
-                  role="tablist"
-                  aria-label="Assignment status"
-                  className="grid grid-cols-2 sm:grid-cols-4 gap-1 p-1 rounded-lg border border-slate-800 bg-slate-900"
-                >
+                <div role="radiogroup" aria-label="Grade display" className="join shrink-0">
                   {[
-                    { id: 'overdue', label: 'Overdue', count: checklistCounts.overdue },
-                    { id: 'dueSoon', label: 'Due Soon', count: checklistCounts.dueSoon },
-                    { id: 'assigned', label: 'Assigned', count: checklistCounts.assigned },
-                    { id: 'done', label: 'Done', count: checklistCounts.done }
-                  ].map((tab) => (
+                    { id: 'letter', label: 'Letter' },
+                    { id: 'percent', label: 'Percent' }
+                  ].map((opt) => (
                     <button
-                      key={tab.id}
+                      key={opt.id}
                       type="button"
-                      role="tab"
-                      aria-selected={taskFilter === tab.id}
-                      className={`wla-seg min-h-11 px-2 rounded-md text-[13px] font-medium transition-colors ${
-                        taskFilter === tab.id ? 'text-slate-100' : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                      onClick={() => setTaskFilter(tab.id)}
+                      role="radio"
+                      aria-checked={gradeDisplay === opt.id}
+                      className={`btn btn-sm join-item ${gradeDisplay === opt.id ? 'btn-active' : ''}`}
+                      onClick={() => setGradeDisplayMode(opt.id)}
                     >
-                      {tab.label}
-                      <span className="ml-1 tabular-nums text-slate-400" aria-hidden="true">{tab.count}</span>
-                      <span className="sr-only"> {tab.count}</span>
+                      {opt.label}
                     </button>
                   ))}
                 </div>
               </div>
 
+              <div className="flex flex-wrap items-center gap-2">
+                {blackbaudStatus.connected ? (
+                  <>
+                    <button type="button" onClick={handleSyncBlackbaud} disabled={isSyncingBlackbaud} className="btn btn-primary btn-sm">
+                      {isSyncingBlackbaud ? <span className="loading loading-spinner loading-xs" /> : <RefreshCw className="w-4 h-4" />}
+                      {isSyncingBlackbaud ? 'Syncing...' : 'Sync Grades'}
+                    </button>
+                    <button type="button" onClick={() => setShowBlackbaudModal(true)} className="btn btn-ghost btn-sm">
+                      Settings
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" onClick={() => setView('landing')} className="btn btn-primary btn-sm">
+                    Log in with Blackbaud
+                  </button>
+                )}
+              </div>
+
+              {visibleMissing.length > 0 && (
+                <div className="mt-3 p-3 rounded-xl bg-warning/10 border border-warning/40">
+                  <h3 className="text-[13px] font-semibold text-warning">
+                    {visibleMissing.length} missing assignment{visibleMissing.length > 1 ? 's' : ''}
+                  </h3>
+                  <ul className="mt-2 space-y-1.5">
+                    {visibleMissing.map((m) => (
+                      <li key={m.id || `${m.title}-${m.course}`} className="flex items-baseline justify-between gap-2 text-[13px]">
+                        <span className="min-w-0 truncate text-base-content">
+                          {decodeHtmlEntities(m.AssignmentTitle || m.title || 'Missing work')}
+                        </span>
+                        <span className="shrink-0 tabular-nums text-base-content/70">
+                          {m.DateDue || m.dueDate || 'Overdue'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className="mt-3">
+                {gradeGroups.length === 0 ? (
+                  <div className="py-8 px-3 text-center">
+                    <p className="text-[15px] font-semibold text-base-content">
+                      {blackbaudStatus.connected ? 'No classes synced yet' : 'Sign in to load classes'}
+                    </p>
+                    <p className="text-[13px] text-base-content/70 mt-1 leading-relaxed">
+                      {blackbaudStatus.connected
+                        ? 'Sync grades to pull the current term.'
+                        : 'Use Log in with Blackbaud on the landing page.'}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => (blackbaudStatus.connected ? handleSyncBlackbaud({ openPortal: false }) : setView('landing'))}
+                      disabled={isSyncingBlackbaud || macWebviewStarting}
+                      className="mt-4 btn btn-primary"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingBlackbaud || macWebviewStarting ? 'animate-spin' : ''}`} />
+                      <span>{isSyncingBlackbaud ? 'Syncing…' : (blackbaudStatus.connected ? 'Sync Grades' : 'Log in with Blackbaud')}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <CourseGradeList groups={gradeGroups} mode={gradeDisplay} />
+                )}
+              </div>
+              </div>
+            </section>
+
+            {/* ---------------------------------------------------- */}
+            {/* Assignments stacked beside classes                   */}
+            {/* ---------------------------------------------------- */}
+            <section className="lg:col-span-8 card bg-base-100 border border-base-300 shadow-sm flex flex-col">
+              <div className="card-body p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="card-title text-base">Assignments</h2>
+                  <p className="text-sm text-base-content/70">
+                    {childLabel}
+                    {taskFilter === 'dueSoon' ? ` · through ${fridayLabel}` : ''}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedStudent === 'Ben' || selectedStudent === 'Jade') setNewTaskStudent(selectedStudent);
+                    setIsAddingTask(!isAddingTask);
+                  }}
+                  className="btn btn-ghost btn-sm btn-square"
+                  aria-expanded={isAddingTask}
+                  aria-label="Add family reminder"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div role="tablist" aria-label="Assignment status" className="tabs tabs-boxed">
+                {[
+                  { id: 'overdue', label: 'Overdue', count: checklistCounts.overdue },
+                  { id: 'dueSoon', label: 'Due Soon', count: checklistCounts.dueSoon },
+                  { id: 'assigned', label: 'Assigned', count: checklistCounts.assigned },
+                  { id: 'done', label: 'Done', count: checklistCounts.done }
+                ].map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={taskFilter === tab.id}
+                    className={`tab ${taskFilter === tab.id ? 'tab-active' : ''}`}
+                    onClick={() => setTaskFilter(tab.id)}
+                  >
+                    {tab.label}
+                    <span className="ml-1 opacity-60">{tab.count}</span>
+                  </button>
+                ))}
+              </div>
+
               {/* Add Custom Task Form Modal / Inline Box */}
               {isAddingTask && (
-                <form onSubmit={handleAddTask} className="mt-4 p-4 rounded-xl bg-slate-900/90 border border-indigo-500/30 space-y-3">
+                <form onSubmit={handleAddTask} className="mt-4 p-4 rounded-xl bg-base-100 border border-primary/30 space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-indigo-300 flex items-center gap-1.5">
+                    <span className="text-xs font-semibold text-primary flex items-center gap-1.5">
                       <Sparkles className="w-3.5 h-3.5" /> Quick Add Assignment
                     </span>
                     <button
                       type="button"
                       onClick={() => setIsAddingTask(false)}
-                      className="text-xs text-slate-500 hover:text-slate-300"
+                      className="text-xs text-base-content/60 hover:text-base-content"
                     >
                       Cancel
                     </button>
@@ -2030,22 +1786,22 @@ export default function App() {
                     placeholder="e.g. Bring poster board for history presentation"
                     value={newTaskTitle}
                     onChange={(e) => setNewTaskTitle(e.target.value)}
-                    className="w-full px-3 py-2 text-sm bg-slate-950 rounded-lg border border-slate-700 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                    className="input input-bordered w-full"
                     autoFocus
                   />
                   <div className="grid grid-cols-3 gap-2">
                     <select
                       value={newTaskStudent}
                       onChange={(e) => setNewTaskStudent(e.target.value)}
-                      className="px-2.5 py-1.5 text-xs bg-slate-950 rounded-lg border border-slate-700 text-slate-300 focus:outline-none"
+                      className="select select-bordered select-sm"
                     >
-                      <option value="Ben">Ben (High School)</option>
-                      <option value="Jade">Jade (Middle School)</option>
+                      {canSeeBen && <option value="Ben">Ben (High School)</option>}
+                      {canSeeJade && <option value="Jade">Jade (Middle School)</option>}
                     </select>
                     <select
                       value={newTaskCourse}
                       onChange={(e) => setNewTaskCourse(e.target.value)}
-                      className="px-2.5 py-1.5 text-xs bg-slate-950 rounded-lg border border-slate-700 text-slate-300 focus:outline-none"
+                      className="select select-bordered select-sm"
                     >
                       <option value="Mathematics">Mathematics</option>
                       <option value="Science">Science</option>
@@ -2059,12 +1815,12 @@ export default function App() {
                       placeholder="Due (e.g. Friday)"
                       value={newTaskDue}
                       onChange={(e) => setNewTaskDue(e.target.value)}
-                      className="px-2.5 py-1.5 text-xs bg-slate-950 rounded-lg border border-slate-700 text-slate-300 focus:outline-none"
+                      className="input input-bordered input-sm"
                     />
                   </div>
                   <button
                     type="submit"
-                    className="w-full py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition-colors cursor-pointer"
+                    className="btn btn-primary btn-block"
                   >
                     Save Assignment
                   </button>
@@ -2074,18 +1830,18 @@ export default function App() {
               {/* Task Items List */}
               <div className="mt-2 flex-1 overflow-y-auto max-h-[620px]">
                 {filteredTasks.length === 0 ? (
-                  <div className="text-center py-12 px-6 rounded-xl border border-dashed border-slate-800 text-slate-400 bg-slate-950/30">
+                  <div className="text-center py-12 px-6 rounded-xl border border-dashed border-base-300 text-base-content/70 bg-base-200">
                     {!blackbaudStatus.connected ? (
                       <>
-                        <Inbox className="w-8 h-8 mx-auto mb-2 text-slate-500" />
-                        <p className="text-[15px] font-semibold text-slate-200">Sign in to load assignments</p>
-                        <p className="text-[13px] text-slate-400 max-w-sm mx-auto mt-1 leading-relaxed">
+                        <Inbox className="w-8 h-8 mx-auto mb-2 text-base-content/60" />
+                        <p className="text-[15px] font-semibold text-base-content">Sign in to load assignments</p>
+                        <p className="text-[13px] text-base-content/70 max-w-sm mx-auto mt-1 leading-relaxed">
                           Log in with Blackbaud, then sync grades for {childLabel}.
                         </p>
                         <button
                           type="button"
                           onClick={() => setView('landing')}
-                          className="mt-4 min-h-11 inline-flex items-center gap-2 px-4 rounded-xl bg-indigo-600 text-white text-[13px] font-semibold"
+                          className="btn btn-primary mt-4"
                         >
                           <Key className="w-3.5 h-3.5" />
                           Log in with Blackbaud
@@ -2093,14 +1849,14 @@ export default function App() {
                       </>
                     ) : (
                       <>
-                        <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-slate-500" />
-                        <p className="text-[15px] font-semibold text-slate-200">
+                        <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-base-content/60" />
+                        <p className="text-[15px] font-semibold text-base-content">
                           {taskFilter === 'overdue' && `No overdue work for ${childLabel}`}
                           {taskFilter === 'dueSoon' && `Nothing due through ${fridayLabel}`}
                           {taskFilter === 'assigned' && `No assigned work in range`}
                           {taskFilter === 'done' && `No graded assignments yet`}
                         </p>
-                        <p className="text-[13px] text-slate-500 mt-1 max-w-sm mx-auto">
+                        <p className="text-[13px] text-base-content/60 mt-1 max-w-sm mx-auto">
                           {blackbaudAssignments.length === 0
                             ? 'Sync grades to pull the current gradebook.'
                             : 'Choose another status, or sync grades to refresh.'}
@@ -2109,16 +1865,16 @@ export default function App() {
                           type="button"
                           onClick={handleSyncBlackbaud}
                           disabled={isSyncingBlackbaud}
-                          className="mt-4 min-h-11 inline-flex items-center gap-2 px-3.5 rounded-lg bg-slate-800 text-slate-200 text-[13px] font-medium border border-slate-700 disabled:opacity-60"
+                          className="btn btn-primary mt-4"
                         >
-                          <RefreshCw className={`w-3.5 h-3.5 ${isSyncingBlackbaud ? 'animate-spin' : ''}`} />
+                          {isSyncingBlackbaud ? <span className="loading loading-spinner loading-xs" /> : <RefreshCw className="w-3.5 h-3.5" />}
                           {isSyncingBlackbaud ? 'Syncing...' : 'Sync Grades'}
                         </button>
                       </>
                     )}
                   </div>
                 ) : (
-                  <ul className="divide-y divide-slate-800">
+                  <ul className="divide-y divide-base-300">
                     {filteredTasks.map((task) => {
                       const isCustom = String(task.id || '').startsWith('task_custom_');
                       const isBen = task.student === 'Ben';
@@ -2131,13 +1887,13 @@ export default function App() {
                                 e.stopPropagation();
                                 toggleTask(task.id);
                               }}
-                              className="mt-0.5 min-h-11 min-w-11 inline-flex items-center justify-center text-slate-400 shrink-0"
+                              className="mt-0.5 min-h-11 min-w-11 inline-flex items-center justify-center text-base-content/70 shrink-0"
                               aria-label={task.completed ? 'Mark as open' : 'Mark as done'}
                             >
                               {task.completed ? (
-                                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                                <CheckCircle2 className="w-5 h-5 text-success" />
                               ) : (
-                                <Circle className="w-5 h-5 text-slate-500" />
+                                <Circle className="w-5 h-5 text-base-content/60" />
                               )}
                             </button>
                           )}
@@ -2150,44 +1906,47 @@ export default function App() {
                             {!isCustom && (
                               <span className="mt-2 w-2 h-2 rounded-full shrink-0" style={{
                                 background: task.status === 'overdue'
-                                  ? 'rgb(var(--wla-miss))'
+                                  ? '#ef4444'
                                   : task.status === 'dueSoon'
-                                    ? 'rgb(var(--wla-gold))'
-                                    : task.status === 'done'
-                                      ? 'rgb(var(--wla-mute))'
-                                      : 'rgb(var(--wla-ink) / 0.45)'
+                                    ? '#f59e0b'
+                                    : '#71717a'
                               }} aria-hidden="true" />
                             )}
 
                             <div className="min-w-0 flex-1">
-                              <p className={`text-[15px] font-medium leading-snug ${task.status === 'done' ? 'text-slate-400' : 'text-slate-100'}`}>
+                              <p className={`text-[15px] font-medium leading-snug ${task.status === 'done' ? 'text-base-content/70' : 'text-base-content'}`}>
                                 {decodeHtmlEntities(task.title)}
                               </p>
-                              <p className="mt-1 text-[13px] text-slate-400">
-                                <span className={isBen ? 'text-[rgb(var(--wla-ben))]' : 'text-[rgb(var(--wla-jade))]'}>
+                              <p className="mt-1 text-[13px] text-base-content/70">
+                                <span className={isBen ? 'text-info' : 'text-secondary'}>
                                   {task.student}
                                 </span>
                                 {task.course ? ` · ${decodeHtmlEntities(task.course)}` : ''}
                                 {task.type ? ` · ${decodeHtmlEntities(task.type)}` : ''}
                               </p>
+                              {task.comment && (
+                                <p className="mt-1 text-[12px] text-base-content/70 truncate">
+                                  Teacher note: {decodeHtmlEntities(task.comment)}
+                                </p>
+                              )}
                             </div>
 
                             <div className="shrink-0 text-right">
-                              <p className={`text-[13px] tabular-nums ${task.status === 'overdue' ? 'text-[rgb(var(--wla-miss))]' : 'text-slate-300'}`}>
+                              <p className={`text-[13px] tabular-nums ${task.status === 'overdue' ? 'text-error' : 'text-base-content'}`}>
                                 {task.dueDate || 'No due date'}
                               </p>
                               {task.status === 'done' && task.pointsEarned != null ? (
-                                <p className="text-[12px] text-slate-400 tabular-nums">
+                                <p className="text-[12px] text-base-content/70 tabular-nums">
                                   {task.pointsEarned}{task.maxPoints ? `/${task.maxPoints}` : ''}
                                 </p>
                               ) : task.assignedDate ? (
-                                <p className="text-[12px] text-slate-500">Assigned {task.assignedDate}</p>
+                                <p className="text-[12px] text-base-content/60">Assigned {task.assignedDate}</p>
                               ) : null}
                               {task.isMissing && (
-                                <p className="text-[12px] text-[rgb(var(--wla-miss))]">Missing</p>
+                                <p className="text-[12px] text-error">Missing</p>
                               )}
                             </div>
-                            <ChevronRight className="w-4 h-4 mt-1 text-slate-500 shrink-0" aria-hidden="true" />
+                            <ChevronRight className="w-4 h-4 mt-1 text-base-content/60 shrink-0" aria-hidden="true" />
                           </button>
                         </li>
                       );
@@ -2195,49 +1954,35 @@ export default function App() {
                   </ul>
                 )}
               </div>
+              </div>
             </section>
+          </div>
 
-            {/* ---------------------------------------------------- */}
-            {/* Right Column: Events & Sports Schedule Widget        */}
-            {/* ---------------------------------------------------- */}
-            <section className="lg:col-span-5 bg-slate-950/60 rounded-2xl border border-slate-800/80 p-5 shadow-lg flex flex-col">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800/80 gap-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-400 flex items-center justify-center">
-                    <Calendar className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h2 className="text-base font-bold text-white flex items-center gap-2">
-                      Events & Sports
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-normal">
-                        {activeEventsCount} active
-                      </span>
+          {/* ---------------------------------------------------- */}
+          {/* Calendar below classes and assignments               */}
+          {/* ---------------------------------------------------- */}
+          <section className="card bg-base-100 border border-base-300 shadow-sm">
+              <div className="card-body p-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                    <h2 className="card-title text-base">
+                      Events
+                      <span className="badge badge-ghost font-normal">{activeEventsCount} active</span>
                     </h2>
-                    <p className="text-xs text-slate-400">From sportsYou & Westlake calendar</p>
-                  </div>
+                    <p className="text-sm text-base-content/70">sportsYou and Westlake calendar</p>
                 </div>
-
-                {/* Active vs Acknowledged Filter Tabs */}
-                <div className="inline-flex rounded-lg bg-slate-900 p-1 border border-slate-800 text-xs self-start sm:self-auto">
+                <div className="join">
                   <button
                     type="button"
                     onClick={() => setEventFilter('active')}
-                    className={`px-2.5 py-1 rounded-md font-semibold transition-all cursor-pointer ${
-                      eventFilter === 'active'
-                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
+                    className={`btn btn-sm join-item ${eventFilter === 'active' ? 'btn-active' : ''}`}
                   >
                     Active ({activeEventsCount})
                   </button>
                   <button
                     type="button"
                     onClick={() => setEventFilter('acknowledged')}
-                    className={`px-2.5 py-1 rounded-md font-semibold transition-all cursor-pointer ${
-                      eventFilter === 'acknowledged'
-                        ? 'bg-slate-800 text-slate-200 border border-slate-700 shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
+                    className={`btn btn-sm join-item ${eventFilter === 'acknowledged' ? 'btn-active' : ''}`}
                   >
                     Acknowledged ({acknowledgedEventsCount})
                   </button>
@@ -2247,12 +1992,12 @@ export default function App() {
               {/* Event Cards List */}
               <div className="mt-4 space-y-3 flex-1 overflow-y-auto max-h-[620px] pr-1">
                 {filteredEvents.length === 0 ? (
-                  <div className="text-center py-12 px-6 rounded-xl border border-dashed border-slate-800 text-slate-400 bg-slate-950/30">
-                    <Calendar className="w-8 h-8 mx-auto mb-2 text-slate-600" />
-                    <p className="text-sm font-semibold text-slate-200">
+                  <div className="text-center py-12 px-6 rounded-xl border border-dashed border-base-300 text-base-content/70 bg-base-200">
+                    <Calendar className="w-8 h-8 mx-auto mb-2 text-base-content/50" />
+                    <p className="text-sm font-semibold text-base-content">
                       {eventFilter === 'acknowledged' ? 'No Acknowledged Events' : 'No Events Scheduled'}
                     </p>
-                    <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
+                    <p className="text-xs text-base-content/60 mt-1 max-w-xs mx-auto">
                       {eventFilter === 'acknowledged'
                         ? 'Events that you acknowledge from the active list will appear here.'
                         : !authStatus.authenticated
@@ -2272,18 +2017,18 @@ export default function App() {
                         onClick={() => setSelectedEventForModal(event)}
                         className={`group relative p-3.5 rounded-xl transition-all duration-150 shadow-sm border cursor-pointer ${
                           event.acknowledged
-                            ? 'bg-slate-900/40 border-slate-800/60 hover:border-slate-700 opacity-80'
-                            : 'bg-slate-900/90 border-slate-800 hover:border-indigo-500/50 hover:bg-slate-900/95 hover:shadow-md'
+                            ? 'bg-base-200 border-base-300 hover:border-base-300 opacity-80'
+                            : 'bg-base-100 border-base-300 hover:border-primary/50 hover:bg-base-100 hover:shadow-md'
                         }`}
                       >
                         {/* Top Header Row: Date/Time on left, Compact Actions on right */}
                         <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 text-xs font-semibold text-amber-400">
+                          <div className="flex items-center gap-2 text-xs font-semibold text-warning">
                             <Calendar className="w-3.5 h-3.5 shrink-0" />
                             <span>{event.date}</span>
-                            <span className="text-slate-600">&bull;</span>
-                            <span className="text-slate-300 flex items-center gap-1 font-mono text-[11px]">
-                              <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+                            <span className="text-base-content/50">&bull;</span>
+                            <span className="text-base-content flex items-center gap-1 font-mono text-[11px]">
+                              <Clock className="w-3 h-3 text-base-content/70 shrink-0" />
                               {event.time}
                             </span>
                           </div>
@@ -2296,23 +2041,23 @@ export default function App() {
                                   type="button"
                                   onClick={(e) => acknowledgeEvent(event.id, e)}
                                   title="Acknowledge (remove from active list)"
-                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-slate-800/80 hover:bg-emerald-500/15 text-slate-400 hover:text-emerald-300 border border-slate-700/80 hover:border-emerald-500/30 text-[11px] font-medium transition-all cursor-pointer"
+                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-base-200 hover:bg-success/10 text-base-content/70 hover:text-success border border-base-300 hover:border-success/30 text-[11px] font-medium transition-all cursor-pointer"
                                 >
-                                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                  <Check className="w-3.5 h-3.5 text-success" />
                                   <span className="hidden sm:inline">Acknowledge</span>
                                 </button>
                                 <button
                                   type="button"
                                   onClick={(e) => deleteEvent(event.id, event.title, event.date, e)}
                                   title="Delete event permanently"
-                                  className="p-1 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                                  className="p-1 rounded-md text-base-content/60 hover:text-error hover:bg-error/10 transition-colors cursor-pointer"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               </>
                             ) : (
                               <>
-                                <span className="text-[10px] font-medium text-emerald-400/90 bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-500/20 inline-flex items-center gap-1">
+                                <span className="text-[10px] font-medium text-success bg-success/10 px-1.5 py-0.5 rounded border border-success/20 inline-flex items-center gap-1">
                                   <CheckCheck className="w-3 h-3" />
                                   <span>Ack'd</span>
                                 </span>
@@ -2320,7 +2065,7 @@ export default function App() {
                                   type="button"
                                   onClick={(e) => restoreEvent(event.id, e)}
                                   title="Restore to active schedule"
-                                  className="p-1 rounded-md text-slate-400 hover:text-indigo-300 hover:bg-indigo-500/10 transition-colors cursor-pointer"
+                                  className="p-1 rounded-md text-base-content/70 hover:text-primary hover:bg-primary/10 transition-colors cursor-pointer"
                                 >
                                   <RotateCcw className="w-3.5 h-3.5" />
                                 </button>
@@ -2328,7 +2073,7 @@ export default function App() {
                                   type="button"
                                   onClick={(e) => deleteEvent(event.id, event.title, event.date, e)}
                                   title="Delete event permanently"
-                                  className="p-1 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                                  className="p-1 rounded-md text-base-content/60 hover:text-error hover:bg-error/10 transition-colors cursor-pointer"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
@@ -2338,32 +2083,32 @@ export default function App() {
                         </div>
 
                         {/* Title: Unobstructed full width */}
-                        <h3 className="text-sm font-bold text-slate-100 mt-2 leading-snug group-hover:text-white transition-colors">
+                        <h3 className="text-sm font-bold text-base-content mt-2 leading-snug group-hover:text-base-content transition-colors">
                           {decodeHtmlEntities(event.title)}
                         </h3>
 
                         {/* Sender info if present */}
                         {event.emailFrom && (
-                          <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mt-1.5">
-                            <Mail className="w-3 h-3 text-slate-500 shrink-0" />
+                          <div className="flex items-center gap-1.5 text-[11px] text-base-content/70 mt-1.5">
+                            <Mail className="w-3 h-3 text-base-content/60 shrink-0" />
                             <span className="truncate">
-                              <span className="text-slate-500">From:</span>{' '}
-                              <span className="text-slate-300 font-medium">{decodeHtmlEntities(event.emailFrom)}</span>
+                              <span className="text-base-content/60">From:</span>{' '}
+                              <span className="text-base-content font-medium">{decodeHtmlEntities(event.emailFrom)}</span>
                             </span>
                           </div>
                         )}
 
                         {/* Description / note if present */}
                         {event.description && (
-                          <p className="text-xs text-slate-400 mt-1 leading-relaxed line-clamp-2">
+                          <p className="text-xs text-base-content/70 mt-1 leading-relaxed line-clamp-2">
                             {decodeHtmlEntities(event.description)}
                           </p>
                         )}
 
                         {/* Meta items: Location, Student, Source */}
-                        <div className="flex flex-wrap items-center gap-2 mt-3 text-[11px] text-slate-400">
-                          <span className="flex items-center gap-1 bg-slate-950/80 px-2 py-0.5 rounded-md border border-slate-800 text-slate-300">
-                            <MapPin className="w-3 h-3 text-red-400 shrink-0" />
+                        <div className="flex flex-wrap items-center gap-2 mt-3 text-[11px] text-base-content/70">
+                          <span className="flex items-center gap-1 bg-base-200 px-2 py-0.5 rounded-md border border-base-300 text-base-content">
+                            <MapPin className="w-3 h-3 text-error shrink-0" />
                             <span className="truncate max-w-[150px]">{decodeHtmlEntities(event.location)}</span>
                           </span>
 
@@ -2371,10 +2116,10 @@ export default function App() {
                           <span
                             className={`font-semibold px-2 py-0.5 rounded-md border text-[10px] ${
                               isBen
-                                ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
+                                ? 'bg-info/10 text-info border-info/30'
                                 : isJade
-                                ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
-                                : 'bg-slate-800 text-slate-300 border-slate-700'
+                                ? 'bg-secondary/10 text-secondary border-secondary/30'
+                                : 'bg-base-200 text-base-content border-base-300'
                             }`}
                           >
                             {event.student}
@@ -2384,8 +2129,8 @@ export default function App() {
                           <span
                             className={`text-[10px] px-2 py-0.5 rounded-md font-medium flex items-center gap-1 ${
                               isSports
-                                ? 'bg-amber-500/10 text-amber-300 border border-amber-500/30'
-                                : 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/30'
+                                ? 'bg-warning/10 text-warning border border-warning/30'
+                                : 'bg-primary/10 text-primary border border-primary/30'
                             }`}
                           >
                             {isSports ? <Trophy className="w-2.5 h-2.5" /> : <GraduationCap className="w-2.5 h-2.5" />}
@@ -2393,7 +2138,7 @@ export default function App() {
                           </span>
 
                           {/* Open email indicator */}
-                          <span className="text-[10px] text-slate-500 group-hover:text-indigo-400 flex items-center gap-1 ml-auto font-medium transition-colors">
+                          <span className="text-[10px] text-base-content/60 group-hover:text-primary flex items-center gap-1 ml-auto font-medium transition-colors">
                             <span>Open email</span>
                             <ExternalLink className="w-2.5 h-2.5" />
                           </span>
@@ -2403,8 +2148,8 @@ export default function App() {
                   })
                 )}
               </div>
+              </div>
             </section>
-          </div>
         </div>
       </main>
       </div>
@@ -2413,21 +2158,23 @@ export default function App() {
       {/* Google Cloud & OAuth Setup Modal                     */}
       {/* ---------------------------------------------------- */}
       {showAuthModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+        <div className="modal modal-open" onClick={() => setShowAuthModal(false)}>
+          <div className="modal-box max-w-lg space-y-4" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center border border-blue-500/20">
+                <div className="w-9 h-9 rounded-xl bg-info/10 text-info flex items-center justify-center border border-blue-500/20">
                   <Shield className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-white">Google Cloud & Gmail OAuth</h3>
-                  <p className="text-xs text-slate-400">Status & Integration Checklist</p>
+                  <h3 className="text-base font-bold text-base-content">Google Cloud & Gmail OAuth</h3>
+                  <p className="text-xs text-base-content/70">Status & Integration Checklist</p>
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => setShowAuthModal(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                className="btn btn-sm btn-circle btn-ghost"
+                aria-label="Close Gmail setup"
               >
                 &times;
               </button>
@@ -2435,87 +2182,81 @@ export default function App() {
 
             <div className="space-y-3 text-xs">
               {/* Client ID Check */}
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1">
+              <div className="p-3 rounded-xl bg-base-200 border border-base-300 space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-200">1. Google Client ID</span>
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 flex items-center gap-1">
+                  <span className="font-semibold text-base-content">1. Google Client ID</span>
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/30 flex items-center gap-1">
                     <Check className="w-3 h-3" /> Configured
                   </span>
                 </div>
-                <div className="font-mono text-[11px] text-slate-400 break-all select-all bg-slate-900 p-2 rounded border border-slate-800">
+                <div className="font-mono text-[11px] text-base-content/70 break-all select-all bg-base-100 p-2 rounded border border-base-300">
                   {authStatus.clientId || '82253624012-97aurejdlmr6nhrcrcf8fj6o0d6a5ge5.apps.googleusercontent.com'}
                 </div>
               </div>
 
               {/* Client Secret Check */}
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1">
+              <div className="p-3 rounded-xl bg-base-200 border border-base-300 space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-200">2. Google Client Secret</span>
+                  <span className="font-semibold text-base-content">2. Google Client Secret</span>
                   {authStatus.hasClientSecret ? (
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 flex items-center gap-1">
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/30 flex items-center gap-1">
                       <Check className="w-3 h-3" /> Ready
                     </span>
                   ) : (
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-950 text-amber-300 border border-amber-800 flex items-center gap-1">
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-warning/10 text-warning border border-warning/30 flex items-center gap-1">
                       Needs .env entry
                     </span>
                   )}
                 </div>
-                <p className="text-slate-400 text-[11px] leading-relaxed">
-                  In Google Cloud Console under Credentials &gt; OAuth 2.0 Client IDs, copy your Client Secret and add it to your <code className="bg-slate-800 px-1 py-0.5 rounded text-slate-200">.env</code> file:
+                <p className="text-base-content/70 text-[11px] leading-relaxed">
+                  In Google Cloud Console under Credentials &gt; OAuth 2.0 Client IDs, copy your Client Secret and add it to your <code className="bg-base-200 px-1 py-0.5 rounded text-base-content">.env</code> file:
                 </p>
-                <div className="font-mono text-[11px] text-amber-300 bg-slate-900 p-2 rounded border border-slate-800">
+                <div className="font-mono text-[11px] text-warning bg-base-100 p-2 rounded border border-base-300">
                   GOOGLE_CLIENT_SECRET=your_secret_here
                 </div>
               </div>
 
               {/* Redirect URI configuration */}
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1">
+              <div className="p-3 rounded-xl bg-base-200 border border-base-300 space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-200">3. Authorized Redirect URI</span>
-                  <span className="text-[11px] text-slate-400">Add to Cloud Console</span>
+                  <span className="font-semibold text-base-content">3. Authorized Redirect URI</span>
+                  <span className="text-[11px] text-base-content/70">Add to Cloud Console</span>
                 </div>
-                <p className="text-slate-400 text-[11px]">
+                <p className="text-base-content/70 text-[11px]">
                   Ensure this URI is added under <strong>Authorized redirect URIs</strong> in Google Cloud Console:
                 </p>
-                <div className="font-mono text-[11px] text-indigo-300 break-all select-all bg-slate-900 p-2 rounded border border-slate-800">
+                <div className="font-mono text-[11px] text-primary break-all select-all bg-base-100 p-2 rounded border border-base-300">
                   {authStatus.redirectUri || 'http://localhost:5001/auth/google/callback'}
                 </div>
               </div>
 
               {/* Required API & Scope */}
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800">
-                <span className="font-semibold text-slate-200">4. Gmail API Scope</span>
-                <p className="text-slate-400 text-[11px] mt-1">
+              <div className="p-3 rounded-xl bg-base-200 border border-base-300">
+                <span className="font-semibold text-base-content">4. Gmail API Scope</span>
+                <p className="text-base-content/70 text-[11px] mt-1">
                   Ensure <strong>Gmail API</strong> is enabled in your Google Cloud project library. Scope requested:
                 </p>
-                <code className="block font-mono text-[11px] text-slate-400 mt-1 bg-slate-900 p-1.5 rounded">
+                <code className="block font-mono text-[11px] text-base-content/70 mt-1 bg-base-100 p-1.5 rounded">
                   https://www.googleapis.com/auth/gmail.readonly
                 </code>
               </div>
             </div>
 
             {/* Actions */}
-            <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-800">
+            <div className="modal-action">
               <button
                 type="button"
                 onClick={() => setShowAuthModal(false)}
-                className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                className="btn btn-ghost btn-sm"
               >
                 Close
               </button>
               {authStatus.configured ? (
-                <a
-                  href="/auth/google"
-                  className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold cursor-pointer transition-colors"
-                >
+                <a href="/auth/google" className="btn btn-primary btn-sm">
                   Start Google OAuth Flow
                 </a>
               ) : (
-                <button
-                  disabled
-                  className="px-4 py-1.5 rounded-lg bg-slate-800 text-slate-500 text-xs font-semibold cursor-not-allowed"
-                >
+                <button type="button" disabled className="btn btn-disabled btn-sm">
                   Save Secret to Start
                 </button>
               )}
@@ -2529,25 +2270,25 @@ export default function App() {
       {/* ---------------------------------------------------- */}
       {showBlackbaudModal && (macWebview.running || macWebviewStarting) && (
         <div
-          className="fixed inset-0 z-50 bg-[rgb(var(--wla-ink)/0.45)] flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-neutral/50 flex items-center justify-center p-4"
           onClick={() => setShowBlackbaudModal(false)}
         >
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="mac-auth-title"
-            className="relative w-[min(100%,400px)] h-[min(90dvh,720px)] overflow-hidden border border-slate-800 bg-slate-900 shadow-xl wla-rule"
+            className="relative w-[min(100%,400px)] h-[min(90dvh,720px)] overflow-hidden border border-base-300 bg-base-100 shadow-xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="absolute top-3 left-3 right-3 z-10 flex items-center justify-between pointer-events-none">
-              <h3 id="mac-auth-title" className="text-[13px] font-semibold text-slate-100 bg-slate-900/90 rounded-full px-3 py-1.5">
+              <h3 id="mac-auth-title" className="text-[13px] font-semibold text-base-content bg-base-100 rounded-full px-3 py-1.5">
                 Sign in to Westlake
               </h3>
               <button
                 type="button"
                 aria-label="Close sign-in"
                 onClick={() => setShowBlackbaudModal(false)}
-                className="pointer-events-auto min-h-11 px-3 rounded-lg bg-slate-900/95 text-[13px] font-semibold text-slate-100 hover:bg-slate-800"
+                className="pointer-events-auto min-h-11 px-3 rounded-lg bg-base-100 text-[13px] font-semibold text-base-content hover:bg-base-200"
               >
                 Close
               </button>
@@ -2558,7 +2299,7 @@ export default function App() {
                   ref={macFrameRef}
                   title="Westlake Chromium on this Mac"
                   src={`${typeof window !== 'undefined' ? window.location.protocol : 'http:'}//${typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1'}:${macWebview.port || 5055}`}
-                  className="absolute inset-0 z-0 w-full h-full border-0 bg-slate-900"
+                  className="absolute inset-0 z-0 w-full h-full border-0 bg-base-100"
                   allow="clipboard-read; clipboard-write"
                   tabIndex={-1}
                   onLoad={focusMacKeys}
@@ -2580,7 +2321,7 @@ export default function App() {
                 />
               </>
             ) : (
-              <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-sm">
+              <div className="absolute inset-0 flex items-center justify-center text-base-content/70 text-sm">
                 Starting Chromium…
               </div>
             )}
@@ -2592,55 +2333,57 @@ export default function App() {
       {/* Blackbaud Portal Connection Modal                    */}
       {/* ---------------------------------------------------- */}
       {showBlackbaudModal && !(macWebview.running || macWebviewStarting) && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+        <div className="modal modal-open" onClick={() => setShowBlackbaudModal(false)}>
+          <div className="modal-box max-w-lg space-y-4" onClick={(e) => e.stopPropagation()}>
             {/* Header */}
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-500/20 to-blue-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-warning/20 to-info/20 text-warning flex items-center justify-center border border-warning/30">
                   <GraduationCap className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-white">Westlake Blackbaud Portal</h3>
-                  <p className="text-xs text-slate-400 font-mono">westlakelutheran.myschoolapp.com</p>
+                  <h3 className="text-base font-bold text-base-content">Westlake Blackbaud Portal</h3>
+                  <p className="text-xs text-base-content/70 font-mono">westlakelutheran.myschoolapp.com</p>
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => setShowBlackbaudModal(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer text-lg leading-none"
+                className="btn btn-sm btn-circle btn-ghost"
+                aria-label="Close Blackbaud settings"
               >
                 &times;
               </button>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-3 text-xs">
-              <span className="font-semibold text-slate-200 flex items-center gap-1.5">
-                <GraduationCap className="w-3.5 h-3.5 text-amber-400" />
+            <div className="p-3.5 rounded-xl bg-base-200 border border-base-300 space-y-3 text-xs">
+              <span className="font-semibold text-base-content flex items-center gap-1.5">
+                <GraduationCap className="w-3.5 h-3.5 text-warning" />
                 Sign in on this Mac
               </span>
-              <p className="text-slate-400 text-[11px] leading-relaxed">
+              <p className="text-base-content/70 text-[11px] leading-relaxed">
                 Chrome on this Mac opens only when someone clicks Log in with Blackbaud.
                 Each person gets their own dashboard session. Eric and Stefani see Ben and Jade;
                 Ben and Jade only see their own grades and tasks.
               </p>
               {macWebview.canStart && !macWebview.running && (
-                <p className="text-[11px] text-slate-500 leading-relaxed">
+                <p className="text-[11px] text-base-content/60 leading-relaxed">
                   Use Log in with Blackbaud on the landing page to start sign-in.
                 </p>
               )}
-              <p className="text-[11px] text-slate-500 leading-relaxed">
+              <p className="text-[11px] text-base-content/60 leading-relaxed">
                 Sync Grades refreshes this signed-in account. Log in with Blackbaud is the only
                 control that starts Chromium. Phones on Wi‑Fi use{' '}
-                <code className="bg-slate-800 px-1 py-0.5 rounded font-mono">http://&lt;this-mac&gt;:5173</code>.
+                <code className="bg-base-200 px-1 py-0.5 rounded font-mono">http://&lt;this-mac&gt;:5173</code>.
               </p>
             </div>
 
-            <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-3 text-xs">
-              <span className="font-semibold text-slate-200 flex items-center gap-1.5">
-                <Bookmark className="w-3.5 h-3.5 text-indigo-400" />
+            <div className="p-3.5 rounded-xl bg-base-200 border border-base-300 space-y-3 text-xs">
+              <span className="font-semibold text-base-content flex items-center gap-1.5">
+                <Bookmark className="w-3.5 h-3.5 text-primary" />
                 Send grades from the portal
               </span>
-              <p className="text-slate-400 text-[11px] leading-relaxed">
+              <p className="text-base-content/70 text-[11px] leading-relaxed">
                 Sign in at the Westlake portal, then click this bookmark. It keeps that tab
                 open, pulls grades there, and opens the dashboard in a new tab.
               </p>
@@ -2651,7 +2394,7 @@ export default function App() {
                     e.preventDefault();
                   }}
                   draggable
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600/20 border border-indigo-500/40 text-indigo-200 font-semibold cursor-grab active:cursor-grabbing"
+                  className="btn btn-primary btn-sm cursor-grab active:cursor-grabbing"
                 >
                   <Bookmark className="w-3.5 h-3.5" />
                   Send t to dashboard
@@ -2659,13 +2402,13 @@ export default function App() {
                 <button
                   type="button"
                   onClick={copyBlackbaudBookmarklet}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold cursor-pointer"
+                  className="btn btn-ghost btn-sm"
                 >
-                  {bookmarkletCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {bookmarkletCopied ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
                   {bookmarkletCopied ? 'Copied' : 'Copy bookmarklet'}
                 </button>
               </div>
-              <p className="text-[11px] text-slate-500 leading-relaxed">
+              <p className="text-[11px] text-base-content/60 leading-relaxed">
                 Drag the purple chip onto your bookmarks bar. Click it on the signed-in portal — it will not leave that tab.
               </p>
             </div>
@@ -2673,12 +2416,12 @@ export default function App() {
             {/* Connect Form */}
             <form onSubmit={handleConnectBlackbaud} className="space-y-3 text-xs">
               <div>
-                <label className="block font-semibold text-slate-200 mb-1">
+                <label className="block font-semibold text-base-content mb-1">
                   Cookie t value from Web Inspector
                 </label>
-                <p className="text-[11px] text-slate-500 mb-1.5 leading-relaxed">
+                <p className="text-[11px] text-base-content/60 mb-1.5 leading-relaxed">
                   Safari: Storage → Cookies → westlakelutheran.myschoolapp.com → cookie
-                  {' '}<code className="bg-slate-800 px-1 py-0.5 rounded text-amber-300 font-mono">t</code>.
+                  {' '}<code className="bg-base-200 px-1 py-0.5 rounded text-warning font-mono">t</code>.
                   It is HttpOnly (scripts cannot read it). Copy the Value column and paste it here.
                 </p>
                 <textarea
@@ -2687,49 +2430,49 @@ export default function App() {
                   value={blackbaudCookieInput}
                   onChange={(e) => setBlackbaudCookieInput(e.target.value)}
                   placeholder="Paste the t cookie value (GUID)"
-                  className="w-full px-3 py-2 bg-slate-950 rounded-xl border border-slate-700 text-slate-100 placeholder-slate-500 font-mono text-[11px] focus:outline-none focus:border-indigo-500 resize-none"
+                  className="textarea textarea-bordered w-full font-mono text-xs"
                 />
               </div>
 
               {/* Student IDs (Optional) */}
               <div className="grid grid-cols-2 gap-3 pt-1">
                 <div>
-                  <label className="block font-medium text-slate-300 mb-1 text-[11px]">
-                    Ben's Student ID <span className="text-slate-500">(Optional)</span>
+                  <label className="block font-medium text-base-content mb-1 text-[11px]">
+                    Ben's Student ID <span className="text-base-content/60">(Optional)</span>
                   </label>
                   <input
                     type="text"
                     value={blackbaudBenId}
                     onChange={(e) => setBlackbaudBenId(e.target.value)}
                     placeholder="Auto-detected"
-                    className="w-full px-3 py-1.5 bg-slate-950 rounded-lg border border-slate-700 text-slate-200 placeholder-slate-500 font-mono text-xs focus:outline-none focus:border-indigo-500"
+                    className="input input-bordered input-sm w-full font-mono"
                   />
                 </div>
                 <div>
-                  <label className="block font-medium text-slate-300 mb-1 text-[11px]">
-                    Jade's Student ID <span className="text-slate-500">(Optional)</span>
+                  <label className="block font-medium text-base-content mb-1 text-[11px]">
+                    Jade's Student ID <span className="text-base-content/60">(Optional)</span>
                   </label>
                   <input
                     type="text"
                     value={blackbaudJadeId}
                     onChange={(e) => setBlackbaudJadeId(e.target.value)}
                     placeholder="Auto-detected"
-                    className="w-full px-3 py-1.5 bg-slate-950 rounded-lg border border-slate-700 text-slate-200 placeholder-slate-500 font-mono text-xs focus:outline-none focus:border-indigo-500"
+                    className="input input-bordered input-sm w-full font-mono"
                   />
                 </div>
               </div>
 
               {/* Status information if already connected */}
               {blackbaudStatus.connected && (
-                <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 flex items-center justify-between text-xs text-emerald-300">
+                <div className="p-3 rounded-xl bg-success/10 border border-success/30 flex items-center justify-between text-xs text-success">
                   <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span className="w-2 h-2 rounded-full bg-success animate-pulse"></span>
                     <span>Currently connected to Westlake Lutheran Portal</span>
                   </div>
                   <button
                     type="button"
                     onClick={handleDisconnectBlackbaud}
-                    className="text-xs text-red-400 hover:text-red-300 underline cursor-pointer"
+                    className="btn btn-ghost btn-xs text-error"
                   >
                     Disconnect
                   </button>
@@ -2737,28 +2480,28 @@ export default function App() {
               )}
 
               {/* Actions */}
-              <div className="pt-3 flex items-center justify-end gap-2 border-t border-slate-800">
+              <div className="modal-action">
                 <button
                   type="button"
                   onClick={() => setShowBlackbaudModal(false)}
-                  className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+                  className="btn btn-ghost btn-sm"
                 >
                   Close
                 </button>
                 <button
                   type="submit"
                   disabled={isConnectingBlackbaud || !blackbaudCookieInput.trim()}
-                  className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-all shadow-md shadow-indigo-600/20 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+                  className="btn btn-primary btn-sm"
                 >
                   {isConnectingBlackbaud ? (
                     <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Connecting...</span>
+                      <span className="loading loading-spinner loading-xs" />
+                      Connecting...
                     </>
                   ) : (
                     <>
                       <Key className="w-3.5 h-3.5" />
-                      <span>Connect & Fetch Grades</span>
+                      Connect & Fetch Grades
                     </>
                   )}
                 </button>
@@ -2773,21 +2516,21 @@ export default function App() {
       {/* ---------------------------------------------------- */}
       {selectedTaskForModal && (
         <div
-          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+          className="modal modal-open"
           onClick={() => setSelectedTaskForModal(null)}
         >
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="assignment-detail-title"
-            className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col max-h-[92vh] overflow-hidden"
+            className="modal-box max-w-2xl p-6"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-800 shrink-0">
+            <div className="flex items-start justify-between gap-3 pb-4 border-b border-base-300 shrink-0">
               <button
                 type="button"
                 onClick={() => setSelectedTaskForModal(null)}
-                className="min-h-11 min-w-11 -ml-2 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-100"
+                className="btn btn-sm btn-circle btn-ghost"
                 aria-label="Close assignment details"
               >
                 &times;
@@ -2796,14 +2539,14 @@ export default function App() {
                 <span
                   className={`text-[13px] font-semibold px-2.5 py-1 rounded-md border ${
                     selectedTaskForModal.student === 'Ben'
-                      ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
-                      : 'bg-purple-500/10 text-purple-300 border-purple-500/30'
+                      ? 'bg-info/10 text-info border-info/30'
+                      : 'bg-secondary/10 text-secondary border-secondary/30'
                   }`}
                 >
                   {selectedTaskForModal.student}
                 </span>
                 {selectedTaskForModal.course && (
-                  <span className="text-[13px] px-2.5 py-1 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
+                  <span className="text-[13px] px-2.5 py-1 rounded-md bg-base-200 text-base-content border border-base-300">
                     {decodeHtmlEntities(selectedTaskForModal.course)}
                   </span>
                 )}
@@ -2815,21 +2558,21 @@ export default function App() {
               {/* Task Details Info */}
               <div className="space-y-3">
                 <div className="flex items-start justify-between gap-3">
-                  <h2 id="assignment-detail-title" className="text-[17px] sm:text-lg font-semibold text-white leading-snug">
+                  <h2 id="assignment-detail-title" className="text-[17px] sm:text-lg font-semibold text-base-content leading-snug">
                     {decodeHtmlEntities(selectedTaskForModal.title)}
                   </h2>
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                  <div className="flex items-center gap-3 text-xs text-slate-300">
-                    <span className="flex items-center gap-1.5 text-amber-400 font-medium">
+                  <div className="flex items-center gap-3 text-xs text-base-content">
+                    <span className="flex items-center gap-1.5 text-warning font-medium">
                       <Clock className="w-3.5 h-3.5" />
                       Due: {selectedTaskForModal.dueDate || '—'}
                     </span>
                     {selectedTaskForModal.assignedDate && (
                       <>
-                        <span className="text-slate-600">&bull;</span>
-                        <span className="text-slate-400">Assigned {selectedTaskForModal.assignedDate}</span>
+                        <span className="text-base-content/50">&bull;</span>
+                        <span className="text-base-content/70">Assigned {selectedTaskForModal.assignedDate}</span>
                       </>
                     )}
                   </div>
@@ -2839,26 +2582,24 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => toggleTask(selectedTaskForModal.id)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                      selectedTaskForModal.completed
-                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30'
-                        : 'bg-slate-800 text-slate-300 border border-slate-700 hover:border-slate-600 hover:text-white'
+                    className={`btn btn-sm ${
+                      selectedTaskForModal.completed ? 'btn-success btn-outline' : 'btn-outline'
                     }`}
                   >
                     {selectedTaskForModal.completed ? (
                       <>
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <CheckCircle2 className="w-3.5 h-3.5 text-success" />
                         Completed
                       </>
                     ) : (
                       <>
-                        <Circle className="w-3.5 h-3.5 text-slate-400" />
+                        <Circle className="w-3.5 h-3.5 text-base-content/70" />
                         Mark Complete
                       </>
                     )}
                   </button>
                   ) : (
-                    <span className="text-[13px] text-slate-400">
+                    <span className="text-[13px] text-base-content/70">
                       {selectedTaskForModal.pointsEarned != null
                         ? `${selectedTaskForModal.pointsEarned}${selectedTaskForModal.maxPoints ? ` / ${selectedTaskForModal.maxPoints}` : ''}`
                         : selectedTaskForModal.status === 'overdue'
@@ -2871,30 +2612,50 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                {selectedTaskForModal.teacher && (
-                  <p className="text-[13px] text-slate-400">{selectedTaskForModal.teacher}</p>
-                )}
-                {selectedTaskForModal.longDescription && (
-                  <p className="text-[15px] text-slate-300 leading-relaxed">
-                    {decodeHtmlEntities(selectedTaskForModal.longDescription)}
-                  </p>
-                )}
-                {selectedTaskForModal.comment && (
-                  <p className="text-[13px] text-slate-400">{decodeHtmlEntities(selectedTaskForModal.comment)}</p>
+                {(String(selectedTaskForModal.id || '').startsWith('bb_') || selectedTaskForModal.comment || selectedTaskForModal.longDescription) && (
+                <div className="rounded-xl border border-base-300 bg-base-100 p-3.5 space-y-2">
+                  <h3 className="text-[12px] font-semibold uppercase tracking-wider text-base-content/70">
+                    Teacher note
+                  </h3>
+                  {selectedTaskForModal.teacher && (
+                    <p className="text-[13px] text-base-content">{selectedTaskForModal.teacher}</p>
+                  )}
+                  {selectedTaskForModal.comment ? (
+                    <p className="text-[15px] text-base-content leading-relaxed">
+                      {decodeHtmlEntities(selectedTaskForModal.comment)}
+                    </p>
+                  ) : null}
+                  {selectedTaskForModal.longDescription ? (
+                    <div className={selectedTaskForModal.comment ? 'pt-2 border-t border-base-300' : ''}>
+                      <h4 className="text-[12px] font-semibold uppercase tracking-wider text-base-content/70">
+                        Directions
+                      </h4>
+                      <p className="mt-1 text-[15px] text-base-content leading-relaxed whitespace-pre-wrap">
+                        {decodeHtmlEntities(selectedTaskForModal.longDescription)}
+                      </p>
+                    </div>
+                  ) : assignmentDetailLoading ? (
+                    <p className="text-[13px] text-base-content/70">Loading directions…</p>
+                  ) : assignmentDetailError ? (
+                    <p className="text-[13px] text-base-content/70">Directions could not be loaded.</p>
+                  ) : !selectedTaskForModal.comment ? (
+                    <p className="text-[13px] text-base-content/70">No teacher note or directions for this assignment.</p>
+                  ) : null}
+                </div>
                 )}
               </div>
 
               {/* Original Email Announcement / Notification */}
               {(selectedTaskForModal.emailBody || selectedTaskForModal.emailSubject || selectedTaskForModal.emailFrom) && (
-                <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2">
+                <div className="bg-base-100 border border-base-300 rounded-xl p-3.5 space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-8 h-8 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 flex items-center justify-center shrink-0">
+                      <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/30 text-primary flex items-center justify-center shrink-0">
                         <Mail className="w-4 h-4" />
                       </div>
                       <div className="min-w-0">
-                        <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Email Sender</div>
-                        <div className="text-xs font-semibold text-slate-200 truncate">
+                        <div className="text-[10px] text-base-content/60 uppercase font-bold tracking-wider">Email Sender</div>
+                        <div className="text-xs font-semibold text-base-content truncate">
                           {decodeHtmlEntities(selectedTaskForModal.emailFrom || selectedTaskForModal.source || 'Teacher Announcement')}
                         </div>
                       </div>
@@ -2905,17 +2666,17 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => handleCopyEmailText(selectedTaskForModal.emailBody)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white border border-slate-700 text-xs font-medium transition-colors cursor-pointer shrink-0"
+                        className="btn btn-ghost btn-xs shrink-0"
                         title="Copy full email text"
                       >
                         {copiedEmailText ? (
                           <>
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                            <span className="text-emerald-400 font-semibold">Copied!</span>
+                            <Check className="w-3.5 h-3.5 text-success" />
+                            <span className="text-success font-semibold">Copied!</span>
                           </>
                         ) : (
                           <>
-                            <Copy className="w-3.5 h-3.5 text-slate-400" />
+                            <Copy className="w-3.5 h-3.5 text-base-content/70" />
                             <span>Copy Email</span>
                           </>
                         )}
@@ -2925,17 +2686,17 @@ export default function App() {
 
                   {/* Subject Line */}
                   {selectedTaskForModal.emailSubject && (
-                    <div className="pt-2 border-t border-slate-800/80 text-xs text-slate-300 flex items-baseline gap-2">
-                      <span className="text-slate-500 shrink-0 font-medium">Subject:</span>
-                      <span className="text-slate-200 font-semibold truncate">{decodeHtmlEntities(selectedTaskForModal.emailSubject)}</span>
+                    <div className="pt-2 border-t border-base-300 text-xs text-base-content flex items-baseline gap-2">
+                      <span className="text-base-content/60 shrink-0 font-medium">Subject:</span>
+                      <span className="text-base-content font-semibold truncate">{decodeHtmlEntities(selectedTaskForModal.emailSubject)}</span>
                     </div>
                   )}
 
                   {/* Sent Date */}
                   {selectedTaskForModal.emailDate && (
-                    <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                    <div className="text-[11px] text-base-content/60 flex items-center gap-1.5">
                       <span>Sent:</span>
-                      <span className="text-slate-400">
+                      <span className="text-base-content/70">
                         {isNaN(new Date(selectedTaskForModal.emailDate).getTime())
                           ? selectedTaskForModal.emailDate
                           : new Date(selectedTaskForModal.emailDate).toLocaleString('en-US', {
@@ -2954,13 +2715,13 @@ export default function App() {
                   {selectedTaskForModal.emailBody && (
                     <div className="pt-2">
                       <div className="flex items-center justify-between pb-1.5">
-                        <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                          <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                        <span className="text-[10px] font-semibold text-base-content/70 uppercase tracking-wider flex items-center gap-1.5">
+                          <FileText className="w-3.5 h-3.5 text-primary" />
                           Full Email Message
                         </span>
-                        <span className="text-[10px] text-slate-500">Scroll to view entire text</span>
+                        <span className="text-[10px] text-base-content/60">Scroll to view entire text</span>
                       </div>
-                      <div className="max-h-[220px] overflow-y-auto bg-slate-950/90 border border-slate-800 rounded-xl p-3.5 text-xs text-slate-200 leading-relaxed whitespace-pre-wrap select-text selection:bg-indigo-500/40 font-mono">
+                      <div className="max-h-[220px] overflow-y-auto bg-base-200 border border-base-300 rounded-xl p-3.5 text-xs text-base-content leading-relaxed whitespace-pre-wrap select-text selection:bg-primary/40 font-mono">
                         {decodeHtmlEntities(selectedTaskForModal.emailBody)}
                       </div>
                     </div>
@@ -2971,40 +2732,40 @@ export default function App() {
               {/* Collaboration & Comments Thread */}
               <div className="pt-2">
                 <div className="flex items-center justify-between pb-3">
-                  <h3 className="text-[13px] font-semibold text-slate-300">Notes</h3>
-                  <span className="text-[13px] tabular-nums text-slate-500">
+                  <h3 className="text-[13px] font-semibold text-base-content">Notes</h3>
+                  <span className="text-[13px] tabular-nums text-base-content/60">
                     {(selectedTaskForModal.comments || []).length}
                   </span>
                 </div>
 
                 <div className="space-y-2.5 min-h-[90px] max-h-[200px] overflow-y-auto pr-1">
                   {(selectedTaskForModal.comments || []).length === 0 ? (
-                    <div className="text-center py-6 px-4 rounded-xl border border-dashed border-slate-800 text-slate-500">
-                      <p className="text-[13px] font-medium text-slate-400">No notes yet</p>
-                      <p className="text-[13px] text-slate-500 mt-0.5">Add a note as {blackbaudStatus.displayName || blackbaudStatus.accountName || 'the signed-in account'}.</p>
+                    <div className="text-center py-6 px-4 rounded-xl border border-dashed border-base-300 text-base-content/60">
+                      <p className="text-[13px] font-medium text-base-content/70">No notes yet</p>
+                      <p className="text-[13px] text-base-content/60 mt-0.5">Add a note as {blackbaudStatus.displayName || blackbaudStatus.accountName || 'the signed-in account'}.</p>
                     </div>
                   ) : (
                     (selectedTaskForModal.comments || []).map(comment => (
                       <div
                         key={comment.id}
-                        className="p-3 rounded-xl bg-slate-950/80 border border-slate-800/90"
+                        className="p-3 rounded-xl bg-base-200 border border-base-300"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2 min-w-0">
                             <ProfileAvatar name={comment.author} photoUrl={comment.authorPhoto} size={28} />
-                            <span className="text-[13px] font-semibold text-slate-200 truncate">{comment.author}</span>
-                            <span className="text-[12px] text-slate-500 shrink-0">{comment.timestamp}</span>
+                            <span className="text-[13px] font-semibold text-base-content truncate">{comment.author}</span>
+                            <span className="text-[12px] text-base-content/60 shrink-0">{comment.timestamp}</span>
                           </div>
                           <button
                             type="button"
                             onClick={() => handleDeleteComment(selectedTaskForModal.id, comment.id)}
-                            className="min-h-11 min-w-11 inline-flex items-center justify-center text-slate-500 hover:text-red-400"
+                            className="min-h-11 min-w-11 inline-flex items-center justify-center text-base-content/60 hover:text-error"
                             aria-label="Delete note"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
-                        <p className="text-[13px] text-slate-300 mt-2 leading-relaxed whitespace-pre-wrap pl-9">
+                        <p className="text-[13px] text-base-content mt-2 leading-relaxed whitespace-pre-wrap pl-9">
                           {decodeHtmlEntities(comment.text)}
                         </p>
                       </div>
@@ -3012,7 +2773,7 @@ export default function App() {
                   )}
                 </div>
 
-                <form onSubmit={handleAddComment} className="pt-3 mt-3 border-t border-slate-800/80">
+                <form onSubmit={handleAddComment} className="pt-3 mt-3 border-t border-base-300">
                   <div className="flex items-start gap-2">
                     <ProfileAvatar
                       name={blackbaudStatus.displayName || blackbaudStatus.accountName || 'Family'}
@@ -3020,11 +2781,11 @@ export default function App() {
                       size={36}
                     />
                     <div className="flex-1 min-w-0">
-                      <p className="text-[13px] font-medium text-slate-200">
+                      <p className="text-[13px] font-medium text-base-content">
                         {blackbaudStatus.displayName || blackbaudStatus.accountName || 'Family'}
                       </p>
                       {blackbaudStatus.email && (
-                        <p className="text-[12px] text-slate-500 truncate">{blackbaudStatus.email}</p>
+                        <p className="text-[12px] text-base-content/60 truncate">{blackbaudStatus.email}</p>
                       )}
                       <div className="mt-2 flex gap-2">
                         <textarea
@@ -3033,7 +2794,7 @@ export default function App() {
                           onChange={(e) => setCommentText(e.target.value)}
                           rows={2}
                           aria-label="Assignment note"
-                          className="flex-1 px-3 py-2 text-[15px] bg-slate-950 rounded-lg border border-slate-700 text-slate-100 placeholder-slate-500 focus:outline-none resize-none"
+                          className="textarea textarea-bordered textarea-sm flex-1"
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' && !e.shiftKey) {
                               e.preventDefault();
@@ -3044,7 +2805,7 @@ export default function App() {
                         <button
                           type="submit"
                           disabled={!commentText.trim()}
-                          className="min-h-11 px-4 bg-indigo-600 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-white text-[13px] font-semibold rounded-lg flex items-center justify-center gap-1.5 shrink-0"
+                          className="btn btn-primary btn-sm shrink-0"
                         >
                           <Send className="w-3.5 h-3.5" />
                           Post
@@ -3057,11 +2818,11 @@ export default function App() {
             </div>
 
             {/* Modal Footer */}
-            <div className="pt-3 border-t border-slate-800 flex items-center justify-end shrink-0">
+            <div className="pt-3 border-t border-base-300 flex items-center justify-end shrink-0">
               <button
                 type="button"
                 onClick={() => setSelectedTaskForModal(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                className="btn btn-ghost btn-sm"
               >
                 Close
               </button>
@@ -3075,24 +2836,26 @@ export default function App() {
       {/* ---------------------------------------------------- */}
       {selectedEventForModal && (
         <div
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"
+          className="modal modal-open"
           onClick={() => setSelectedEventForModal(null)}
         >
           <div
-            className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col max-h-[90vh] overflow-hidden"
+            role="dialog"
+            aria-modal="true"
+            className="modal-box max-w-2xl p-6 flex flex-col max-h-[90vh]"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Modal Top Badges & Close Button */}
-            <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-800 shrink-0">
+            <div className="flex items-start justify-between gap-3 pb-4 border-b border-base-300 shrink-0">
               <div className="flex flex-wrap items-center gap-2">
                 {/* Student Badge */}
                 <span
                   className={`text-xs font-semibold px-2.5 py-1 rounded-md border ${
                     selectedEventForModal.student === 'Ben'
-                      ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
+                      ? 'bg-info/10 text-info border-info/30'
                       : selectedEventForModal.student === 'Jade'
-                      ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
-                      : 'bg-slate-800 text-slate-300 border-slate-700'
+                      ? 'bg-secondary/10 text-secondary border-secondary/30'
+                      : 'bg-base-200 text-base-content border-base-300'
                   }`}
                 >
                   {selectedEventForModal.student}
@@ -3102,10 +2865,10 @@ export default function App() {
                 <span
                   className={`text-xs font-medium px-2.5 py-1 rounded-md border flex items-center gap-1.5 ${
                     selectedEventForModal.type === 'sports'
-                      ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                      ? 'bg-warning/10 text-warning border-warning/30'
                       : selectedEventForModal.type === 'academic'
-                      ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                      : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/30'
+                      ? 'bg-emerald-500/10 text-success border-success/30'
+                      : 'bg-primary/10 text-primary border-primary/30'
                   }`}
                 >
                   {selectedEventForModal.type === 'sports' ? (
@@ -3117,13 +2880,13 @@ export default function App() {
                 </span>
 
                 {/* Source Badge */}
-                <span className="text-xs px-2 py-0.5 rounded bg-slate-800/90 text-slate-400 border border-slate-700/60">
+                <span className="text-xs px-2 py-0.5 rounded bg-base-200/90 text-base-content/70 border border-base-300">
                   {selectedEventForModal.source}
                 </span>
 
                 {/* Status indicator */}
                 {selectedEventForModal.acknowledged && (
-                  <span className="text-[10px] font-medium text-emerald-400/90 bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-500/20 inline-flex items-center gap-1">
+                  <span className="text-[10px] font-medium text-success bg-success/10 px-2 py-0.5 rounded border border-success/20 inline-flex items-center gap-1">
                     <CheckCheck className="w-3 h-3" />
                     <span>Acknowledged</span>
                   </span>
@@ -3133,34 +2896,35 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setSelectedEventForModal(null)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer text-lg leading-none"
+                className="btn btn-sm btn-circle btn-ghost"
+                aria-label="Close event details"
               >
                 &times;
               </button>
             </div>
 
             {/* Event Title & Schedule Info Bar */}
-            <div className="py-4 border-b border-slate-800/80 space-y-3 shrink-0">
+            <div className="py-4 border-b border-base-300 space-y-3 shrink-0">
               <div className="flex items-start justify-between gap-3">
-                <h2 className="text-base sm:text-lg font-bold text-white leading-snug">
+                <h2 className="text-base sm:text-lg font-bold text-base-content leading-snug">
                   {decodeHtmlEntities(selectedEventForModal.title)}
                 </h2>
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-300">
-                  <span className="flex items-center gap-1.5 text-amber-400 font-medium">
+                <div className="flex flex-wrap items-center gap-3 text-xs text-base-content">
+                  <span className="flex items-center gap-1.5 text-warning font-medium">
                     <Calendar className="w-3.5 h-3.5" />
                     {selectedEventForModal.date}
                   </span>
-                  <span className="text-slate-600">&bull;</span>
-                  <span className="flex items-center gap-1 text-slate-300 font-mono">
-                    <Clock className="w-3.5 h-3.5 text-slate-400" />
+                  <span className="text-base-content/50">&bull;</span>
+                  <span className="flex items-center gap-1 text-base-content font-mono">
+                    <Clock className="w-3.5 h-3.5 text-base-content/70" />
                     {selectedEventForModal.time}
                   </span>
-                  <span className="text-slate-600">&bull;</span>
-                  <span className="flex items-center gap-1 text-slate-300">
-                    <MapPin className="w-3.5 h-3.5 text-red-400" />
+                  <span className="text-base-content/50">&bull;</span>
+                  <span className="flex items-center gap-1 text-base-content">
+                    <MapPin className="w-3.5 h-3.5 text-error" />
                     {decodeHtmlEntities(selectedEventForModal.location)}
                   </span>
                 </div>
@@ -3171,19 +2935,19 @@ export default function App() {
                     <button
                       type="button"
                       onClick={(e) => acknowledgeEvent(selectedEventForModal.id, e)}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-slate-800 hover:bg-emerald-500/20 text-slate-300 hover:text-emerald-300 border border-slate-700 hover:border-emerald-500/40 transition-all cursor-pointer"
+                      className="btn btn-success btn-outline btn-sm"
                     >
-                      <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Acknowledge</span>
+                      <Check className="w-3.5 h-3.5" />
+                      Acknowledge
                     </button>
                   ) : (
                     <button
                       type="button"
                       onClick={(e) => restoreEvent(selectedEventForModal.id, e)}
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-slate-800 hover:bg-indigo-500/20 text-slate-300 hover:text-indigo-300 border border-slate-700 hover:border-indigo-500/40 transition-all cursor-pointer"
+                      className="btn btn-outline btn-sm"
                     >
-                      <RotateCcw className="w-3.5 h-3.5 text-indigo-400" />
-                      <span>Restore to Active</span>
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      Restore to Active
                     </button>
                   )}
 
@@ -3194,7 +2958,7 @@ export default function App() {
                         deleteEvent(selectedEventForModal.id, selectedEventForModal.title, selectedEventForModal.date, e);
                       }
                     }}
-                    className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/30 transition-all cursor-pointer"
+                    className="btn btn-ghost btn-sm btn-square text-error"
                     title="Delete event permanently"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -3206,19 +2970,19 @@ export default function App() {
             {/* Email Metadata & Full Body Section */}
             <div className="flex-1 flex flex-col min-h-0 pt-4 space-y-3">
               {/* Sender & Subject Header Box */}
-              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2 shrink-0">
+              <div className="bg-base-100 border border-base-300 rounded-xl p-3.5 space-y-2 shrink-0">
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 flex items-center justify-center shrink-0">
+                    <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/30 text-primary flex items-center justify-center shrink-0">
                       <Mail className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
-                      <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Email Sender</div>
-                      <div className="text-xs font-semibold text-slate-200 truncate">
+                      <div className="text-[10px] text-base-content/60 uppercase font-bold tracking-wider">Email Sender</div>
+                      <div className="text-xs font-semibold text-base-content truncate">
                         {decodeHtmlEntities(selectedEventForModal.emailFrom || selectedEventForModal.rawEmailFrom || 'sportsYou / School Notification')}
                       </div>
                       {selectedEventForModal.rawEmailFrom && selectedEventForModal.emailFrom !== selectedEventForModal.rawEmailFrom && (
-                        <div className="text-[10px] text-slate-500 truncate">
+                        <div className="text-[10px] text-base-content/60 truncate">
                           via {decodeHtmlEntities(selectedEventForModal.rawEmailFrom)}
                         </div>
                       )}
@@ -3229,17 +2993,17 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => handleCopyEmailText(selectedEventForModal.emailBody || selectedEventForModal.description || '')}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white border border-slate-700 text-xs font-medium transition-colors cursor-pointer shrink-0"
+                    className="btn btn-ghost btn-xs"
                     title="Copy full email text"
                   >
                     {copiedEmailText ? (
                       <>
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        <span className="text-emerald-400 font-semibold">Copied!</span>
+                        <Check className="w-3.5 h-3.5 text-success" />
+                        <span className="text-success font-semibold">Copied!</span>
                       </>
                     ) : (
                       <>
-                        <Copy className="w-3.5 h-3.5 text-slate-400" />
+                        <Copy className="w-3.5 h-3.5 text-base-content/70" />
                         <span>Copy Text</span>
                       </>
                     )}
@@ -3248,17 +3012,17 @@ export default function App() {
 
                 {/* Email Subject */}
                 {selectedEventForModal.emailSubject && (
-                  <div className="pt-2 border-t border-slate-800/80 text-xs text-slate-300 flex items-baseline gap-2">
-                    <span className="text-slate-500 shrink-0 font-medium">Subject:</span>
-                    <span className="text-slate-200 font-semibold truncate">{decodeHtmlEntities(selectedEventForModal.emailSubject)}</span>
+                  <div className="pt-2 border-t border-base-300 text-xs text-base-content flex items-baseline gap-2">
+                    <span className="text-base-content/60 shrink-0 font-medium">Subject:</span>
+                    <span className="text-base-content font-semibold truncate">{decodeHtmlEntities(selectedEventForModal.emailSubject)}</span>
                   </div>
                 )}
 
                 {/* Email Date if present */}
                 {selectedEventForModal.emailDate && (
-                  <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                  <div className="text-[11px] text-base-content/60 flex items-center gap-1.5">
                     <span>Sent:</span>
-                    <span className="text-slate-400">
+                    <span className="text-base-content/70">
                       {isNaN(new Date(selectedEventForModal.emailDate).getTime())
                         ? selectedEventForModal.emailDate
                         : new Date(selectedEventForModal.emailDate).toLocaleString('en-US', {
@@ -3277,31 +3041,31 @@ export default function App() {
               {/* Scrollable Email Text Body */}
               <div className="flex-1 flex flex-col min-h-0">
                 <div className="flex items-center justify-between pb-1.5">
-                  <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                    <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                  <span className="text-xs font-semibold text-base-content/70 uppercase tracking-wider flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-primary" />
                     Full Email Message
                   </span>
-                  <span className="text-[11px] text-slate-500">Original message content</span>
+                  <span className="text-[11px] text-base-content/60">Original message content</span>
                 </div>
 
-                <div className="flex-1 overflow-y-auto bg-slate-950/90 border border-slate-800 rounded-xl p-4 text-xs text-slate-200 leading-relaxed whitespace-pre-wrap select-text selection:bg-indigo-500/40 font-mono">
+                <div className="flex-1 overflow-y-auto bg-base-200 border border-base-300 rounded-xl p-4 text-xs text-base-content leading-relaxed whitespace-pre-wrap select-text selection:bg-primary/40 font-mono">
                   {selectedEventForModal.emailBody ? (
                     decodeHtmlEntities(selectedEventForModal.emailBody)
                   ) : selectedEventForModal.description ? (
                     decodeHtmlEntities(selectedEventForModal.description)
                   ) : (
-                    <span className="text-slate-500 italic">No additional email text body available.</span>
+                    <span className="text-base-content/60 italic">No additional email text body available.</span>
                   )}
                 </div>
               </div>
             </div>
 
             {/* Modal Footer */}
-            <div className="pt-4 mt-3 border-t border-slate-800 flex items-center justify-end shrink-0">
+            <div className="modal-action">
               <button
                 type="button"
                 onClick={() => setSelectedEventForModal(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                className="btn btn-ghost btn-sm"
               >
                 Close
               </button>
