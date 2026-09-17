@@ -1,5 +1,17 @@
+import { classifySportsYouEvent } from '../../src/lib/sportsyouClassify.js';
+
+export { classifySportsYouEvent };
+
 const DEFAULT_CALENDAR_URL = 'https://calendar.sportsyou.com/access/us-0ed4570c-7c7d-4bb3-8dc6-612c8d80b1cd/101ac9b5-86d4-4a09-8b4c-afdf8d52edb5';
 const TZ = 'America/Chicago';
+const CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+
+/** webcal:// and https:// are the same ICS feed. */
+export function toHttpsCalendarUrl(url) {
+  const raw = String(url || DEFAULT_CALENDAR_URL).trim();
+  if (!raw) return DEFAULT_CALENDAR_URL;
+  return raw.replace(/^webcal:/i, 'https:');
+}
 
 export function unfoldIcs(text) {
   return String(text || '')
@@ -42,36 +54,6 @@ function parseIcsDate(raw) {
   };
 }
 
-export function classifySportsYouEvent(summary) {
-  const s = String(summary || '').toLowerCase();
-  if (s.includes('volleyball')) {
-    return { sport: 'Volleyball', student: 'Jade' };
-  }
-  if (
-    s.includes('boys bb')
-    || s.includes('boys basketball')
-    || s.includes('boy\'s basketball')
-    || s.includes('hs boys')
-    || /\bbb\b/.test(s)
-    || s.includes('basketball')
-  ) {
-    return { sport: 'Boys BB', student: 'Ben' };
-  }
-  if (
-    /\bcc\b/.test(s)
-    || s.includes('cross country')
-    || s.includes(' xc ')
-    || s.includes('xc practice')
-    || s.includes('xc classic')
-    || s.includes('xc invitational')
-    || s.includes('xc championship')
-    || s.includes('xc meet')
-  ) {
-    return { sport: 'CC', student: 'All' };
-  }
-  return { sport: 'Athletics', student: 'All' };
-}
-
 function formatWhen(parsed, allDay) {
   if (!parsed) {
     return { date: '', time: '', sortAt: 0 };
@@ -93,14 +75,19 @@ function formatWhen(parsed, allDay) {
   return { date, time, sortAt: parsed.getTime() };
 }
 
+function icsPropValue(line) {
+  const idx = line.indexOf(':');
+  if (idx < 1) return null;
+  const key = line.slice(0, idx).split(';')[0].toUpperCase();
+  return { key, value: unescapeIcs(line.slice(idx + 1)) };
+}
+
 function parseVEventBlock(block) {
   const props = {};
   for (const line of block.split('\n')) {
-    const idx = line.indexOf(':');
-    if (idx < 1) continue;
-    const keyPart = line.slice(0, idx);
-    const key = keyPart.split(';')[0].toUpperCase();
-    props[key] = unescapeIcs(line.slice(idx + 1));
+    const parsed = icsPropValue(line);
+    if (!parsed) continue;
+    props[parsed.key] = parsed.value;
   }
   const summary = props.SUMMARY || '';
   if (!summary) return null;
@@ -154,16 +141,21 @@ function startOfTodayChicago() {
 }
 
 export async function fetchSportsYouCalendar(url = process.env.SPORTSYOU_CALENDAR_URL || DEFAULT_CALENDAR_URL) {
-  const res = await fetch(url, {
+  const href = toHttpsCalendarUrl(url);
+  const res = await fetch(href, {
     headers: {
       Accept: 'text/calendar, text/plain, */*',
-      'User-Agent': 'WestlakeFamilyFolder/1.0'
-    }
+      'User-Agent': CHROME_UA
+    },
+    redirect: 'follow'
   });
   if (!res.ok) {
     throw new Error(`sportsYou calendar HTTP ${res.status}`);
   }
   const text = await res.text();
+  if (!/BEGIN:VCALENDAR/i.test(text)) {
+    throw new Error('sportsYou calendar did not return ICS');
+  }
   const events = parseSportsYouIcs(text);
   const today = startOfTodayChicago();
   return events.filter((event) => (event.endAt || event.sortAt) >= today);

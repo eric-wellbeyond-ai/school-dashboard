@@ -39,6 +39,7 @@ import {
 } from 'lucide-react';
 import { buildBlackbaudBookmarklet } from './blackbaudBookmarklet.js';
 import LandingPage from './LandingPage.jsx';
+import CalendarBoard from './CalendarBoard.jsx';
 import {
   classifyAssignment,
   formatAssignmentDate,
@@ -46,6 +47,13 @@ import {
   parsePortalDate,
   assignmentSortValue
 } from './lib/assignmentBuckets.js';
+import { classifySportsYouEvent } from './lib/sportsyouClassify.js';
+import {
+  assignmentPercent,
+  gradeBandFromLetterOrPercent,
+  gradeToneClass
+} from './lib/gradeColors.js';
+import { formatAssignmentScore } from './lib/assignmentScore.js';
 
 /**
  * Decode all HTML entities (named, decimal, hex) and strip raw HTML tags
@@ -107,6 +115,26 @@ function courseGradeValue(course, mode) {
   return letter || percent || '—';
 }
 
+const GRADE_CHIP_CLASS =
+  'inline-flex min-w-[2.75rem] justify-center tabular-nums font-semibold text-[13px] px-2 py-0.5 rounded-md border';
+
+function AssignmentScoreChip({ earned, max, letter, className = '' }) {
+  const score = formatAssignmentScore(earned, max);
+  const letterText = String(letter || '').trim();
+  if (score.percent == null && !letterText) return null;
+  const band = gradeBandFromLetterOrPercent(letterText, score.percent);
+  return (
+    <span className={`inline-flex flex-col items-end gap-0.5 ${className}`}>
+      <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass(band)}`}>
+        {score.percentLabel || letterText}
+      </span>
+      {score.raw ? (
+        <span className="text-[11px] tabular-nums text-base-content/60">{score.raw}</span>
+      ) : null}
+    </span>
+  );
+}
+
 function CourseGradeList({ groups, mode }) {
   if (!groups.length) return null;
   return (
@@ -125,16 +153,24 @@ function CourseGradeList({ groups, mode }) {
               </tr>
             </thead>
             <tbody>
-              {group.rows.map((c, idx) => (
+              {group.rows.map((c, idx) => {
+                const value = courseGradeValue(c, mode);
+                const band = gradeBandFromLetterOrPercent(c.letterGrade, c.percentage || c.numericGrade);
+                return (
                 <tr key={`${group.key}-${c.course || idx}`}>
                   <td className="font-medium">{decodeHtmlEntities(c.course)}</td>
                   <td className="text-base-content/70">
                     {decodeHtmlEntities(c.teacher || 'Teacher TBA')}
                     {c.room ? ` · Rm ${c.room}` : ''}
                   </td>
-                  <td className="text-right font-semibold tabular-nums">{courseGradeValue(c, mode)}</td>
+                  <td className="text-right">
+                    <span className={`${GRADE_CHIP_CLASS} ${gradeToneClass(band)}`}>
+                      {value}
+                    </span>
+                  </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -349,8 +385,7 @@ export default function App() {
   const loadSportsYouCalendar = async () => {
     try {
       const res = await fetch('/api/calendar/sportsyou');
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (Array.isArray(data.events)) {
         setCalendarEvents(applyCalendarAcks(data.events));
       }
@@ -1352,8 +1387,15 @@ export default function App() {
     });
 
   const scheduleEvents = useMemo(() => {
-    const inbox = (events || []).map((ev) => ({ ...ev, feed: ev.feed || 'inbox' }));
-    const calendar = calendarEvents || [];
+    const tagged = (list, feed) => (list || []).map((ev) => {
+      const classified = classifySportsYouEvent(ev.title || '');
+      const mapped = classified.sport === 'CC' || classified.sport === 'Volleyball' || classified.sport === 'Boys BB'
+        ? { ...ev, sport: ev.sport || classified.sport, student: classified.student }
+        : { ...ev, feed: ev.feed || feed };
+      return { ...mapped, feed: ev.feed || feed };
+    });
+    const inbox = tagged(events, 'inbox');
+    const calendar = tagged(calendarEvents, 'calendar');
     if (eventSource === 'calendar') return calendar;
     if (eventSource === 'inbox') return inbox;
     const seen = new Set(calendar.map((ev) => `${(ev.title || '').toLowerCase().replace(/\s+/g, ' ').trim()}|${ev.date}`));
@@ -1697,7 +1739,7 @@ export default function App() {
 
           {/* Assignments on top; classes and calendar side by side below */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-            <section className="order-2 card bg-base-100 border border-base-300 shadow-sm">
+            <section className="order-2 lg:col-start-1 lg:row-start-2 min-w-0 card bg-base-100 border border-base-300 shadow-sm">
               <div className="card-body p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -1794,7 +1836,7 @@ export default function App() {
             {/* ---------------------------------------------------- */}
             {/* Assignments stacked beside classes                   */}
             {/* ---------------------------------------------------- */}
-            <section className="order-1 lg:col-span-2 card bg-base-100 border border-base-300 shadow-sm flex flex-col">
+            <section className="order-1 lg:col-span-2 lg:row-start-1 card bg-base-100 border border-base-300 shadow-sm flex flex-col">
               <div className="card-body p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -2008,10 +2050,15 @@ export default function App() {
                               <p className={`text-[13px] tabular-nums ${task.status === 'overdue' ? 'text-error' : 'text-base-content'}`}>
                                 {task.dueDate || 'No due date'}
                               </p>
-                              {task.status === 'done' && task.pointsEarned != null ? (
-                                <p className="text-[12px] text-base-content/70 tabular-nums">
-                                  {task.pointsEarned}{task.maxPoints ? `/${task.maxPoints}` : ''}
-                                </p>
+                              {assignmentPercent(task.pointsEarned, task.maxPoints) != null
+                                || String(task.letter || task.letterGrade || '').trim() ? (
+                                <div className="mt-1">
+                                  <AssignmentScoreChip
+                                    earned={task.pointsEarned}
+                                    max={task.maxPoints}
+                                    letter={task.letter || task.letterGrade}
+                                  />
+                                </div>
                               ) : task.assignedDate ? (
                                 <p className="text-[12px] text-base-content/60">Assigned {task.assignedDate}</p>
                               ) : null}
@@ -2030,7 +2077,7 @@ export default function App() {
               </div>
             </section>
 
-            <section className="order-3 card bg-base-100 border border-base-300 shadow-sm">
+            <section className="order-3 lg:col-start-2 lg:row-start-2 min-w-0 min-h-[36rem] overflow-visible card bg-base-100 border border-base-300 shadow-sm">
               <div className="card-body p-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
@@ -2038,7 +2085,7 @@ export default function App() {
                       Events
                       <span className="badge badge-ghost font-normal">{activeEventsCount} active</span>
                     </h2>
-                    <p className="text-sm text-base-content/70">sportsYou calendar and inbox</p>
+                    <p className="text-sm text-base-content/70">Live sportsYou calendar</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                 <div className="join">
@@ -2083,173 +2130,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Event Cards List */}
-              <div className="mt-4 space-y-3 flex-1 overflow-y-auto max-h-[620px] pr-1">
-                {filteredEvents.length === 0 ? (
-                  <div className="text-center py-12 px-6 rounded-xl border border-dashed border-base-300 text-base-content/70 bg-base-200">
-                    <Calendar className="w-8 h-8 mx-auto mb-2 text-base-content/50" />
-                    <p className="text-sm font-semibold text-base-content">
-                      {eventFilter === 'acknowledged' ? 'No Acknowledged Events' : 'No Events Scheduled'}
-                    </p>
-                    <p className="text-xs text-base-content/60 mt-1 max-w-xs mx-auto">
-                      {eventFilter === 'acknowledged'
-                        ? 'Events that you acknowledge from the active list will appear here.'
-                        : eventSource === 'calendar'
-                        ? 'Upcoming volleyball, boys basketball, cross country, and athletics from sportsYou.'
-                        : !authStatus.authenticated
-                        ? 'Connect your Gmail account to scan for games, practices, and school chapel schedules.'
-                        : 'All scheduled events have been acknowledged or no upcoming events were found.'}
-                    </p>
-                  </div>
-                ) : (
-                  filteredEvents.map(event => {
-                    const isSports = event.type === 'sports';
-                    const isBen = event.student === 'Ben';
-                    const isJade = event.student === 'Jade';
-
-                    return (
-                      <div
-                        key={event.id}
-                        onClick={() => setSelectedEventForModal(event)}
-                        className={`group relative p-3.5 rounded-xl transition-all duration-150 shadow-sm border cursor-pointer ${
-                          event.acknowledged
-                            ? 'bg-base-200 border-base-300 hover:border-base-300 opacity-80'
-                            : 'bg-base-100 border-base-300 hover:border-primary/50 hover:bg-base-100 hover:shadow-md'
-                        }`}
-                      >
-                        {/* Top Header Row: Date/Time on left, Compact Actions on right */}
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 text-xs font-semibold text-warning">
-                            <Calendar className="w-3.5 h-3.5 shrink-0" />
-                            <span>{event.date}</span>
-                            <span className="text-base-content/50">&bull;</span>
-                            <span className="text-base-content flex items-center gap-1 font-mono text-[11px]">
-                              <Clock className="w-3 h-3 text-base-content/70 shrink-0" />
-                              {event.time}
-                            </span>
-                          </div>
-
-                          {/* Seamless Integrated Actions */}
-                          <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
-                            {!event.acknowledged ? (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={(e) => acknowledgeEvent(event.id, e)}
-                                  title="Acknowledge (remove from active list)"
-                                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-base-200 hover:bg-success/10 text-base-content/70 hover:text-success border border-base-300 hover:border-success/30 text-[11px] font-medium transition-all cursor-pointer"
-                                >
-                                  <Check className="w-3.5 h-3.5 text-success" />
-                                  <span className="hidden sm:inline">Acknowledge</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => deleteEvent(event.id, event.title, event.date, e)}
-                                  title="Delete event permanently"
-                                  className="p-1 rounded-md text-base-content/60 hover:text-error hover:bg-error/10 transition-colors cursor-pointer"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <span className="text-[10px] font-medium text-success bg-success/10 px-1.5 py-0.5 rounded border border-success/20 inline-flex items-center gap-1">
-                                  <CheckCheck className="w-3 h-3" />
-                                  <span>Ack'd</span>
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={(e) => restoreEvent(event.id, e)}
-                                  title="Restore to active schedule"
-                                  className="p-1 rounded-md text-base-content/70 hover:text-primary hover:bg-primary/10 transition-colors cursor-pointer"
-                                >
-                                  <RotateCcw className="w-3.5 h-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => deleteEvent(event.id, event.title, event.date, e)}
-                                  title="Delete event permanently"
-                                  className="p-1 rounded-md text-base-content/60 hover:text-error hover:bg-error/10 transition-colors cursor-pointer"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Title: Unobstructed full width */}
-                        <h3 className="text-sm font-bold text-base-content mt-2 leading-snug group-hover:text-base-content transition-colors">
-                          {decodeHtmlEntities(event.title)}
-                        </h3>
-
-                        {/* Sender info if present */}
-                        {event.emailFrom && (
-                          <div className="flex items-center gap-1.5 text-[11px] text-base-content/70 mt-1.5">
-                            <Mail className="w-3 h-3 text-base-content/60 shrink-0" />
-                            <span className="truncate">
-                              <span className="text-base-content/60">From:</span>{' '}
-                              <span className="text-base-content font-medium">{decodeHtmlEntities(event.emailFrom)}</span>
-                            </span>
-                          </div>
-                        )}
-
-                        {/* Description / note if present */}
-                        {event.description && (
-                          <p className="text-xs text-base-content/70 mt-1 leading-relaxed line-clamp-2">
-                            {decodeHtmlEntities(event.description)}
-                          </p>
-                        )}
-
-                        {/* Meta items: Location, Student, Source */}
-                        <div className="flex flex-wrap items-center gap-2 mt-3 text-[11px] text-base-content/70">
-                          <span className="flex items-center gap-1 bg-base-200 px-2 py-0.5 rounded-md border border-base-300 text-base-content">
-                            <MapPin className="w-3 h-3 text-error shrink-0" />
-                            <span className="truncate max-w-[150px]">{decodeHtmlEntities(event.location)}</span>
-                          </span>
-
-                          {/* Student Tag */}
-                          <span
-                            className={`font-semibold px-2 py-0.5 rounded-md border text-[10px] ${
-                              isBen
-                                ? 'bg-info/10 text-info border-info/30'
-                                : isJade
-                                ? 'bg-secondary/10 text-secondary border-secondary/30'
-                                : 'bg-base-200 text-base-content border-base-300'
-                            }`}
-                          >
-                            {event.student === 'All' ? 'Ben & Jade' : event.student}
-                          </span>
-
-                          {event.sport && (
-                            <span className="text-[10px] px-2 py-0.5 rounded-md font-medium bg-warning/10 text-warning border border-warning/30">
-                              {event.sport}
-                            </span>
-                          )}
-
-                          {/* Source Pill */}
-                          <span
-                            className={`text-[10px] px-2 py-0.5 rounded-md font-medium flex items-center gap-1 ${
-                              isSports
-                                ? 'bg-warning/10 text-warning border border-warning/30'
-                                : 'bg-primary/10 text-primary border border-primary/30'
-                            }`}
-                          >
-                            {isSports ? <Trophy className="w-2.5 h-2.5" /> : <GraduationCap className="w-2.5 h-2.5" />}
-                            {event.source}
-                          </span>
-
-                          {/* Open email indicator */}
-                          <span className="text-[10px] text-base-content/60 group-hover:text-primary flex items-center gap-1 ml-auto font-medium transition-colors">
-                            <span>Open email</span>
-                            <ExternalLink className="w-2.5 h-2.5" />
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+              <CalendarBoard events={filteredEvents} onSelect={setSelectedEventForModal} />
               </div>
             </section>
           </div>
@@ -2702,17 +2583,24 @@ export default function App() {
                     )}
                   </button>
                   ) : (
-                    <span className="text-[13px] text-base-content/70">
-                      {selectedTaskForModal.pointsEarned != null
-                        ? `${selectedTaskForModal.pointsEarned}${selectedTaskForModal.maxPoints ? ` / ${selectedTaskForModal.maxPoints}` : ''}`
-                        : selectedTaskForModal.status === 'overdue'
+                    assignmentPercent(selectedTaskForModal.pointsEarned, selectedTaskForModal.maxPoints) != null
+                      || String(selectedTaskForModal.letter || selectedTaskForModal.letterGrade || '').trim() ? (
+                      <AssignmentScoreChip
+                        earned={selectedTaskForModal.pointsEarned}
+                        max={selectedTaskForModal.maxPoints}
+                        letter={selectedTaskForModal.letter || selectedTaskForModal.letterGrade}
+                      />
+                    ) : (
+                    <span className={`text-[13px] ${gradeToneClass('none')} rounded-md border px-2 py-0.5`}>
+                      {selectedTaskForModal.status === 'overdue'
                           ? 'Overdue'
                           : selectedTaskForModal.status === 'dueSoon'
                             ? 'Due soon'
                             : selectedTaskForModal.status === 'assigned'
                               ? 'Assigned'
-                              : 'From Blackbaud'}
+                              : 'Ungraded'}
                     </span>
+                    )}
                   )}
                 </div>
                 {(String(selectedTaskForModal.id || '').startsWith('bb_') || selectedTaskForModal.comment || selectedTaskForModal.longDescription) && (

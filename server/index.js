@@ -629,7 +629,7 @@ app.get('/api/calendar/sportsyou', async (req, res) => {
     const events = await fetchSportsYouCalendar();
     const identity = req.wla;
     const allowed = new Set(identity?.allowedStudentKeys || []);
-    const visible = (!identity || identity.role === 'parent')
+    const visible = (!identity || identity.role !== 'student')
       ? events
       : events.filter((event) => event.student === 'All' || allowed.has(event.student));
     res.json({ events: visible, source: 'sportsYou' });
