@@ -92,12 +92,38 @@ function formatSyncTime(iso) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
-function daysLate(task) {
+function daysFromDue(task) {
   const due = parsePortalDate(task?.dueDateISO || task?.dueDate);
-  if (!due) return 0;
+  if (!due) return null;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  return Math.max(0, Math.round((today - due) / 86400000));
+  return Math.round((due - today) / 86400000);
+}
+
+function daysLate(task) {
+  const days = daysFromDue(task);
+  if (days == null) return 0;
+  return Math.max(0, -days);
+}
+
+function dueCountdownLabel(days, status) {
+  if (days == null) return status === 'assigned' ? 'Assigned' : 'No due date';
+  if (days <= 0) return 'Due today';
+  if (days === 1) return '1 day till due';
+  return `${days} days till due`;
+}
+
+function assignmentRightStatus(task) {
+  if (task.status === 'done') {
+    return { text: 'Done', tone: 'is-done' };
+  }
+  if (task.status === 'dueSoon' || task.status === 'assigned') {
+    return {
+      text: dueCountdownLabel(daysFromDue(task), task.status),
+      tone: task.status === 'dueSoon' ? 'is-soon' : 'is-assigned'
+    };
+  }
+  return null;
 }
 
 function snippetLine(text, max = 140) {
@@ -801,11 +827,20 @@ export default function FamilyFolder({
                     const showScore = task.status === 'missing' || task.isMissing || isZeroCreditMissing(task)
                       || assignmentPercent(task.pointsEarned, task.maxPoints) != null
                       || String(task.letter || task.letterGrade || '').trim();
-                    const metaBits = [
+                    const courseType = [
                       task.course ? decodeHtml(task.course) : null,
-                      task.type ? decodeHtml(task.type) : null,
-                      task.dueDate || 'No due date'
-                    ].filter(Boolean);
+                      task.type ? decodeHtml(task.type) : null
+                    ].filter(Boolean).join(' · ');
+                    const metaText = [task.student, courseType].filter(Boolean).join(' · ');
+                    const rightStatus = assignmentRightStatus(task);
+                    const scoreChip = showScore ? (
+                      <AssignmentScoreChip
+                        earned={task.pointsEarned}
+                        max={task.maxPoints}
+                        letter={task.letter || task.letterGrade}
+                        status={task.status}
+                      />
+                    ) : null;
                     return (
                       <li key={task.id} className="ff-assign-row">
                         {showLate ? (
@@ -823,11 +858,14 @@ export default function FamilyFolder({
                           className="ff-assign-body"
                         >
                           <span className="ff-assign-copy">
-                            <span className="ff-assign-main">
+                            <span className="ff-assign-head">
                               <span className={`ff-assign-title ${task.status === 'done' ? 'is-done' : ''}`}>
                                 {decodeHtml(task.title)}
                               </span>
-                              <span className="ff-assign-meta">
+                              {scoreChip}
+                            </span>
+                            <span className="ff-assign-sub">
+                              <span className="ff-assign-meta max-w-[50%]" title={metaText}>
                                 <span className={`ff-student-pill ${task.student === 'Jade' ? 'is-jade' : 'is-ben'}`}>
                                   {task.studentPhoto || studentPhoto(task.student) ? (
                                     <ProfileAvatar
@@ -839,11 +877,20 @@ export default function FamilyFolder({
                                     String(task.student || '?').charAt(0)
                                   )}
                                 </span>
-                                <span className={task.student === 'Ben' ? 'text-sky-300' : 'text-violet-300'}>
-                                  {task.student}
+                                <span className="ff-assign-meta-text">
+                                  <span className={task.student === 'Ben' ? 'text-sky-300' : 'text-violet-300'}>
+                                    {task.student}
+                                  </span>
+                                  {courseType ? ` · ${courseType}` : ''}
                                 </span>
-                                {metaBits.length ? ` · ${metaBits.join(' · ')}` : ''}
                               </span>
+                              {rightStatus ? (
+                                <span className="ff-assign-due ml-auto text-right">
+                                  <span className={`ff-status-label tabular-nums ${rightStatus.tone}`}>
+                                    {rightStatus.text}
+                                  </span>
+                                </span>
+                              ) : null}
                             </span>
                             {task.comment ? (
                               <span className="ff-assign-note">Teacher note: {decodeHtml(task.comment)}</span>
@@ -868,14 +915,6 @@ export default function FamilyFolder({
                               </span>
                             ) : null}
                           </span>
-                          {showScore ? (
-                            <AssignmentScoreChip
-                              earned={task.pointsEarned}
-                              max={task.maxPoints}
-                              letter={task.letter || task.letterGrade}
-                              status={task.status}
-                            />
-                          ) : null}
                         </button>
                         {showCheck ? (
                           <AssignmentDoneCheck
