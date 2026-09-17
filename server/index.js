@@ -11,7 +11,8 @@ import { getDashboardData, saveDashboardData } from './services/storageService.j
 import {
   verifyAndDiscoverProfiles,
   syncBlackbaudData,
-  studentsFromContext
+  studentsFromContext,
+  getAssignmentDetail
 } from './services/blackbaudService.js';
 import { runWithWlaSession } from './services/wlaContext.js';
 import {
@@ -25,6 +26,7 @@ import {
   createSession,
   getSession,
   deleteSession,
+  persistSessions,
   filterPayloadForIdentity,
   mergeStudentWrite
 } from './services/sessionStore.js';
@@ -94,21 +96,29 @@ async function mergeSyncIntoStore(result, identity) {
   const newMissing = (result.missingAssignments || []).filter((m) => (
     identity?.role !== 'student' || allowedKeys.has(m.student)
   ));
-  const existing = stored.tasks || [];
-  const seenIds = new Set(existing.map((t) => t.id));
-  const newItems = (result.assignments || []).filter((a) => !seenIds.has(a.id));
-  const mergedTasks = newItems.length > 0 ? [...newItems, ...existing] : existing;
+  const keepAssignments = identity?.role === 'student'
+    ? (stored.assignments || []).filter((a) => !allowedKeys.has(a.student))
+    : [];
+  const commentsById = new Map((stored.assignments || []).map((a) => [a.id, a.comments || []]));
+  const newAssignments = (result.assignments || [])
+    .filter((a) => (
+      identity?.role !== 'student' || allowedKeys.has(a.student)
+    ))
+    .map((a) => ({
+      ...a,
+      comments: (a.comments && a.comments.length) ? a.comments : (commentsById.get(a.id) || [])
+    }));
   await saveDashboardData({
     grades,
+    assignments: [...keepAssignments, ...newAssignments],
     missingAssignments: [...keepMissing, ...newMissing],
-    tasks: mergedTasks,
     lastSyncedAt: result.lastSyncedAt || new Date().toISOString()
   });
   return filterPayloadForIdentity({
     ...stored,
     grades,
+    assignments: [...keepAssignments, ...newAssignments],
     missingAssignments: [...keepMissing, ...newMissing],
-    tasks: mergedTasks,
     lastSyncedAt: result.lastSyncedAt
   }, identity);
 }
@@ -434,6 +444,20 @@ app.post('/api/blackbaud/mac-webview/start', async (req, res) => {
  */
 app.get('/api/blackbaud/status', async (req, res) => {
   try {
+    if (req.wla?.cookie && !req.wla.photoUrl) {
+      try {
+        const live = await verifyAndDiscoverProfiles(req.wla.cookie, { homeUrl: req.wla.homeUrl });
+        req.wla.firstName = live.firstName;
+        req.wla.lastName = live.lastName;
+        req.wla.nickName = live.nickName;
+        req.wla.email = live.email;
+        req.wla.photoUrl = live.photoUrl;
+        if (live.accountName) req.wla.accountName = live.accountName;
+        persistSessions();
+      } catch (err) {
+        console.warn('[Blackbaud] Profile hydrate skipped:', err.message);
+      }
+    }
     res.json(publicIdentity(req.wla));
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -552,12 +576,34 @@ app.post('/api/blackbaud/disconnect', async (req, res) => {
 });
 
 /**
- * Route: GET /api/blackbaud/sync
- * Syncs grades, missing assignments, and portal assignments
+ * Route: GET /api/blackbaud/assignment/:id
+ * Assignment center details for the selected row.
  */
+app.get('/api/blackbaud/assignment/:id', async (req, res) => {
+  if (!req.wla?.cookie) {
+    return res.status(401).json({ error: 'Sign in with Blackbaud to view assignment details.' });
+  }
+  try {
+    const detail = await runWithWlaSession(req.wla, () => getAssignmentDetail(req.params.id));
+    res.json(detail);
+  } catch (err) {
+    console.warn('[Blackbaud] Assignment detail failed:', err.message);
+    res.status(502).json({ error: 'Could not load assignment details.' });
+  }
+});
+
 app.get('/api/blackbaud/sync', async (req, res) => {
   try {
     const result = await syncBlackbaudData();
+    if (req.wla && (result.photoUrl || result.accountName)) {
+      if (result.photoUrl) req.wla.photoUrl = result.photoUrl;
+      if (result.firstName) req.wla.firstName = result.firstName;
+      if (result.lastName) req.wla.lastName = result.lastName;
+      if (result.nickName) req.wla.nickName = result.nickName;
+      if (result.email) req.wla.email = result.email;
+      if (result.accountName) req.wla.accountName = result.accountName;
+      persistSessions();
+    }
     if (!result.connected) {
       return res.json(result);
     }
@@ -598,12 +644,12 @@ app.get('/api/dashboard/state', async (req, res) => {
  */
 app.post('/api/dashboard/state', async (req, res) => {
   try {
-    const { tasks, events, deletedEventKeys } = req.body;
+    const { tasks, events, deletedEventKeys, assignments } = req.body;
     const existing = await getDashboardData();
     const identity = req.wla;
 
     if (identity?.role === 'student') {
-      const merged = mergeStudentWrite(existing, { tasks, events, deletedEventKeys }, identity);
+      const merged = mergeStudentWrite(existing, { tasks, events, deletedEventKeys, assignments }, identity);
       const updated = await saveDashboardData(merged);
       return res.json({ success: true, data: filterPayloadForIdentity(updated, identity) });
     }
@@ -637,7 +683,13 @@ app.post('/api/dashboard/state', async (req, res) => {
     const updated = await saveDashboardData({
       tasks: updatedTasks,
       events: events !== undefined ? events : existing.events,
-      deletedEventKeys: deletedEventKeys !== undefined ? deletedEventKeys : existing.deletedEventKeys
+      deletedEventKeys: deletedEventKeys !== undefined ? deletedEventKeys : existing.deletedEventKeys,
+      assignments: Array.isArray(assignments)
+        ? (existing.assignments || []).map((a) => {
+            const client = assignments.find((c) => c.id === a.id);
+            return client?.comments ? { ...a, comments: client.comments } : a;
+          })
+        : existing.assignments
     });
     res.json({ success: true, data: updated });
   } catch (err) {

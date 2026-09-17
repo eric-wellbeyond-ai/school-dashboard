@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   RefreshCw,
   ExternalLink,
@@ -26,6 +26,7 @@ import {
   MessageCircle,
   Send,
   ChevronDown,
+  ChevronRight,
   RotateCcw,
   CheckCheck,
   Award,
@@ -38,6 +39,13 @@ import {
 } from 'lucide-react';
 import { buildBlackbaudBookmarklet } from './blackbaudBookmarklet.js';
 import LandingPage from './LandingPage.jsx';
+import {
+  classifyAssignment,
+  formatAssignmentDate,
+  fridayOfCurrentWeek,
+  parsePortalDate,
+  assignmentSortValue
+} from './lib/assignmentBuckets.js';
 
 /**
  * Decode all HTML entities (named, decimal, hex) and strip raw HTML tags
@@ -89,6 +97,34 @@ function cleanDeep(obj) {
   return obj;
 }
 
+function ProfileAvatar({ name, photoUrl, size = 28, className = '' }) {
+  const [broken, setBroken] = useState(false);
+  const initial = String(name || '?').trim().charAt(0).toUpperCase() || '?';
+  const dim = `${size}px`;
+  if (photoUrl && !broken) {
+    return (
+      <img
+        src={photoUrl}
+        alt=""
+        width={size}
+        height={size}
+        onError={() => setBroken(true)}
+        className={`rounded-full object-cover shrink-0 ${className}`}
+        style={{ width: dim, height: dim }}
+      />
+    );
+  }
+  return (
+    <span
+      aria-hidden="true"
+      className={`inline-flex items-center justify-center rounded-full shrink-0 font-semibold bg-slate-800 text-slate-200 ${className}`}
+      style={{ width: dim, height: dim, fontSize: Math.max(11, Math.round(size * 0.4)) }}
+    >
+      {initial}
+    </span>
+  );
+}
+
 export default function App() {
   const [selectedStudent, setSelectedStudent] = useState('All'); // 'All' | 'Ben' | 'Jade'
   const [isSyncing, setIsSyncing] = useState(false);
@@ -101,7 +137,7 @@ export default function App() {
     }
   });
   const [syncSource, setSyncSource] = useState(null);
-  const [taskFilter, setTaskFilter] = useState('all'); // 'all' | 'pending' | 'completed'
+  const [taskFilter, setTaskFilter] = useState('overdue'); // overdue | dueSoon | assigned | done
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newTaskStudent, setNewTaskStudent] = useState('Ben');
   const [newTaskCourse, setNewTaskCourse] = useState('Mathematics');
@@ -143,6 +179,14 @@ export default function App() {
       return [];
     }
   });
+  const [blackbaudAssignments, setBlackbaudAssignments] = useState(() => {
+    try {
+      const saved = localStorage.getItem('school_dashboard_blackbaud_assignments');
+      return saved ? cleanDeep(JSON.parse(saved)) : [];
+    } catch {
+      return [];
+    }
+  });
   const [showBlackbaudModal, setShowBlackbaudModal] = useState(false);
   const [blackbaudCookieInput, setBlackbaudCookieInput] = useState('');
   const [blackbaudBenId, setBlackbaudBenId] = useState('');
@@ -161,13 +205,6 @@ export default function App() {
   const [view, setView] = useState('landing');
   // Task collaboration & comment modal state
   const [selectedTaskForModal, setSelectedTaskForModal] = useState(null);
-  const [commentAuthor, setCommentAuthor] = useState(() => {
-    try {
-      return localStorage.getItem('family_author_name') || '';
-    } catch {
-      return '';
-    }
-  });
   const [commentText, setCommentText] = useState('');
 
   // Event & email detail modal state
@@ -205,15 +242,17 @@ export default function App() {
   const [eventFilter, setEventFilter] = useState('active'); // 'active' | 'acknowledged'
 
   // Persist state to both localStorage and backend Express API only on deliberate user actions
-  const persistDashboardState = (newTasks, newEvents, newDeletedKeys) => {
+  const persistDashboardState = (newTasks, newEvents, newDeletedKeys, newAssignments) => {
     const t = newTasks !== undefined ? newTasks : tasks;
     const ev = newEvents !== undefined ? newEvents : events;
     const dk = newDeletedKeys !== undefined ? newDeletedKeys : deletedEventKeys;
+    const a = newAssignments !== undefined ? newAssignments : blackbaudAssignments;
 
     try {
       localStorage.setItem('school_dashboard_tasks', JSON.stringify(t));
       localStorage.setItem('school_dashboard_events', JSON.stringify(ev));
       localStorage.setItem('school_dashboard_deleted_events', JSON.stringify(dk));
+      localStorage.setItem('school_dashboard_blackbaud_assignments', JSON.stringify(a));
     } catch (e) {
       console.warn('LocalStorage error:', e);
     }
@@ -221,7 +260,7 @@ export default function App() {
     fetch('/api/dashboard/state', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tasks: t, events: ev, deletedEventKeys: dk })
+      body: JSON.stringify({ tasks: t, events: ev, deletedEventKeys: dk, assignments: a })
     }).catch(err => console.warn('Failed to save dashboard state:', err));
   };
 
@@ -337,6 +376,12 @@ export default function App() {
           setBlackbaudMissing(data.missingAssignments);
           try {
             localStorage.setItem('school_dashboard_blackbaud_missing', JSON.stringify(data.missingAssignments));
+          } catch {}
+        }
+        if (Array.isArray(data.assignments)) {
+          setBlackbaudAssignments(data.assignments);
+          try {
+            localStorage.setItem('school_dashboard_blackbaud_assignments', JSON.stringify(data.assignments));
           } catch {}
         }
         if (data.lastSyncedAt) {
@@ -658,9 +703,11 @@ export default function App() {
       setBlackbaudStatus({ connected: false, students: [], role: null, displayName: null, allowedStudentKeys: [] });
       setBlackbaudGrades({ Ben: [], Jade: [] });
       setBlackbaudMissing([]);
+      setBlackbaudAssignments([]);
       try {
         localStorage.removeItem('school_dashboard_blackbaud_grades');
         localStorage.removeItem('school_dashboard_blackbaud_missing');
+        localStorage.removeItem('school_dashboard_blackbaud_assignments');
       } catch {}
       setAuthBanner({
         type: 'info',
@@ -687,6 +734,19 @@ export default function App() {
         localStorage.setItem('school_dashboard_blackbaud_missing', JSON.stringify(data.missingAssignments));
       } catch {}
     }
+    if (Array.isArray(data.assignments)) {
+      setBlackbaudAssignments((prev) => {
+        const commentsById = new Map((prev || []).map((a) => [a.id, a.comments || []]));
+        const merged = data.assignments.map((a) => ({
+          ...a,
+          comments: (a.comments && a.comments.length) ? a.comments : (commentsById.get(a.id) || [])
+        }));
+        try {
+          localStorage.setItem('school_dashboard_blackbaud_assignments', JSON.stringify(merged));
+        } catch {}
+        return merged;
+      });
+    }
     if (Array.isArray(data.tasks)) {
       setTasks(data.tasks);
       try {
@@ -702,6 +762,12 @@ export default function App() {
         userKey: data.userKey || prev.userKey,
         displayName: data.displayName || prev.displayName,
         accountName: data.accountName || prev.accountName,
+        firstName: data.firstName || prev.firstName,
+        lastName: data.lastName || prev.lastName,
+        nickName: data.nickName || prev.nickName,
+        email: data.email || prev.email,
+        photoUrl: data.photoUrl || prev.photoUrl,
+        userId: data.userId || prev.userId,
         allowedStudentKeys: data.allowedStudentKeys || prev.allowedStudentKeys,
         verifiedAt: data.lastSyncedAt || new Date().toISOString()
       }));
@@ -887,81 +953,115 @@ export default function App() {
   };
 
   // Open task detail & collaboration modal
-  const handleOpenTaskModal = (task) => {
-    const current = tasks.find(t => t.id === task.id) || task;
+  const handleOpenTaskModal = async (task) => {
+    const fromPortal = (blackbaudAssignments || []).find((t) => t.id === task.id);
+    const fromCustom = (tasks || []).find((t) => t.id === task.id);
+    const current = fromPortal || fromCustom || task;
     setSelectedTaskForModal(current);
+    if (!current.assignmentId) return;
+    try {
+      const res = await fetch(`/api/blackbaud/assignment/${current.assignmentId}`);
+      if (!res.ok) return;
+      const detail = await res.json();
+      setSelectedTaskForModal((prev) => {
+        if (!prev || prev.id !== current.id) return prev;
+        return {
+          ...prev,
+          longDescription: detail.longDescription || prev.longDescription,
+          type: detail.type || prev.type,
+          dropbox: detail.dropbox,
+          onPaper: detail.onPaper,
+          maxPoints: detail.maxPoints ?? prev.maxPoints
+        };
+      });
+    } catch (err) {
+      console.warn('Assignment detail unavailable:', err.message);
+    }
   };
 
-  // Add a new comment to the selected task
   const handleAddComment = (e) => {
     e.preventDefault();
     if (!commentText.trim() || !selectedTaskForModal) return;
-
-    const authorName = commentAuthor.trim() || 'Parent / Family';
-    try {
-      localStorage.setItem('family_author_name', authorName);
-    } catch {}
-
+    const profile = {
+      name: blackbaudStatus.displayName || blackbaudStatus.accountName || 'Family',
+      userId: blackbaudStatus.userId || null,
+      photoUrl: blackbaudStatus.photoUrl || null
+    };
     const newComment = {
       id: `comm_${Date.now()}`,
-      author: authorName,
+      author: profile.name,
+      authorUserId: profile.userId,
+      authorPhoto: profile.photoUrl,
       text: commentText.trim(),
       timestamp: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' at ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
-    setTasks(prev => {
-      const updated = prev.map(task => {
-        if (task.id === selectedTaskForModal.id) {
-          const u = {
-            ...task,
-            comments: [...(task.comments || []), newComment]
-          };
-          setSelectedTaskForModal(u);
-          return u;
-        }
-        return task;
-      });
-      persistDashboardState(updated);
-      return updated;
+    const apply = (list) => list.map((item) => {
+      if (item.id !== selectedTaskForModal.id) return item;
+      const u = { ...item, comments: [...(item.comments || []), newComment] };
+      setSelectedTaskForModal(u);
+      return u;
     });
+
+    if (String(selectedTaskForModal.id || '').startsWith('bb_')) {
+      setBlackbaudAssignments((prev) => {
+        const updated = apply(prev);
+        persistDashboardState(undefined, undefined, undefined, updated);
+        return updated;
+      });
+    } else {
+      setTasks((prev) => {
+        const updated = apply(prev);
+        persistDashboardState(updated);
+        return updated;
+      });
+    }
 
     setCommentText('');
   };
 
-  // Delete a comment from the task
   const handleDeleteComment = (taskId, commentId) => {
-    setTasks(prev => {
-      const updated = prev.map(task => {
-        if (task.id === taskId) {
-          const u = {
-            ...task,
-            comments: (task.comments || []).filter(c => c.id !== commentId)
-          };
-          if (selectedTaskForModal && selectedTaskForModal.id === taskId) {
-            setSelectedTaskForModal(u);
-          }
-          return u;
-        }
-        return task;
-      });
-      persistDashboardState(updated);
-      return updated;
+    const apply = (list) => list.map((item) => {
+      if (item.id !== taskId) return item;
+      const u = {
+        ...item,
+        comments: (item.comments || []).filter((c) => c.id !== commentId)
+      };
+      if (selectedTaskForModal && selectedTaskForModal.id === taskId) {
+        setSelectedTaskForModal(u);
+      }
+      return u;
     });
+    if (String(taskId || '').startsWith('bb_')) {
+      setBlackbaudAssignments((prev) => {
+        const updated = apply(prev);
+        persistDashboardState(undefined, undefined, undefined, updated);
+        return updated;
+      });
+    } else {
+      setTasks((prev) => {
+        const updated = apply(prev);
+        persistDashboardState(updated);
+        return updated;
+      });
+    }
   };
 
   // Add a new manual task
   const handleAddTask = (e) => {
     e.preventDefault();
     if (!newTaskTitle.trim()) return;
+    const student = (selectedStudent === 'Ben' || selectedStudent === 'Jade') ? selectedStudent : newTaskStudent;
 
     const newTask = {
       id: `task_custom_${Date.now()}`,
       title: newTaskTitle.trim(),
-      student: newTaskStudent,
+      student,
       course: newTaskCourse,
-      dueDate: newTaskDue || 'Due soon',
-      source: 'Westlake Lutheran Academy',
+      dueDate: newTaskDue || 'Assigned',
+      source: 'Family',
       completed: false,
+      status: 'assigned',
       priority: 'medium',
       comments: []
     };
@@ -973,6 +1073,7 @@ export default function App() {
     });
     setNewTaskTitle('');
     setIsAddingTask(false);
+    setTaskFilter('assigned');
   };
 
   // Acknowledge an event (marks acknowledged and removes from active view)
@@ -1057,15 +1158,51 @@ export default function App() {
     setTimeout(() => setCopiedEmailText(false), 2000);
   };
 
-  // Filter tasks
-  const filteredTasks = tasks.filter(task => {
-    const studentMatch = selectedStudent === 'All' || task.student === selectedStudent;
-    if (!studentMatch) return false;
+  const fridayLabel = formatAssignmentDate(fridayOfCurrentWeek());
+  const childLabel = selectedStudent === 'All' ? 'Ben and Jade' : selectedStudent;
 
-    if (taskFilter === 'pending') return !task.completed;
-    if (taskFilter === 'completed') return task.completed;
-    return true;
-  });
+  const checklistItems = useMemo(() => {
+    const now = new Date();
+    const fromPortal = (blackbaudAssignments || []).map((item) => {
+      const assignedAt = parsePortalDate(item.assignedDateISO || item.assignedDate);
+      const dueAt = parsePortalDate(item.dueDateISO || item.dueDate);
+      const done = Boolean(item.done || item.completed);
+      const status = classifyAssignment({ assignedAt, dueAt, done, now });
+      return {
+        ...item,
+        status,
+        completed: done,
+        dueDate: item.dueDate || formatAssignmentDate(dueAt),
+        assignedDate: item.assignedDate || formatAssignmentDate(assignedAt)
+      };
+    });
+    const custom = (tasks || [])
+      .filter((t) => String(t.id || '').startsWith('task_custom_'))
+      .map((t) => ({
+        ...t,
+        status: t.completed ? 'done' : 'assigned',
+        source: t.source || 'Family'
+      }));
+    return [...fromPortal, ...custom];
+  }, [blackbaudAssignments, tasks]);
+
+  const scopedChecklist = checklistItems.filter((item) => (
+    selectedStudent === 'All' || item.student === selectedStudent
+  ));
+
+  const checklistCounts = {
+    overdue: scopedChecklist.filter((i) => i.status === 'overdue').length,
+    dueSoon: scopedChecklist.filter((i) => i.status === 'dueSoon').length,
+    assigned: scopedChecklist.filter((i) => i.status === 'assigned').length,
+    done: scopedChecklist.filter((i) => i.status === 'done').length
+  };
+
+  const filteredTasks = scopedChecklist
+    .filter((item) => item.status === taskFilter)
+    .sort((a, b) => {
+      const dir = taskFilter === 'done' ? -1 : 1;
+      return dir * (assignmentSortValue(a) - assignmentSortValue(b));
+    });
 
   // Filter events (excluding deleted, filtered by student and active/acknowledged tab)
   const filteredEvents = events.filter(event => {
@@ -1090,12 +1227,13 @@ export default function App() {
     return !deletedEventKeys.includes(key) && Boolean(ev.acknowledged) && (selectedStudent === 'All' || ev.student === selectedStudent || ev.student === 'All');
   }).length;
 
-  // Statistics
-  const benTasks = tasks.filter(t => t.student === 'Ben');
-  const jadeTasks = tasks.filter(t => t.student === 'Jade');
-  const pendingCount = tasks.filter(t => !t.completed).length;
-  const completedCount = tasks.filter(t => t.completed).length;
-  const completionPercentage = tasks.length > 0 ? Math.round((completedCount / tasks.length) * 100) : 0;
+  const benOpenCount = checklistItems.filter((t) => t.student === 'Ben' && t.status !== 'done' && t.status !== 'upcoming').length;
+  const jadeOpenCount = checklistItems.filter((t) => t.student === 'Jade' && t.status !== 'done' && t.status !== 'upcoming').length;
+  const pendingCount = checklistCounts.overdue + checklistCounts.dueSoon + checklistCounts.assigned;
+  const completedCount = checklistCounts.done;
+  const visibleMissing = (blackbaudMissing || []).filter((m) => (
+    selectedStudent === 'All' || m.student === selectedStudent
+  ));
   const allowedKeys = blackbaudStatus.allowedStudentKeys
     || (blackbaudStatus.role === 'student' ? [] : ['Ben', 'Jade']);
   const canSeeBen = allowedKeys.includes('Ben');
@@ -1239,7 +1377,7 @@ export default function App() {
                     <div className="text-[13px] text-slate-400">High school</div>
                 </div>
                 <span className="text-[13px] tabular-nums text-slate-400">
-                  {benTasks.filter(t => !t.completed).length} open
+                  {benOpenCount} open
                 </span>
               </button>
               )}
@@ -1260,7 +1398,7 @@ export default function App() {
                     <div className="text-[13px] text-slate-400">Middle school</div>
                 </div>
                 <span className="text-[13px] tabular-nums text-slate-400">
-                  {jadeTasks.filter(t => !t.completed).length} open
+                  {jadeOpenCount} open
                 </span>
               </button>
               )}
@@ -1539,7 +1677,7 @@ export default function App() {
             {/* Quick Metrics */}
             <div className="flex items-center gap-4 text-xs">
               <div className="flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800">
-                <span className="text-slate-400">Open Tasks:</span>
+                <span className="text-slate-400">Open:</span>
                 <span className="font-bold text-amber-400 font-mono text-sm">{pendingCount}</span>
               </div>
               <div className="flex items-center gap-2 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-slate-800">
@@ -1619,16 +1757,16 @@ export default function App() {
             </div>
 
             {/* Missing Assignments Banner (if any) */}
-            {blackbaudMissing.length > 0 && (
+            {visibleMissing.length > 0 && (
               <div className="mt-4 p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/40 flex items-start gap-3">
                 <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
                   <h4 className="text-xs font-bold text-amber-300">
-                    {blackbaudMissing.length} Missing Assignment{blackbaudMissing.length > 1 ? 's' : ''} Detected in Blackbaud
+                    {visibleMissing.length} missing assignment{visibleMissing.length > 1 ? 's' : ''} in Blackbaud
                   </h4>
                   <div className="mt-2 space-y-1.5">
-                    {blackbaudMissing.map((m, idx) => (
-                      <div key={idx} className="flex items-center justify-between text-xs text-slate-300 bg-slate-900/60 p-2 rounded-lg border border-amber-900/40">
+                    {visibleMissing.map((m) => (
+                      <div key={m.id || `${m.title}-${m.course}`} className="flex items-center justify-between text-xs text-slate-300 bg-slate-900/60 p-2 rounded-lg border border-amber-900/40">
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="font-semibold text-white truncate">{decodeHtmlEntities(m.AssignmentTitle || m.title || 'Missing Work')}</span>
                           <span className="text-slate-500">&bull;</span>
@@ -1815,58 +1953,60 @@ export default function App() {
             {/* Left Column: Assignment Checklist                    */}
             {/* ---------------------------------------------------- */}
             <section className="lg:col-span-7 bg-slate-950/60 rounded-2xl border border-slate-800/80 p-5 shadow-lg flex flex-col">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800/80">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
-                    <CheckSquare className="w-4 h-4" />
+              <div className="flex flex-col gap-4 pb-4 border-b border-slate-800/80">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
+                      <CheckSquare className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <h2 className="text-base font-bold text-white">Assignment Checklist</h2>
+                      <p className="text-[13px] text-slate-400">
+                        {childLabel} · Westlake portal
+                        {taskFilter === 'dueSoon' ? ` · through ${fridayLabel}` : ''}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <h2 className="text-base font-bold text-white flex items-center gap-2">
-                      Assignment Checklist
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-normal">
-                        {filteredTasks.length} {filteredTasks.length === 1 ? 'task' : 'tasks'}
-                      </span>
-                    </h2>
-                    <p className="text-xs text-slate-400">Extracted from teacher emails & weekly newsletters</p>
-                  </div>
-                </div>
-
-                {/* Filter and Add Task buttons */}
-                <div className="flex items-center gap-2">
-                  <div className="inline-flex p-0.5 bg-slate-900 rounded-lg border border-slate-800 text-[11px]">
-                    <button
-                      onClick={() => setTaskFilter('all')}
-                      className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-                        taskFilter === 'all' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      All
-                    </button>
-                    <button
-                      onClick={() => setTaskFilter('pending')}
-                      className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-                        taskFilter === 'pending' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Open
-                    </button>
-                    <button
-                      onClick={() => setTaskFilter('completed')}
-                      className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-                        taskFilter === 'completed' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Done
-                    </button>
-                  </div>
-
                   <button
-                    onClick={() => setIsAddingTask(!isAddingTask)}
-                    className="p-1.5 rounded-lg bg-indigo-600/20 border border-indigo-500/40 text-indigo-300 hover:bg-indigo-600 hover:text-white transition-colors cursor-pointer"
-                    title="Add custom task"
+                    type="button"
+                    onClick={() => {
+                      if (selectedStudent === 'Ben' || selectedStudent === 'Jade') setNewTaskStudent(selectedStudent);
+                      setIsAddingTask(!isAddingTask);
+                    }}
+                    className="min-h-11 min-w-11 inline-flex items-center justify-center rounded-lg border border-slate-700 text-slate-300 hover:text-slate-100"
+                    aria-expanded={isAddingTask}
+                    aria-label="Add family reminder"
                   >
                     <Plus className="w-4 h-4" />
                   </button>
+                </div>
+
+                <div
+                  role="tablist"
+                  aria-label="Assignment status"
+                  className="grid grid-cols-2 sm:grid-cols-4 gap-1 p-1 rounded-lg border border-slate-800 bg-slate-900"
+                >
+                  {[
+                    { id: 'overdue', label: 'Overdue', count: checklistCounts.overdue },
+                    { id: 'dueSoon', label: 'Due Soon', count: checklistCounts.dueSoon },
+                    { id: 'assigned', label: 'Assigned', count: checklistCounts.assigned },
+                    { id: 'done', label: 'Done', count: checklistCounts.done }
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={taskFilter === tab.id}
+                      className={`wla-seg min-h-11 px-2 rounded-md text-[13px] font-medium transition-colors ${
+                        taskFilter === tab.id ? 'text-slate-100' : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                      onClick={() => setTaskFilter(tab.id)}
+                    >
+                      {tab.label}
+                      <span className="ml-1 tabular-nums text-slate-400" aria-hidden="true">{tab.count}</span>
+                      <span className="sr-only"> {tab.count}</span>
+                    </button>
+                  ))}
                 </div>
               </div>
 
@@ -1932,177 +2072,127 @@ export default function App() {
               )}
 
               {/* Task Items List */}
-              <div className="mt-4 space-y-2.5 flex-1 overflow-y-auto max-h-[620px] pr-1">
+              <div className="mt-2 flex-1 overflow-y-auto max-h-[620px]">
                 {filteredTasks.length === 0 ? (
                   <div className="text-center py-12 px-6 rounded-xl border border-dashed border-slate-800 text-slate-400 bg-slate-950/30">
-                    {!authStatus.authenticated ? (
+                    {!blackbaudStatus.connected ? (
                       <>
-                        <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-                          <Inbox className="w-6 h-6" />
-                        </div>
-                        <p className="text-sm font-semibold text-slate-200">Connect Gmail to Sync Real Assignments</p>
-                        <p className="text-xs text-slate-400 max-w-sm mx-auto mt-1 leading-relaxed">
-                          Link your Google account to automatically scan emails from Westlake Lutheran Academy and sportsYou for Ben and Jade.
+                        <Inbox className="w-8 h-8 mx-auto mb-2 text-slate-500" />
+                        <p className="text-[15px] font-semibold text-slate-200">Sign in to load assignments</p>
+                        <p className="text-[13px] text-slate-400 max-w-sm mx-auto mt-1 leading-relaxed">
+                          Log in with Blackbaud, then sync grades for {childLabel}.
                         </p>
                         <button
-                          onClick={handleConnectGoogle}
-                          className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md transition-all cursor-pointer"
+                          type="button"
+                          onClick={() => setView('landing')}
+                          className="mt-4 min-h-11 inline-flex items-center gap-2 px-4 rounded-xl bg-indigo-600 text-white text-[13px] font-semibold"
                         >
-                          <Shield className="w-3.5 h-3.5" />
-                          <span>Connect Gmail Account</span>
+                          <Key className="w-3.5 h-3.5" />
+                          Log in with Blackbaud
                         </button>
                       </>
                     ) : (
                       <>
-                        <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-slate-600" />
-                        <p className="text-sm font-semibold text-slate-200">No Assignments Found</p>
-                        <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                          {taskFilter !== 'all'
-                            ? 'No assignments match the selected filter.'
-                            : 'No assignment emails detected in the last 14 days. Click "Sync Inbox" to check again.'}
+                        <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-slate-500" />
+                        <p className="text-[15px] font-semibold text-slate-200">
+                          {taskFilter === 'overdue' && `No overdue work for ${childLabel}`}
+                          {taskFilter === 'dueSoon' && `Nothing due through ${fridayLabel}`}
+                          {taskFilter === 'assigned' && `No assigned work in range`}
+                          {taskFilter === 'done' && `No graded assignments yet`}
+                        </p>
+                        <p className="text-[13px] text-slate-500 mt-1 max-w-sm mx-auto">
+                          {blackbaudAssignments.length === 0
+                            ? 'Sync grades to pull the current gradebook.'
+                            : 'Choose another status, or sync grades to refresh.'}
                         </p>
                         <button
-                          onClick={() => handleSyncInbox('incremental')}
-                          disabled={isSyncing}
-                          className="mt-4 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-750 text-slate-200 text-xs font-medium border border-slate-700 transition-colors cursor-pointer disabled:opacity-60"
+                          type="button"
+                          onClick={handleSyncBlackbaud}
+                          disabled={isSyncingBlackbaud}
+                          className="mt-4 min-h-11 inline-flex items-center gap-2 px-3.5 rounded-lg bg-slate-800 text-slate-200 text-[13px] font-medium border border-slate-700 disabled:opacity-60"
                         >
-                          <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                          <span>{isSyncing ? 'Syncing...' : 'Sync Inbox Now'}</span>
+                          <RefreshCw className={`w-3.5 h-3.5 ${isSyncingBlackbaud ? 'animate-spin' : ''}`} />
+                          {isSyncingBlackbaud ? 'Syncing...' : 'Sync Grades'}
                         </button>
                       </>
                     )}
                   </div>
                 ) : (
-                  filteredTasks.map(task => {
-                    const isBen = task.student === 'Ben';
-                    return (
-                      <div
-                        key={task.id}
-                        onClick={() => handleOpenTaskModal(task)}
-                        className={`group p-3.5 rounded-xl border transition-all duration-150 flex items-start justify-between gap-3 cursor-pointer ${
-                          task.completed
-                            ? 'bg-slate-900/40 border-slate-800/60 opacity-60 hover:opacity-90'
-                            : 'bg-slate-900/90 border-slate-800 hover:border-indigo-500/50 hover:bg-slate-850 shadow-sm'
-                        }`}
-                      >
-                        {/* Checkbox and Title */}
-                        <div className="flex items-start gap-3 min-w-0">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleTask(task.id);
-                            }}
-                            className="mt-0.5 text-slate-400 group-hover:text-indigo-400 transition-colors focus:outline-none"
-                            title={task.completed ? "Mark as open" : "Mark as completed"}
-                          >
-                            {task.completed ? (
-                              <CheckCircle2 className="w-5 h-5 text-emerald-400 fill-emerald-500/20" />
-                            ) : (
-                              <Circle className="w-5 h-5 text-slate-500 group-hover:text-indigo-400" />
-                            )}
-                          </button>
-
-                          <div className="min-w-0">
-                            <p
-                              className={`text-sm font-medium leading-snug break-words ${
-                                task.completed
-                                  ? 'line-through text-slate-500'
-                                  : 'text-slate-100 group-hover:text-white'
-                              }`}
+                  <ul className="divide-y divide-slate-800">
+                    {filteredTasks.map((task) => {
+                      const isCustom = String(task.id || '').startsWith('task_custom_');
+                      const isBen = task.student === 'Ben';
+                      return (
+                        <li key={task.id} className="flex items-start gap-1">
+                          {isCustom && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleTask(task.id);
+                              }}
+                              className="mt-0.5 min-h-11 min-w-11 inline-flex items-center justify-center text-slate-400 shrink-0"
+                              aria-label={task.completed ? 'Mark as open' : 'Mark as done'}
                             >
-                              {decodeHtmlEntities(task.title)}
-                            </p>
-
-                            {/* Sender line if from teacher email */}
-                            {task.emailFrom && (
-                              <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mt-1">
-                                <Mail className="w-3 h-3 text-slate-500 shrink-0" />
-                                <span className="truncate">
-                                  <span className="text-slate-500">From:</span>{' '}
-                                  <span className="text-slate-300 font-medium">{decodeHtmlEntities(task.emailFrom)}</span>
-                                </span>
-                              </div>
-                            )}
-
-                            {/* Badges: Student, Course, Due Date, Comments, Source */}
-                            <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                              {/* Student Tag */}
-                              <span
-                                className={`text-[10px] font-semibold px-2 py-0.5 rounded-md border ${
-                                  isBen
-                                    ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
-                                    : 'bg-purple-500/10 text-purple-300 border-purple-500/30'
-                                }`}
-                              >
-                                {task.student}
-                              </span>
-
-                              {/* Course Tag */}
-                              {task.course && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700/60">
-                                  {decodeHtmlEntities(task.course)}
-                                </span>
-                              )}
-
-                              {/* Due Date */}
-                              <span className="text-[10px] px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/20 flex items-center gap-1">
-                                <Clock className="w-2.5 h-2.5" />
-                                {task.dueDate}
-                              </span>
-
-                              {/* Email badge indicator */}
-                              {task.emailBody && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 flex items-center gap-1 font-medium">
-                                  <Mail className="w-2.5 h-2.5" />
-                                  <span>Email</span>
-                                </span>
-                              )}
-
-                              {/* Comments count indicator */}
-                              {task.comments && task.comments.length > 0 ? (
-                                <span className="text-[10px] px-2 py-0.5 rounded-md bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 flex items-center gap-1 font-medium">
-                                  <MessageSquare className="w-2.5 h-2.5" />
-                                  {task.comments.length}
-                                </span>
+                              {task.completed ? (
+                                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                               ) : (
-                                <span className="text-[9px] px-1.5 py-0.5 rounded text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
-                                  <MessageSquare className="w-2.5 h-2.5" /> Note
-                                </span>
+                                <Circle className="w-5 h-5 text-slate-500" />
                               )}
-
-                              {/* Source Badge */}
-                              <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-400">
-                                {task.source === 'sportsYou' ? 'sportsYou' : 'Westlake'}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Action buttons (Comment & Delete) */}
-                        <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleOpenTaskModal(task);
-                            }}
-                            className="p-1 rounded text-slate-400 hover:text-indigo-300 hover:bg-slate-800"
-                            title="View details & comments"
+                            onClick={() => handleOpenTaskModal(task)}
+                            aria-haspopup="dialog"
+                            className="group flex-1 min-w-0 text-left py-3 px-1 flex items-start gap-3"
                           >
-                            <MessageSquare className="w-3.5 h-3.5" />
+                            {!isCustom && (
+                              <span className="mt-2 w-2 h-2 rounded-full shrink-0" style={{
+                                background: task.status === 'overdue'
+                                  ? 'rgb(var(--wla-miss))'
+                                  : task.status === 'dueSoon'
+                                    ? 'rgb(var(--wla-gold))'
+                                    : task.status === 'done'
+                                      ? 'rgb(var(--wla-mute))'
+                                      : 'rgb(var(--wla-ink) / 0.45)'
+                              }} aria-hidden="true" />
+                            )}
+
+                            <div className="min-w-0 flex-1">
+                              <p className={`text-[15px] font-medium leading-snug ${task.status === 'done' ? 'text-slate-400' : 'text-slate-100'}`}>
+                                {decodeHtmlEntities(task.title)}
+                              </p>
+                              <p className="mt-1 text-[13px] text-slate-400">
+                                <span className={isBen ? 'text-[rgb(var(--wla-ben))]' : 'text-[rgb(var(--wla-jade))]'}>
+                                  {task.student}
+                                </span>
+                                {task.course ? ` · ${decodeHtmlEntities(task.course)}` : ''}
+                                {task.type ? ` · ${decodeHtmlEntities(task.type)}` : ''}
+                              </p>
+                            </div>
+
+                            <div className="shrink-0 text-right">
+                              <p className={`text-[13px] tabular-nums ${task.status === 'overdue' ? 'text-[rgb(var(--wla-miss))]' : 'text-slate-300'}`}>
+                                {task.dueDate || 'No due date'}
+                              </p>
+                              {task.status === 'done' && task.pointsEarned != null ? (
+                                <p className="text-[12px] text-slate-400 tabular-nums">
+                                  {task.pointsEarned}{task.maxPoints ? `/${task.maxPoints}` : ''}
+                                </p>
+                              ) : task.assignedDate ? (
+                                <p className="text-[12px] text-slate-500">Assigned {task.assignedDate}</p>
+                              ) : null}
+                              {task.isMissing && (
+                                <p className="text-[12px] text-[rgb(var(--wla-miss))]">Missing</p>
+                              )}
+                            </div>
+                            <ChevronRight className="w-4 h-4 mt-1 text-slate-500 shrink-0" aria-hidden="true" />
                           </button>
-                          <button
-                            onClick={(e) => deleteTask(task.id, e)}
-                            className="p-1 rounded text-slate-500 hover:text-red-400 hover:bg-slate-800"
-                            title="Delete task"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })
+                        </li>
+                      );
+                    })}
+                  </ul>
                 )}
               </div>
             </section>
@@ -2683,19 +2773,28 @@ export default function App() {
       {/* ---------------------------------------------------- */}
       {selectedTaskForModal && (
         <div
-          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"
+          className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
           onClick={() => setSelectedTaskForModal(null)}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="assignment-detail-title"
             className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col max-h-[92vh] overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
             <div className="flex items-start justify-between gap-3 pb-4 border-b border-slate-800 shrink-0">
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Student Tag */}
+              <button
+                type="button"
+                onClick={() => setSelectedTaskForModal(null)}
+                className="min-h-11 min-w-11 -ml-2 inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-100"
+                aria-label="Close assignment details"
+              >
+                &times;
+              </button>
+              <div className="flex flex-wrap items-center justify-end gap-2">
                 <span
-                  className={`text-xs font-semibold px-2.5 py-1 rounded-md border ${
+                  className={`text-[13px] font-semibold px-2.5 py-1 rounded-md border ${
                     selectedTaskForModal.student === 'Ben'
                       ? 'bg-blue-500/10 text-blue-300 border-blue-500/30'
                       : 'bg-purple-500/10 text-purple-300 border-purple-500/30'
@@ -2703,23 +2802,12 @@ export default function App() {
                 >
                   {selectedTaskForModal.student}
                 </span>
-                {/* Course Tag */}
                 {selectedTaskForModal.course && (
-                  <span className="text-xs px-2.5 py-1 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
+                  <span className="text-[13px] px-2.5 py-1 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
                     {decodeHtmlEntities(selectedTaskForModal.course)}
                   </span>
                 )}
-                {/* Source Badge */}
-                <span className="text-xs px-2 py-0.5 rounded bg-slate-800/90 text-slate-400 border border-slate-700/60">
-                  {selectedTaskForModal.source}
-                </span>
               </div>
-              <button
-                onClick={() => setSelectedTaskForModal(null)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer text-lg leading-none"
-              >
-                &times;
-              </button>
             </div>
 
             {/* Scrollable Modal Content */}
@@ -2727,7 +2815,7 @@ export default function App() {
               {/* Task Details Info */}
               <div className="space-y-3">
                 <div className="flex items-start justify-between gap-3">
-                  <h2 className="text-base sm:text-lg font-bold text-white leading-snug">
+                  <h2 id="assignment-detail-title" className="text-[17px] sm:text-lg font-semibold text-white leading-snug">
                     {decodeHtmlEntities(selectedTaskForModal.title)}
                   </h2>
                 </div>
@@ -2736,15 +2824,18 @@ export default function App() {
                   <div className="flex items-center gap-3 text-xs text-slate-300">
                     <span className="flex items-center gap-1.5 text-amber-400 font-medium">
                       <Clock className="w-3.5 h-3.5" />
-                      Due: {selectedTaskForModal.dueDate}
+                      Due: {selectedTaskForModal.dueDate || '—'}
                     </span>
-                    <span className="text-slate-600">&bull;</span>
-                    <span className="text-slate-400">
-                      Priority: <span className="capitalize text-slate-200">{selectedTaskForModal.priority || 'medium'}</span>
-                    </span>
+                    {selectedTaskForModal.assignedDate && (
+                      <>
+                        <span className="text-slate-600">&bull;</span>
+                        <span className="text-slate-400">Assigned {selectedTaskForModal.assignedDate}</span>
+                      </>
+                    )}
                   </div>
 
                   {/* Complete / Reopen Toggle Button */}
+                  {String(selectedTaskForModal.id || '').startsWith('task_custom_') ? (
                   <button
                     type="button"
                     onClick={() => toggleTask(selectedTaskForModal.id)}
@@ -2766,7 +2857,31 @@ export default function App() {
                       </>
                     )}
                   </button>
+                  ) : (
+                    <span className="text-[13px] text-slate-400">
+                      {selectedTaskForModal.pointsEarned != null
+                        ? `${selectedTaskForModal.pointsEarned}${selectedTaskForModal.maxPoints ? ` / ${selectedTaskForModal.maxPoints}` : ''}`
+                        : selectedTaskForModal.status === 'overdue'
+                          ? 'Overdue'
+                          : selectedTaskForModal.status === 'dueSoon'
+                            ? 'Due soon'
+                            : selectedTaskForModal.status === 'assigned'
+                              ? 'Assigned'
+                              : 'From Blackbaud'}
+                    </span>
+                  )}
                 </div>
+                {selectedTaskForModal.teacher && (
+                  <p className="text-[13px] text-slate-400">{selectedTaskForModal.teacher}</p>
+                )}
+                {selectedTaskForModal.longDescription && (
+                  <p className="text-[15px] text-slate-300 leading-relaxed">
+                    {decodeHtmlEntities(selectedTaskForModal.longDescription)}
+                  </p>
+                )}
+                {selectedTaskForModal.comment && (
+                  <p className="text-[13px] text-slate-400">{decodeHtmlEntities(selectedTaskForModal.comment)}</p>
+                )}
               </div>
 
               {/* Original Email Announcement / Notification */}
@@ -2856,48 +2971,40 @@ export default function App() {
               {/* Collaboration & Comments Thread */}
               <div className="pt-2">
                 <div className="flex items-center justify-between pb-3">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-                    <MessageSquare className="w-4 h-4 text-indigo-400" />
-                    Family Notes & Collaboration
-                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-normal">
-                      {(selectedTaskForModal.comments || []).length}
-                    </span>
-                  </h3>
-                  <span className="text-[11px] text-slate-500">Visible to family members</span>
+                  <h3 className="text-[13px] font-semibold text-slate-300">Notes</h3>
+                  <span className="text-[13px] tabular-nums text-slate-500">
+                    {(selectedTaskForModal.comments || []).length}
+                  </span>
                 </div>
 
-                {/* Scrollable comments list */}
                 <div className="space-y-2.5 min-h-[90px] max-h-[200px] overflow-y-auto pr-1">
                   {(selectedTaskForModal.comments || []).length === 0 ? (
                     <div className="text-center py-6 px-4 rounded-xl border border-dashed border-slate-800 text-slate-500">
-                      <MessageCircle className="w-6 h-6 mx-auto mb-1.5 text-slate-600" />
-                      <p className="text-xs font-medium text-slate-400">No notes or comments yet</p>
-                      <p className="text-[11px] text-slate-600 mt-0.5">Leave a comment below to coordinate with family members.</p>
+                      <p className="text-[13px] font-medium text-slate-400">No notes yet</p>
+                      <p className="text-[13px] text-slate-500 mt-0.5">Add a note as {blackbaudStatus.displayName || blackbaudStatus.accountName || 'the signed-in account'}.</p>
                     </div>
                   ) : (
                     (selectedTaskForModal.comments || []).map(comment => (
                       <div
                         key={comment.id}
-                        className="p-3 rounded-xl bg-slate-950/80 border border-slate-800/90 hover:border-slate-700/80 transition-colors group"
+                        className="p-3 rounded-xl bg-slate-950/80 border border-slate-800/90"
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2">
-                            <div className="w-6 h-6 rounded-full bg-indigo-500/20 border border-indigo-400/30 text-indigo-300 flex items-center justify-center text-[10px] font-bold">
-                              {comment.author ? comment.author.charAt(0).toUpperCase() : 'F'}
-                            </div>
-                            <span className="text-xs font-semibold text-slate-200">{comment.author}</span>
-                            <span className="text-[10px] text-slate-500">&bull;</span>
-                            <span className="text-[10px] text-slate-500 font-mono">{comment.timestamp}</span>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <ProfileAvatar name={comment.author} photoUrl={comment.authorPhoto} size={28} />
+                            <span className="text-[13px] font-semibold text-slate-200 truncate">{comment.author}</span>
+                            <span className="text-[12px] text-slate-500 shrink-0">{comment.timestamp}</span>
                           </div>
                           <button
+                            type="button"
                             onClick={() => handleDeleteComment(selectedTaskForModal.id, comment.id)}
-                            className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-red-400 text-xs transition-opacity p-0.5 cursor-pointer"
-                            title="Delete note"
+                            className="min-h-11 min-w-11 inline-flex items-center justify-center text-slate-500 hover:text-red-400"
+                            aria-label="Delete note"
                           >
-                            <Trash2 className="w-3 h-3" />
+                            <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
-                        <p className="text-xs text-slate-300 mt-2 leading-relaxed whitespace-pre-wrap pl-8">
+                        <p className="text-[13px] text-slate-300 mt-2 leading-relaxed whitespace-pre-wrap pl-9">
                           {decodeHtmlEntities(comment.text)}
                         </p>
                       </div>
@@ -2905,51 +3012,45 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Comment input form */}
-                <form onSubmit={handleAddComment} className="pt-3 mt-3 border-t border-slate-800/80 space-y-2.5">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      placeholder="Your name (e.g. Stefani, Dad, Ben)"
-                      value={commentAuthor}
-                      onChange={(e) => setCommentAuthor(e.target.value)}
-                      className="px-3 py-1.5 text-xs bg-slate-950 rounded-lg border border-slate-700 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 w-44"
+                <form onSubmit={handleAddComment} className="pt-3 mt-3 border-t border-slate-800/80">
+                  <div className="flex items-start gap-2">
+                    <ProfileAvatar
+                      name={blackbaudStatus.displayName || blackbaudStatus.accountName || 'Family'}
+                      photoUrl={blackbaudStatus.photoUrl}
+                      size={36}
                     />
-                    <div className="flex items-center gap-1">
-                      {['Stefani', 'Dad', 'Ben', 'Jade'].map(quickName => (
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[13px] font-medium text-slate-200">
+                        {blackbaudStatus.displayName || blackbaudStatus.accountName || 'Family'}
+                      </p>
+                      {blackbaudStatus.email && (
+                        <p className="text-[12px] text-slate-500 truncate">{blackbaudStatus.email}</p>
+                      )}
+                      <div className="mt-2 flex gap-2">
+                        <textarea
+                          placeholder="Add a note"
+                          value={commentText}
+                          onChange={(e) => setCommentText(e.target.value)}
+                          rows={2}
+                          aria-label="Assignment note"
+                          className="flex-1 px-3 py-2 text-[15px] bg-slate-950 rounded-lg border border-slate-700 text-slate-100 placeholder-slate-500 focus:outline-none resize-none"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
+                              handleAddComment(e);
+                            }
+                          }}
+                        />
                         <button
-                          key={quickName}
-                          type="button"
-                          onClick={() => setCommentAuthor(quickName)}
-                          className="px-2 py-1 rounded bg-slate-800/80 hover:bg-slate-700 text-[10px] text-slate-400 hover:text-white transition-colors cursor-pointer"
+                          type="submit"
+                          disabled={!commentText.trim()}
+                          className="min-h-11 px-4 bg-indigo-600 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-white text-[13px] font-semibold rounded-lg flex items-center justify-center gap-1.5 shrink-0"
                         >
-                          {quickName}
+                          <Send className="w-3.5 h-3.5" />
+                          Post
                         </button>
-                      ))}
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <textarea
-                      placeholder="Add a comment, note, or update on this assignment..."
-                      value={commentText}
-                      onChange={(e) => setCommentText(e.target.value)}
-                      rows={2}
-                      className="flex-1 px-3 py-2 text-xs bg-slate-950 rounded-lg border border-slate-700 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          handleAddComment(e);
-                        }
-                      }}
-                    />
-                    <button
-                      type="submit"
-                      disabled={!commentText.trim()}
-                      className="px-4 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>Post</span>
-                    </button>
                   </div>
                 </form>
               </div>

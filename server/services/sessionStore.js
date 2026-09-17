@@ -155,6 +155,11 @@ export function publicIdentity(record) {
     displayName: record.displayName,
     role: record.role,
     accountName: record.accountName,
+    firstName: record.firstName || null,
+    lastName: record.lastName || null,
+    nickName: record.nickName || null,
+    email: record.email || null,
+    photoUrl: record.photoUrl || null,
     parentName: record.parentName,
     userId: record.userId,
     personaId: record.personaId,
@@ -176,6 +181,10 @@ export function takeClaim(token) {
   claims.delete(token);
   if (!row || row.expires < Date.now()) return null;
   return row.record;
+}
+
+export function persistSessions() {
+  persistStore();
 }
 
 export function createSession(record) {
@@ -203,6 +212,7 @@ export function filterPayloadForIdentity(data, identity) {
       events: [],
       deletedEventKeys: [],
       grades: {},
+      assignments: [],
       missingAssignments: []
     };
   }
@@ -217,6 +227,7 @@ export function filterPayloadForIdentity(data, identity) {
     grades,
     tasks: (data.tasks || []).filter((t) => allowed.has(t.student)),
     events: (data.events || []).filter((e) => allowed.has(e.student)),
+    assignments: (data.assignments || []).filter((a) => allowed.has(a.student)),
     missingAssignments: (data.missingAssignments || []).filter((m) => allowed.has(m.student))
   };
 }
@@ -232,6 +243,7 @@ export function mergeStudentWrite(existing, incoming, identity) {
   return {
     tasks: incoming.tasks !== undefined ? mergeList(existing.tasks, incoming.tasks) : existing.tasks,
     events: incoming.events !== undefined ? mergeList(existing.events, incoming.events) : existing.events,
-    deletedEventKeys: incoming.deletedEventKeys !== undefined ? incoming.deletedEventKeys : existing.deletedEventKeys
+    deletedEventKeys: incoming.deletedEventKeys !== undefined ? incoming.deletedEventKeys : existing.deletedEventKeys,
+    assignments: incoming.assignments !== undefined ? mergeList(existing.assignments, incoming.assignments) : existing.assignments
   };
 }

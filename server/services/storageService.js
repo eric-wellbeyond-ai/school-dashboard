@@ -163,6 +163,7 @@ export async function saveDashboardData(data) {
     events: data.events !== undefined ? data.events : current.events || [],
     deletedEventKeys: data.deletedEventKeys !== undefined ? data.deletedEventKeys : current.deletedEventKeys || [],
     grades: data.grades !== undefined ? data.grades : current.grades || { Ben: [], Jade: [] },
+    assignments: data.assignments !== undefined ? data.assignments : current.assignments || [],
     missingAssignments: data.missingAssignments !== undefined ? data.missingAssignments : current.missingAssignments || [],
     lastSyncedAt: data.lastSyncedAt !== undefined ? data.lastSyncedAt : current.lastSyncedAt || null,
     lastSyncStats: data.lastSyncStats !== undefined ? data.lastSyncStats : current.lastSyncStats || null,

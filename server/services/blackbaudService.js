@@ -20,6 +20,13 @@ import { fileURLToPath } from 'url';
 import { decodeHtmlEntities } from './parserService.js';
 import { currentWlaSession } from './wlaContext.js';
 import { identifyUser, BEN_ID, JADE_ID } from './sessionStore.js';
+import {
+  parsePortalDate,
+  toDateKey,
+  classifyAssignment,
+  formatAssignmentDate,
+  isAssignmentDone
+} from '../../src/lib/assignmentBuckets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -200,6 +207,14 @@ export function studentsFromContext(data = {}) {
   return Array.from(studentsMap.values());
 }
 
+export function profilePhotoUrl(ui = {}) {
+  const photo = ui.ProfilePhoto || {};
+  const rel = photo.ThumbFilenameUrl || photo.ThumbFilenameEditedUrl || photo.LargeFilenameUrl || photo.LargeFilenameEditedUrl;
+  if (!rel) return null;
+  if (String(rel).startsWith('http')) return rel;
+  return `https://bbk12e1-cdn.myschoolcdn.com${rel}`;
+}
+
 export function accountFromContext(data = {}, status = {}, homeUrl = '') {
   const ui = data.UserInfo || {};
   const children = Array.isArray(data.Children) ? data.Children : [];
@@ -215,7 +230,10 @@ export function accountFromContext(data = {}, status = {}, homeUrl = '') {
   else if (children.length === 0 && (ui.UserId || status.UserId)) role = 'student';
 
   const personaId = role === 'student' ? 2 : 1;
-  const accountName = `${ui.FirstName || ''} ${ui.LastName || ''}`.trim()
+  const firstName = (ui.FirstName || '').trim() || null;
+  const lastName = (ui.LastName || '').trim() || null;
+  const nickName = (ui.NickName || '').trim() || null;
+  const accountName = `${firstName || ''} ${lastName || ''}`.trim()
     || status.FirstName
     || null;
 
@@ -223,6 +241,11 @@ export function accountFromContext(data = {}, status = {}, homeUrl = '') {
     role,
     personaId,
     userId: ui.UserId || status.UserId || null,
+    firstName,
+    lastName,
+    nickName,
+    email: ui.Email || null,
+    photoUrl: profilePhotoUrl(ui),
     accountName,
     parentName: role === 'parent' ? accountName : null
   };
@@ -284,6 +307,11 @@ export async function verifyAndDiscoverProfiles(rawCookie, options = {}) {
     role: account.role,
     personaId: account.personaId,
     userId: account.userId,
+    firstName: account.firstName,
+    lastName: account.lastName,
+    nickName: account.nickName,
+    email: account.email,
+    photoUrl: account.photoUrl,
     accountName: account.accountName,
     parentUserId: account.role === 'parent' ? account.userId : null,
     parentName: account.parentName,
@@ -365,51 +393,92 @@ export async function getStudentClassesAndGrades(studentId, personaId = 1) {
   }
 }
 
+function shortCourseName(title) {
+  const clean = decodeHtmlEntities(title || '');
+  return clean.split(' - ')[0].trim() || clean;
+}
+
+function mapHydrateAssignment(meta, grade, course, studentId, studentName, now) {
+  const assignedAt = parsePortalDate(meta.SortDateAssigned || meta.DateAssigned);
+  const dueAt = parsePortalDate(meta.SortDateDue || meta.DateDue);
+  const done = isAssignmentDone(grade);
+  const status = classifyAssignment({ assignedAt, dueAt, done, now });
+  const title = decodeHtmlEntities(meta.AssignShort || meta.AbbrDescription || meta.ShortDescription || 'Assignment');
+  const comment = decodeHtmlEntities(grade.Comment || '');
+  const points = grade.PointsEarned;
+  return {
+    id: `bb_${meta.AssignmentId || grade.AssignmentId}_${studentId}`,
+    assignmentId: meta.AssignmentId || grade.AssignmentId,
+    title,
+    course: shortCourseName(course.course),
+    teacher: decodeHtmlEntities(course.teacher || ''),
+    student: studentName,
+    type: decodeHtmlEntities(meta.AssignmentType || grade.AssignmentType || 'Assignment'),
+    assignedDate: assignedAt ? formatAssignmentDate(assignedAt) : '',
+    dueDate: dueAt ? formatAssignmentDate(dueAt) : '',
+    assignedDateISO: toDateKey(assignedAt),
+    dueDateISO: toDateKey(dueAt),
+    status,
+    done,
+    completed: done,
+    isMissing: grade.Missing === true,
+    late: grade.Late === true,
+    incomplete: grade.Incomplete === true,
+    exempt: grade.Exempt === true,
+    dropped: grade.Dropped === true,
+    pointsEarned: typeof points === 'number' ? points : null,
+    maxPoints: meta.MaxPoints || grade.MaxPoints || null,
+    comment,
+    source: 'Blackbaud',
+    priority: status === 'overdue' ? 'high' : status === 'dueSoon' ? 'medium' : 'low'
+  };
+}
+
 /**
- * Get missing assignments from StudentMissingAssignmentCheck & gradebook hydration
+ * Full assignment list from each published gradebook (parent Assignment2 APIs 403).
  */
-export async function getStudentMissingAssignments(studentId, studentName, classes = []) {
-  const missingItems = [];
-  try {
-    // Check classes with overdue count
-    const candidateClasses = classes.filter(c => c.overdueCount > 0 && c.sectionId && c.markingPeriodId);
-
-    for (const c of candidateClasses) {
-      try {
-        const url = `/api/gradebook/hydrategradebook?sectionId=${c.sectionId}&markingPeriodId=${c.markingPeriodId}&sortAssignmentId=null&sortSkillPk=null&sortDesc=null&sortCumulative=null&studentUserId=${studentId}&fromProgress=true`;
-        const hydra = await blackbaudRequest(url);
-
-        if (hydra && Array.isArray(hydra.Roster)) {
-          for (const r of hydra.Roster) {
-            for (const a of (r.AssignmentGrades || r.Assignments || [])) {
-              if (a.Missing === true) {
-                const meta = (hydra.Assignments || []).find(x => x.AssignmentId === a.AssignmentId) || {};
-                const cleanComment = decodeHtmlEntities(a.Comment || '');
-                missingItems.push({
-                  id: `bb_missing_${a.AssignmentId}_${studentId}`,
-                  title: decodeHtmlEntities(meta.AssignShort || meta.ShortDescription || 'Missing Assignment'),
-                  course: decodeHtmlEntities(c.course),
-                  teacher: decodeHtmlEntities(c.teacher),
-                  student: studentName,
-                  dueDate: meta.DateDue || 'Overdue',
-                  comment: cleanComment,
-                  maxPoints: meta.MaxPoints || 100,
-                  type: decodeHtmlEntities(meta.AssignmentType || 'Assignment'),
-                  isMissing: true
-                });
-              }
-            }
-          }
-        }
-      } catch (classErr) {
-        console.warn(`[Blackbaud] Hydrate gradebook failed for section ${c.sectionId}:`, classErr.message);
-      }
+export async function getStudentAssignments(studentId, studentName, classes = []) {
+  const now = new Date();
+  const candidateClasses = classes.filter((c) => c.sectionId && c.markingPeriodId);
+  const batches = await Promise.all(candidateClasses.map(async (course) => {
+    try {
+      const url = `/api/gradebook/hydrategradebook?sectionId=${course.sectionId}&markingPeriodId=${course.markingPeriodId}&sortAssignmentId=null&sortSkillPk=null&sortDesc=null&sortCumulative=null&studentUserId=${studentId}&fromProgress=true`;
+      const hydra = await blackbaudRequest(url);
+      const roster = (hydra.Roster || []).find((r) => r.StudentUserId === studentId)
+        || (hydra.Roster || [])[0];
+      const gradesById = new Map((roster?.AssignmentGrades || []).map((g) => [g.AssignmentId, g]));
+      return (hydra.Assignments || []).map((meta) => {
+        const grade = gradesById.get(meta.AssignmentId) || {};
+        if (grade.Dropped === true) return null;
+        return mapHydrateAssignment(meta, grade, course, studentId, studentName, now);
+      }).filter(Boolean);
+    } catch (classErr) {
+      console.warn(`[Blackbaud] Hydrate gradebook failed for section ${course.sectionId}:`, classErr.message);
+      return [];
     }
-  } catch (err) {
-    console.warn(`[Blackbaud] Failed to fetch missing assignments for ${studentId}:`, err.message);
-  }
+  }));
+  return batches.flat();
+}
 
-  return missingItems;
+export async function getAssignmentDetail(assignmentId) {
+  const data = await blackbaudRequest(`/api/assignment2/read/${encodeURIComponent(assignmentId)}/?format=json`);
+  const link = Array.isArray(data.SectionLinks) ? data.SectionLinks[0] : {};
+  return {
+    assignmentId: data.AssignmentId,
+    longDescription: decodeHtmlEntities(data.LongDescription || ''),
+    shortDescription: decodeHtmlEntities(data.ShortDescription || ''),
+    type: decodeHtmlEntities(data.AssignmentType || ''),
+    maxPoints: data.MaxPoints ?? null,
+    dropbox: Boolean(data.DropboxInd),
+    onPaper: Boolean(data.OnPaperSubmission),
+    assignedDateRaw: link.AssignmentDate || data.DefaultDateAssigned || null,
+    dueDateRaw: link.DueDate || data.DefaultDateDue || null
+  };
+}
+
+export async function getStudentMissingAssignments(studentId, studentName, classes = []) {
+  const items = await getStudentAssignments(studentId, studentName, classes);
+  return items.filter((a) => a.isMissing);
 }
 
 /**
@@ -465,6 +534,19 @@ export async function syncBlackbaudData() {
   const allowedIds = new Set(identity.allowedStudentIds || students.map((s) => s.id));
   students = students.filter((s) => allowedIds.has(s.id));
 
+  try {
+    const ctx = await blackbaudRequest('/api/webapp/context');
+    const account = accountFromContext(ctx, {}, session.homeUrl);
+    session.firstName = account.firstName;
+    session.lastName = account.lastName;
+    session.nickName = account.nickName;
+    session.email = account.email;
+    session.photoUrl = account.photoUrl;
+    if (account.accountName) session.accountName = account.accountName;
+  } catch (err) {
+    console.warn('[Blackbaud] Profile refresh failed:', err.message);
+  }
+
   const results = {
     connected: true,
     lastSyncedAt: new Date().toISOString(),
@@ -473,6 +555,12 @@ export async function syncBlackbaudData() {
     userKey: identity.userKey,
     displayName: identity.displayName,
     accountName: identity.accountName || session.accountName,
+    firstName: session.firstName || identity.firstName || null,
+    lastName: session.lastName || identity.lastName || null,
+    nickName: session.nickName || null,
+    email: session.email || null,
+    photoUrl: session.photoUrl || null,
+    userId: session.userId || identity.userId || null,
     allowedStudentKeys: identity.allowedStudentKeys,
     grades: {},
     assignments: [],
@@ -487,33 +575,9 @@ export async function syncBlackbaudData() {
     );
     results.grades[stName] = classes;
 
-    // Discover missing assignments for this student
-    const missing = await getStudentMissingAssignments(s.id, stName, classes);
-    if (Array.isArray(missing) && missing.length > 0) {
-      results.missingAssignments.push(...missing);
-
-      // Also create portal assignment items for any missing work so they show up in the Checklist!
-      missing.forEach(m => {
-        const cleanTitle = decodeHtmlEntities(m.title);
-        const cleanComment = decodeHtmlEntities(m.comment);
-        results.assignments.push({
-          id: m.id,
-          title: `[Missing] ${cleanTitle}${cleanComment ? ` (${cleanComment})` : ''}`,
-          student: stName,
-          course: decodeHtmlEntities(m.course.split(' - ')[0]),
-          dueDate: m.dueDate,
-          source: 'Blackbaud Portal',
-          completed: false,
-          priority: 'high',
-          comments: cleanComment ? [{
-            id: `comm_${Date.now()}`,
-            author: 'Blackbaud Teacher Note',
-            text: cleanComment,
-            timestamp: 'Portal Alert'
-          }] : []
-        });
-      });
-    }
+    const items = await getStudentAssignments(s.id, stName, classes);
+    results.assignments.push(...items);
+    results.missingAssignments.push(...items.filter((a) => a.isMissing));
   }
 
   const gradeCount = Object.values(results.grades).reduce(
