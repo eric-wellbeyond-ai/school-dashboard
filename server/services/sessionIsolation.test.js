@@ -9,6 +9,7 @@ import {
   filterPayloadForIdentity,
   createSession,
   getSession,
+  persistSessions,
   deleteSession,
   ERIC_ID,
   BEN_ID,
@@ -103,4 +104,16 @@ test('blackbaudService has no process-global cachedSession', () => {
   assert.equal(/let cachedSession/.test(src), false);
   assert.equal(/saveBlackbaudSession/.test(src), false);
   assert.equal(/set\/blackbaud_session/.test(src), false);
+});
+
+test('session bind updates only the targeted wla_session row', () => {
+  const idA = createSession({ subdomain: 'westlakelutheran', userKey: 'guestA' });
+  const idB = createSession({ subdomain: 'westlakelutheran', userKey: 'guestB' });
+  const rowA = getSession(idA);
+  rowA.cookie = 't=token-for-a';
+  persistSessions(rowA);
+  assert.equal(getSession(idA).cookie, 't=token-for-a');
+  assert.equal(getSession(idB).cookie, undefined);
+  deleteSession(idA);
+  deleteSession(idB);
 });

@@ -983,12 +983,12 @@ export default function App() {
     if (!cookie) return false;
     setIsConnectingBlackbaud(true);
     try {
-      const res = await fetch('/api/blackbaud/connect', {
+      const res = await fetch('/api/blackbaud/session', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          cookie,
+          t: cookie,
           benStudentId: blackbaudBenId.trim() || undefined,
           jadeStudentId: blackbaudJadeId.trim() || undefined
         })
@@ -1342,7 +1342,14 @@ export default function App() {
         if (wvRes.ok) {
           const wv = await wvRes.json();
           setMacWebview(wv);
-          if (wv.posted && (wv.homeReady || /\/app\/(parent|student)(?:\/|\?|#|$)/i.test(wv.url || ''))) {
+          if (wv.posted && (wv.homeReady || /\/app(?:\/|\?|#|$)/i.test(wv.url || ''))) {
+            const statusRes = await fetch('/api/blackbaud/status', { credentials: 'include' });
+            if (statusRes.ok) {
+              const status = await statusRes.json();
+              if (status?.connected) {
+                setBlackbaudStatus({ connected: true, ...status });
+              }
+            }
             if (wv.claimToken && claimedMacToken.current !== wv.claimToken) {
               claimedMacToken.current = wv.claimToken;
               const claimRes = await fetch('/api/blackbaud/claim', {

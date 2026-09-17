@@ -26,7 +26,8 @@ import {
   fetchFeaturedContent,
   fetchNewsDetail,
   fetchResources,
-  portalTFromCookie
+  portalTFromCookie,
+  formatCookieString
 } from './services/blackbaudService.js';
 import { runWithWlaSession } from './services/wlaContext.js';
 import {
@@ -41,6 +42,7 @@ import {
   stageLogin,
   takeClaim,
   createSession,
+  getSession,
   getSessionAsync,
   deleteSession,
   persistSessions,
@@ -599,13 +601,24 @@ app.post('/api/blackbaud/mac-webview/start', async (req, res) => {
     prunePortalLogins();
     const nonce = crypto.randomUUID();
     harvestNonce = nonce;
-    portalLogins.set(nonce, { startedAt: Date.now() });
+    const cookies = parseCookies(req);
+    let wlaSessionId = cookies[SESSION_COOKIE];
+    if (wlaSessionId) {
+      const existing = await getSessionAsync(wlaSessionId);
+      if (!existing) wlaSessionId = null;
+    }
+    if (!wlaSessionId) {
+      wlaSessionId = createSession({ subdomain: 'westlakelutheran' });
+      appendSetCookie(res, sessionCookieHeader(wlaSessionId));
+    }
+    portalLogins.set(nonce, { startedAt: Date.now(), sessionId: wlaSessionId });
     const profile = path.join(__dirname, `.playwright-login-${Date.now()}-${nonce.slice(0, 8)}`);
     macWebviewProc = spawn('python3', [MAC_AGENT], {
       cwd: SCHOOL_APP_ROOT,
       env: {
         ...process.env,
         DASHBOARD_API: 'http://127.0.0.1:5001',
+        MAC_WLA_SESSION: wlaSessionId,
         MAC_WEBVIEW_PROFILE: profile
       },
       stdio: 'inherit'
@@ -644,6 +657,56 @@ app.get('/api/blackbaud/status', async (req, res) => {
     }
     res.json(publicIdentity(req.wla));
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Route: POST /api/blackbaud/session
+ * Binds harvested portal cookie t onto this request's wla_session only.
+ */
+app.post('/api/blackbaud/session', async (req, res) => {
+  try {
+    const raw = req.body?.cookie ?? req.body?.t;
+    const cookie = formatCookieString(String(raw || '').trim());
+    if (!portalTFromCookie(cookie)) {
+      return res.status(400).json({ error: 'Portal session cookie t is required' });
+    }
+
+    let discovered;
+    try {
+      discovered = await verifyAndDiscoverProfiles(cookie, { homeUrl: req.body?.homeUrl });
+      if (req.body?.benStudentId) discovered.benStudentId = req.body.benStudentId;
+      if (req.body?.jadeStudentId) discovered.jadeStudentId = req.body.jadeStudentId;
+    } catch (verifyErr) {
+      return res.status(401).json({
+        success: false,
+        error: verifyErr.message || 'Blackbaud session token t is not valid.'
+      });
+    }
+
+    const identity = identifyUser(discovered);
+    const merged = {
+      ...(req.wla || {}),
+      ...discovered,
+      ...identity,
+      cookie,
+      subdomain: 'westlakelutheran',
+      verifiedAt: new Date().toISOString()
+    };
+
+    const sessionId = merged.sessionId || parseCookies(req)[SESSION_COOKIE];
+    if (sessionId && getSession(sessionId)) {
+      merged.sessionId = sessionId;
+      persistSessions(merged);
+      return res.json({ success: true, data: publicIdentity(merged) });
+    }
+
+    const id = createSession(merged);
+    appendSetCookie(res, sessionCookieHeader(id));
+    res.json({ success: true, data: publicIdentity({ ...merged, sessionId: id }) });
+  } catch (err) {
+    console.error('Blackbaud session bind failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
