@@ -191,7 +191,7 @@ export default function CalendarBoard({ events, onSelect, focusDate = null, focu
 
   return (
     <div className={`wla-calendar ${compact ? 'wla-calendar-compact mt-0' : 'mt-2'}`}>
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+      <div className={`flex flex-wrap items-center justify-between ${compact ? 'gap-1 mb-1.5' : 'gap-2 mb-2'}`}>
         <div className="flex items-center gap-1 min-w-0">
           <button type="button" className="btn btn-ghost btn-sm btn-square" aria-label="Previous" onClick={() => setCursor((d) => shiftCursor(mode, d, -1))}>
             <ChevronLeft className="w-4 h-4" aria-hidden="true" />
@@ -237,7 +237,7 @@ export default function CalendarBoard({ events, onSelect, focusDate = null, focu
               return (
                 <div
                   key={ymd(day)}
-                  className={`min-h-[3.25rem] p-1 text-left border-t border-r border-zinc-800 ${inMonth ? 'bg-zinc-950' : 'bg-zinc-950/50'} ${isToday ? 'ring-1 ring-inset ring-blue-500' : ''}`}
+                  className={`${compact ? 'min-h-[2.65rem]' : 'min-h-[3.25rem]'} p-1 text-left border-t border-r border-zinc-800 ${inMonth ? 'bg-zinc-950' : 'bg-zinc-950/50'} ${isToday ? 'ring-1 ring-inset ring-blue-500' : ''}`}
                 >
                   <button
                     type="button"
@@ -282,22 +282,22 @@ export default function CalendarBoard({ events, onSelect, focusDate = null, focu
               const isToday = sameDay(day, today);
               const list = grouped.get(ymd(day)) || [];
               return (
-                <div key={ymd(day)} className="border-r border-zinc-800 last:border-r-0 min-h-[8.5rem]">
+                <div key={ymd(day)} className={`border-r border-zinc-800 last:border-r-0 ${compact ? 'min-h-[4.75rem]' : 'min-h-[8.5rem]'}`}>
                   <button
                     type="button"
-                    className={`w-full px-1 py-1.5 border-b border-zinc-800 text-center ${isToday ? 'bg-blue-600/15' : 'bg-zinc-900'}`}
+                    className={`w-full px-1 ${compact ? 'py-1' : 'py-1.5'} border-b border-zinc-800 text-center ${isToday ? 'bg-blue-600/15' : 'bg-zinc-900'}`}
                     aria-current={isToday ? 'date' : undefined}
                     onClick={() => {
                       setCursor(startOfDay(day));
                       setMode('day');
                     }}
                   >
-                    <div className="text-[11px] uppercase tracking-[0.06em] text-zinc-400">{WEEKDAYS[day.getDay()]}</div>
-                    <div className={`text-sm font-semibold ${isToday ? 'text-blue-400' : 'text-zinc-100'}`}>{day.getDate()}</div>
+                    <div className={`${compact ? 'text-[10px]' : 'text-[11px]'} uppercase tracking-[0.06em] text-zinc-400`}>{WEEKDAYS[day.getDay()]}</div>
+                    <div className={`${compact ? 'text-[13px]' : 'text-sm'} font-semibold ${isToday ? 'text-blue-400' : 'text-zinc-100'}`}>{day.getDate()}</div>
                   </button>
-                  <div className="p-1.5 space-y-1">
+                  <div className={compact ? 'p-1 space-y-0.5' : 'p-1.5 space-y-1'}>
                     {list.length === 0 ? (
-                      <p className="text-[11px] text-zinc-500 px-1 py-2">No events</p>
+                      compact ? null : <p className="text-[11px] text-zinc-500 px-1 py-2">No events</p>
                     ) : list.map((event) => (
                       <EventChip key={event.id} event={event} onSelect={selectEvent} compact={compact} />
                     ))}

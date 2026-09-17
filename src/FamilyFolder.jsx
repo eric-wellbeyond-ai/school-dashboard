@@ -5,9 +5,11 @@ import {
   ExternalLink,
   Folder,
   GraduationCap,
+  Inbox,
   Key,
   Link as LinkIcon,
   MessageCircle,
+  Newspaper,
   Plus,
   RefreshCw,
   Sparkles,
@@ -95,6 +97,96 @@ function daysLate(task) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return Math.max(0, Math.round((today - due) / 86400000));
+}
+
+function snippetLine(text, max = 140) {
+  const clean = decodeHtml(text);
+  if (!clean) return '';
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, max).trim()}…`;
+}
+
+function newsMatchesLevel(item, filter) {
+  if (filter === 'All') return true;
+  const level = item.level || 'All';
+  return level === filter || level === 'All';
+}
+
+function noteMatchesStudent(item, filter) {
+  if (filter === 'All') return true;
+  return item.student === filter || item.student === 'All';
+}
+
+function defaultNewsFilter(selectedStudent) {
+  if (selectedStudent === 'Ben') return 'HS';
+  if (selectedStudent === 'Jade') return 'MS';
+  return 'All';
+}
+
+function FeedListPopover({
+  id,
+  title,
+  empty,
+  items,
+  onSelect,
+  filters,
+  filter,
+  onFilter,
+  filterLabel
+}) {
+  return (
+    <div id={id} className="ff-feed-pop" role="dialog" aria-label={title}>
+      <div className="ff-feed-pop-head">
+        <p className="ff-feed-pop-kicker">{title}</p>
+        {filters?.length > 1 ? (
+          <div className="ff-feed-filters" role="tablist" aria-label={filterLabel}>
+            {filters.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={filter === tab.id}
+                className={`ff-feed-filter ${filter === tab.id ? 'is-active' : ''}`}
+                onClick={() => onFilter(tab.id)}
+              >
+                {tab.label}
+                {typeof tab.count === 'number' ? (
+                  <span className="tabular-nums">{tab.count}</span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      {items.length === 0 ? (
+        <p className="ff-feed-empty">{empty}</p>
+      ) : (
+        <ul className="ff-feed-list">
+          {items.map((item) => (
+            <li key={item.id}>
+              <button
+                type="button"
+                className={`ff-feed-row ${item.viewed === false ? 'is-unread' : ''}`}
+                onClick={() => onSelect(item)}
+              >
+                <span className="ff-feed-row-title">{decodeHtml(item.title)}</span>
+                <span className="ff-feed-row-meta">
+                  {[
+                    item.date,
+                    item.author || (item.student && item.student !== 'All' ? item.student : null),
+                    item.level && item.level !== 'All' ? item.level : null
+                  ].filter(Boolean).join(' · ')}
+                </span>
+                {item.snippet ? (
+                  <span className="ff-feed-row-snippet">{snippetLine(item.snippet)}</span>
+                ) : null}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 function AssignmentScoreChip({ earned, max, letter, status, className = '' }) {
@@ -187,10 +279,18 @@ export default function FamilyFolder({
   onBlackbaudSettings,
   onDisconnectBlackbaud,
   onOpenLanding,
-  sportsYouConnected
+  sportsYouConnected,
+  topbarTools,
+  officialNotes = [],
+  featuredNews = [],
+  notesUnreadCount = 0,
+  newsCount = 0,
+  onOpenOfficialNote,
+  onOpenFeaturedItem
 }) {
-  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState(null);
   const sourcesRef = useRef(null);
+  const feedsRef = useRef(null);
   const signedInName = blackbaudStatus.displayName || blackbaudStatus.accountName || '';
   const signedFirst = firstName(signedInName);
   const blackbaudSync = formatSyncTime(blackbaudStatus.verifiedAt);
@@ -200,16 +300,26 @@ export default function FamilyFolder({
     day: 'numeric'
   }).toUpperCase();
   const bothOpenCount = benOpenCount + jadeOpenCount;
+  const sourcesOpen = openMenu === 'sources';
+  const notesOpen = openMenu === 'notes';
+  const newsOpen = openMenu === 'news';
+  const [notesFilter, setNotesFilter] = useState(selectedStudent === 'All' ? 'All' : selectedStudent);
+  const [newsFilter, setNewsFilter] = useState(defaultNewsFilter(selectedStudent));
 
   useEffect(() => {
-    if (!sourcesOpen) return undefined;
+    setNotesFilter(selectedStudent === 'All' ? 'All' : selectedStudent);
+    setNewsFilter(defaultNewsFilter(selectedStudent));
+  }, [selectedStudent]);
+
+  useEffect(() => {
+    if (!openMenu) return undefined;
     const onDoc = (event) => {
-      if (sourcesRef.current && !sourcesRef.current.contains(event.target)) {
-        setSourcesOpen(false);
-      }
+      const inSources = sourcesRef.current && sourcesRef.current.contains(event.target);
+      const inFeeds = feedsRef.current && feedsRef.current.contains(event.target);
+      if (!inSources && !inFeeds) setOpenMenu(null);
     };
     const onKey = (event) => {
-      if (event.key === 'Escape') setSourcesOpen(false);
+      if (event.key === 'Escape') setOpenMenu(null);
     };
     document.addEventListener('mousedown', onDoc);
     document.addEventListener('keydown', onKey);
@@ -217,14 +327,29 @@ export default function FamilyFolder({
       document.removeEventListener('mousedown', onDoc);
       document.removeEventListener('keydown', onKey);
     };
-  }, [sourcesOpen]);
+  }, [openMenu]);
 
   const filterTabs = [
     { id: 'overdue', label: 'Overdue', count: checklistCounts.overdue },
-    { id: 'dueSoon', label: 'Due Soon', count: checklistCounts.dueSoon },
+    { id: 'dueSoon', label: 'Due soon', count: checklistCounts.dueSoon },
     { id: 'assigned', label: 'Assigned', count: checklistCounts.assigned },
     { id: 'missing', label: 'Missing', count: checklistCounts.missing },
     { id: 'done', label: 'Done', count: checklistCounts.done }
+  ];
+
+  const visibleNotes = officialNotes.filter((item) => noteMatchesStudent(item, notesFilter));
+  const visibleNews = featuredNews.filter((item) => newsMatchesLevel(item, newsFilter));
+  const noteFilters = isParentViewer && canSeeBen && canSeeJade
+    ? [
+      { id: 'All', label: 'Both', count: officialNotes.length },
+      { id: 'Ben', label: 'Ben', count: officialNotes.filter((item) => noteMatchesStudent(item, 'Ben')).length },
+      { id: 'Jade', label: 'Jade', count: officialNotes.filter((item) => noteMatchesStudent(item, 'Jade')).length }
+    ]
+    : [];
+  const newsFilters = [
+    { id: 'All', label: 'All', count: featuredNews.length },
+    { id: 'HS', label: 'HS', count: featuredNews.filter((item) => newsMatchesLevel(item, 'HS')).length },
+    { id: 'MS', label: 'MS', count: featuredNews.filter((item) => newsMatchesLevel(item, 'MS')).length }
   ];
 
   return (
@@ -250,7 +375,7 @@ export default function FamilyFolder({
               type="button"
               aria-pressed={selectedStudent === 'All'}
               onClick={() => setSelectedStudent('All')}
-              className={`ff-kid-pill ${selectedStudent === 'All' ? 'is-active' : ''}`}
+              className={`ff-kid-pill is-both ${selectedStudent === 'All' ? 'is-active' : ''}`}
             >
               Both
               <span className="tabular-nums">{bothOpenCount}</span>
@@ -262,7 +387,7 @@ export default function FamilyFolder({
               type="button"
               aria-pressed={selectedStudent === 'Ben'}
               onClick={() => setSelectedStudent('Ben')}
-              className={`ff-kid-pill ${selectedStudent === 'Ben' ? 'is-active' : ''}`}
+              className={`ff-kid-pill is-ben ${selectedStudent === 'Ben' ? 'is-active' : ''}`}
             >
               <ProfileAvatar name="Ben" photoUrl={studentPhoto('Ben')} size={18} />
               Ben
@@ -275,13 +400,85 @@ export default function FamilyFolder({
               type="button"
               aria-pressed={selectedStudent === 'Jade'}
               onClick={() => setSelectedStudent('Jade')}
-              className={`ff-kid-pill ${selectedStudent === 'Jade' ? 'is-active' : ''}`}
+              className={`ff-kid-pill is-jade ${selectedStudent === 'Jade' ? 'is-active' : ''}`}
             >
               <ProfileAvatar name="Jade" photoUrl={studentPhoto('Jade')} size={18} />
               Jade
               <span className="tabular-nums">{jadeOpenCount}</span>
             </button>
           )}
+        </div>
+
+        <div className="ff-topbar-tools" data-slot="topbar-tools">
+          {topbarTools}
+          <div className="ff-feeds" ref={feedsRef}>
+          <button
+            type="button"
+            id="official-notes-button"
+            className="ff-feed-btn"
+            aria-label={notesUnreadCount ? `Official notes, ${notesUnreadCount} unread` : 'Official notes'}
+            aria-expanded={notesOpen}
+            aria-haspopup="dialog"
+            aria-controls="ff-notes-popover"
+            onClick={() => setOpenMenu(notesOpen ? null : 'notes')}
+          >
+            <Inbox className="w-5 h-5" aria-hidden="true" />
+            {notesUnreadCount > 0 ? (
+              <span className="ff-feed-badge" aria-hidden="true">
+                {notesUnreadCount > 99 ? '99+' : notesUnreadCount}
+              </span>
+            ) : null}
+          </button>
+          <button
+            type="button"
+            id="featured-news-button"
+            className="ff-feed-btn"
+            aria-label={newsCount ? `Featured content, ${newsCount} items` : 'Featured content'}
+            aria-expanded={newsOpen}
+            aria-haspopup="dialog"
+            aria-controls="ff-news-popover"
+            onClick={() => setOpenMenu(newsOpen ? null : 'news')}
+          >
+            <Newspaper className="w-5 h-5" aria-hidden="true" />
+            {newsCount > 0 ? (
+              <span className="ff-feed-badge is-count" aria-hidden="true">
+                {newsCount > 99 ? '99+' : newsCount}
+              </span>
+            ) : null}
+          </button>
+          {notesOpen && (
+            <FeedListPopover
+              id="ff-notes-popover"
+              title="Official notes"
+              empty={blackbaudStatus.connected ? 'No official notes for this student.' : 'Sign in to load official notes.'}
+              items={visibleNotes}
+              filter={notesFilter}
+              filters={noteFilters}
+              filterLabel="Student"
+              onFilter={setNotesFilter}
+              onSelect={(item) => {
+                setOpenMenu(null);
+                onOpenOfficialNote(item);
+              }}
+            />
+          )}
+          {newsOpen && (
+            <FeedListPopover
+              id="ff-news-popover"
+              title="Featured content"
+              empty={blackbaudStatus.connected ? 'No featured stories for this school.' : 'Sign in to load featured content.'}
+              items={visibleNews}
+              filter={newsFilter}
+              filters={newsFilters}
+              filterLabel="School"
+              onFilter={setNewsFilter}
+              onSelect={(item) => {
+                setOpenMenu(null);
+                onOpenFeaturedItem(item);
+              }}
+            />
+          )}
+          </div>
         </div>
 
         <div className="ff-account-cluster" ref={sourcesRef}>
@@ -303,7 +500,7 @@ export default function FamilyFolder({
               className="ff-sources-toggle"
               aria-expanded={sourcesOpen}
               aria-controls="ff-sources-popover"
-              onClick={() => setSourcesOpen((open) => !open)}
+              onClick={() => setOpenMenu(sourcesOpen ? null : 'sources')}
             >
               Sources
             </button>
@@ -377,7 +574,7 @@ export default function FamilyFolder({
                 <button
                   type="button"
                   onClick={() => {
-                    setSourcesOpen(false);
+                    setOpenMenu(null);
                     if (blackbaudStatus.connected) onBlackbaudSettings();
                     else onOpenLanding();
                   }}
@@ -441,21 +638,38 @@ export default function FamilyFolder({
               </button>
             </div>
 
-            <label className="ff-select-wrap ff-assign-filter">
-              <span className="sr-only">Assignment status</span>
-              <select
-                className="select select-bordered select-sm ff-select"
-                value={taskFilter}
-                onChange={(e) => setTaskFilter(e.target.value)}
-                aria-label="Assignment status"
-              >
-                {filterTabs.map((tab) => (
-                  <option key={tab.id} value={tab.id}>
-                    {tab.label} ({tab.count})
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div
+              role="tablist"
+              aria-label="Assignment status"
+              className="ff-assign-slider tabs"
+            >
+              {filterTabs.map((tab, index) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={taskFilter === tab.id}
+                  tabIndex={taskFilter === tab.id ? 0 : -1}
+                  className={`tab ff-assign-tab join-item ${taskFilter === tab.id ? 'tab-active' : ''}`}
+                  onClick={() => setTaskFilter(tab.id)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft' && event.key !== 'Home' && event.key !== 'End') return;
+                    event.preventDefault();
+                    const last = filterTabs.length - 1;
+                    let next = index;
+                    if (event.key === 'ArrowRight') next = index === last ? 0 : index + 1;
+                    if (event.key === 'ArrowLeft') next = index === 0 ? last : index - 1;
+                    if (event.key === 'Home') next = 0;
+                    if (event.key === 'End') next = last;
+                    setTaskFilter(filterTabs[next].id);
+                    event.currentTarget.parentElement?.querySelectorAll('[role="tab"]')[next]?.focus();
+                  }}
+                >
+                  {tab.label}
+                  <span className="ff-assign-tab-count tabular-nums">{tab.count}</span>
+                </button>
+              ))}
+            </div>
 
             {isAddingTask && (
               <form onSubmit={onAddTask} className="ff-add-form">
