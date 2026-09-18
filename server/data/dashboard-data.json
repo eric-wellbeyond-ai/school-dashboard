@@ -1,6 +1,38 @@
 {
   "tasks": [
     {
+      "emailId": "1a0b07b6b9dfed85",
+      "emailFrom": "Westlake Lutheran Academy",
+      "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Reminder",
+      "emailDate": "Thu, 17 Sep 2026 17:47:51 +0000",
+      "emailBody": "Student Name: Benjamin Smith \r\n Author Name: Emily Falvey \r\n \r\n Comment Date: 09/17/2026 \r\n Comment Type: Classroom Reminder \r\n Comment: REMINDER: English II/H TEST tomorrow 9/18.\n\nThe Review guide KEY has been posted under the Short Story Topic. Please look at it to help you study! You also need to know you SAT words - I recommend flashcards for these.\n\nWe will be starting The Scarlet Letter tomorrow so please make sure you have ordered your copy of the text. You should bring it if you have!\n\nRemember, you know your material. Don't over study. Study what you don't know and have confidence in what you do!\n\nMrs. Falvey",
+      "id": "task_1a0b07b6b9dfed85_study_guide_ben",
+      "title": "Complete Short Story Review & Study Guide (Emily Falvey)",
+      "student": "Ben",
+      "course": "English / ELA",
+      "dueDate": "Due on test day",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "medium",
+      "comments": []
+    },
+    {
+      "emailId": "1a0ac3e51e6f1121",
+      "emailFrom": "Westlake Lutheran Academy",
+      "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Announcement",
+      "emailDate": "Wed, 16 Sep 2026 22:02:39 +0000",
+      "emailBody": "Student Name: Benjamin Smith \r\n Author Name: Crystal Dube \r\n \r\n Comment Date: 09/16/2026 \r\n Comment Type: Classroom Announcement \r\n Comment: Hello all,\n\nTomorrow change of plans! Please come to class with questions about the material we've gone over. \n\nThe quiz is moved to Monday!\n\nMs. Dube",
+      "id": "task_1a0ac3e51e6f1121_quiz_rescheduled_ben",
+      "title": "Science Quiz (Rescheduled to Monday) (Crystal Dube)",
+      "student": "Ben",
+      "course": "Science",
+      "dueDate": "Monday",
+      "source": "Westlake Lutheran Academy",
+      "completed": false,
+      "priority": "high",
+      "comments": []
+    },
+    {
       "id": "bb_missing_10663539_5662183",
       "title": "[Missing] HW #5 Solving Systems of Equations by Graphing and Substitution (anticipated absence, reminded Ben assignments need to be picked up in advance of an anticipated absence. He can also print from Blackbaud)",
       "student": "Ben",
@@ -17,22 +49,6 @@
           "timestamp": "Portal Alert"
         }
       ]
-    },
-    {
-      "id": "task_1a0ac3e51e6f1121_quiz_rescheduled_ben",
-      "title": "Science Quiz (Rescheduled to Monday) (Crystal Dube)",
-      "student": "Ben",
-      "course": "Science",
-      "dueDate": "Monday",
-      "source": "Westlake Lutheran Academy",
-      "completed": false,
-      "priority": "high",
-      "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Announcement",
-      "emailDate": "Wed, 16 Sep 2026 22:02:39 +0000",
-      "comments": [],
-      "emailId": "1a0ac3e51e6f1121",
-      "emailFrom": "Westlake Lutheran Academy",
-      "emailBody": "Student Name: Benjamin Smith \r\n Author Name: Crystal Dube \r\n \r\n Comment Date: 09/16/2026 \r\n Comment Type: Classroom Announcement \r\n Comment: Hello all,\n\nTomorrow change of plans! Please come to class with questions about the material we've gone over. \n\nThe quiz is moved to Monday!\n\nMs. Dube"
     },
     {
       "id": "task_1a0ac0cd70d4681b_quiz_ben",
@@ -173,7 +189,14 @@
       "priority": "medium",
       "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Announcement",
       "emailDate": "Thu, 10 Sep 2026 20:09:36 +0000",
-      "comments": [],
+      "comments": [
+        {
+          "id": "comm_1789690844335",
+          "author": "Dad",
+          "text": "Hard copy is in the 'lost and found'",
+          "timestamp": "Sep 17 at 07:20 PM"
+        }
+      ],
       "emailId": "1a08cf0b257e8924",
       "emailFrom": "Westlake Lutheran Academy",
       "emailBody": "Student Name: Benjamin Smith \r\n Author Name: Emily Falvey \r\n \r\n Comment Date: 09/10/2026 \r\n Comment Type: Classroom Announcement \r\n Comment: Good Afternoon!\n\nWe will be starting our first class novel The Scarlet Letter on 9/22. Please make sure your child has a hard copy of the text for class on that day. Students were able to take a photo of the version I have in class today in case they want to have the same as I do! \n\nI've also attached it here https://www.amazon.com/Scarlet-Letter-Bantam-Classics/dp/0553210092/ref=sxin_15_pa_sp_search_thematic_sspa?content-id=amzn1.sym.53cc0ead-c1bb-48f4-8809-7d977070079b%3Aamzn1.sym.53cc0ead-c1bb-48f4-8809-7d977070079b&crid=8LXH40VGLAS2&cv_ct_cx=scarlet+letter&keywords=scarlet+letter&pd_rd_i=0553210092&pd_rd_r=cc606632-af8b-44e2-82f1-c5c49b400ebc&pd_rd_w=BEcEw&pd_rd_wg=lgDSC&pf_rd_p=53cc0ead-c1bb-48f4-8809-7d977070079b&pf_rd_r=3DHXC5RMVF8W8T8K8GPC&qid=1789070865&sbo=RZvfv%2F%2FHxDF%2BO5021pAnSA%3D%3D&sprefix=scarlet+lette%2Caps%2C189&sr=1-1-6caf8c80-d701-4184-90ff-f670949d61c2-spons&aref=1PkmhBaeIJ&sp_csd=d2lkZ2V0TmFtZT1zcF9zZWFyY2hfdGhlbWF0aWM&psc=1\n\nCan't wait for this unit! It's going to be great!\n\nThanks!\nMrs. Falvey"
@@ -185,11 +208,18 @@
       "course": "History / Social Studies",
       "dueDate": "Thursday, September 17",
       "source": "Westlake Lutheran Academy",
-      "completed": false,
+      "completed": true,
       "priority": "high",
       "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Reminder",
       "emailDate": "Thu, 10 Sep 2026 19:15:26 +0000",
-      "comments": [],
+      "comments": [
+        {
+          "id": "comm_1789690690297",
+          "author": "Dad",
+          "text": "Mrs. Johnson said Bed did very well and she was proud of him 👏🏻",
+          "timestamp": "Sep 17 at 07:18 PM"
+        }
+      ],
       "emailId": "1a08cbf11f6cb9ef",
       "emailFrom": "Westlake Lutheran Academy",
       "emailBody": "Student Name: Benjamin Smith \r\n Author Name: Ashley Johnson \r\n \r\n Comment Date: 09/10/2026 \r\n Comment Type: Classroom Reminder \r\n Comment: Dear Parents and Students,\n\nOur AP World History Unit 1 Test will be Thursday, September 17. Students have several resources available to help them prepare. I strongly encourage students to begin reviewing early rather than waiting until the night before the test.\nUnit 1 Study GuideThe Unit 1 Study Guide is a graded assignment and is due on the day of the test, Thursday, September 17. Students should use the study guide to review the major developments, concepts, and vocabulary from Unit 1.\nAP World Unit 1 Study Guide\nBlooket ReviewStudents can use the Blooket to practice Unit 1 content and check their understanding. I recommend completing the study guide first and then using the Blooket for additional practice.\nAP World Unit 1 Blooket Review\nHeimler's History Unit 1 Review VideosHeimler's History is an excellent resource for reviewing AP World History Unit 1: The Global Tapestry. Students should begin with the complete Unit 1 review video and then use the individual topic videos to review areas where they need additional practice.\nHeimler's Unit 1 Review Video\n\nStudents do not need to rewatch every video in the playlist. Instead, they should focus on topics they are less confident with.\nHeimler's Complete Unit 1 Video Playlist\n\nRecommended Study Plan: Complete the study guide → practice with the Blooket → watch Heimler's Unit 1 review → use individual Heimler videos to strengthen weaker topics.\n\nBecause this is an AP course, students should make sure they understand not only important people, places, and vocabulary, but also the larger historical developments, connections, and comparisons from Unit 1.\n\nPlease encourage students to take advantage of these resources throughout the week. Students are also welcome to ask questions in class if there are Unit 1 topics they would like us to review again before the test.\n\nThank you for your support!\nMrs. Johnson"
@@ -201,11 +231,18 @@
       "course": "History / Social Studies",
       "dueDate": "Thursday, September 17",
       "source": "Westlake Lutheran Academy",
-      "completed": false,
+      "completed": true,
       "priority": "high",
       "emailSubject": "Westlake Lutheran Academy: Benjamin Smith - Classroom Reminder",
       "emailDate": "Thu, 10 Sep 2026 19:15:26 +0000",
-      "comments": [],
+      "comments": [
+        {
+          "id": "comm_1789690729195",
+          "author": "Dad",
+          "text": "Test successfully completed",
+          "timestamp": "Sep 17 at 07:18 PM"
+        }
+      ],
       "emailId": "1a08cbf11f6cb9ef",
       "emailFrom": "Westlake Lutheran Academy",
       "emailBody": "Student Name: Benjamin Smith \r\n Author Name: Ashley Johnson \r\n \r\n Comment Date: 09/10/2026 \r\n Comment Type: Classroom Reminder \r\n Comment: Dear Parents and Students,\n\nOur AP World History Unit 1 Test will be Thursday, September 17. Students have several resources available to help them prepare. I strongly encourage students to begin reviewing early rather than waiting until the night before the test.\nUnit 1 Study GuideThe Unit 1 Study Guide is a graded assignment and is due on the day of the test, Thursday, September 17. Students should use the study guide to review the major developments, concepts, and vocabulary from Unit 1.\nAP World Unit 1 Study Guide\nBlooket ReviewStudents can use the Blooket to practice Unit 1 content and check their understanding. I recommend completing the study guide first and then using the Blooket for additional practice.\nAP World Unit 1 Blooket Review\nHeimler's History Unit 1 Review VideosHeimler's History is an excellent resource for reviewing AP World History Unit 1: The Global Tapestry. Students should begin with the complete Unit 1 review video and then use the individual topic videos to review areas where they need additional practice.\nHeimler's Unit 1 Review Video\n\nStudents do not need to rewatch every video in the playlist. Instead, they should focus on topics they are less confident with.\nHeimler's Complete Unit 1 Video Playlist\n\nRecommended Study Plan: Complete the study guide → practice with the Blooket → watch Heimler's Unit 1 review → use individual Heimler videos to strengthen weaker topics.\n\nBecause this is an AP course, students should make sure they understand not only important people, places, and vocabulary, but also the larger historical developments, connections, and comparisons from Unit 1.\n\nPlease encourage students to take advantage of these resources throughout the week. Students are also welcome to ask questions in class if there are Unit 1 topics they would like us to review again before the test.\n\nThank you for your support!\nMrs. Johnson"
@@ -364,6 +401,44 @@
       "emailSubject": "Josh brown posted in MS Wildcat Volleyball",
       "emailDate": "Mon, 14 Sep 2026 15:22:51 +0000",
       "emailBody": "https://www.sportsyou.com/\r\n\r\nJosh has posted in MS Wildcat Volleyball \r\n\nJosh brown\r\n\nThis message is for parents of A and C players to pre buy tickets for the Cornerstone game tomorrow. Cornerstone does not take payment at the door. Please keep your receipts!! \r\n\r\nThe link to purchase a ticket is below. Please let me know if you have any questions. \r\n\r\nhttps://gofan.co/event/6864891?schoolId=TXEL60285\r\n\r\nView Post https://www.sportsyou.com/team/teamPosts.html?id=te-e1d482da-a45e-41c4-a760-b6e40af549f7&postId=po-1441bc38-04f1-45a8-8106-9083eeda8050\r\n\r\nGet all of these features on your mobile device with the sportsYou app!\r\n\r\nhttps://apps.apple.com/us/app/sportsyou/id1186906455https://play.google.com/store/apps/details?id=com.sportsyou.sportsYou\r\n\r\nThis message was sent to hifismith@gmail.com hifismith@gmail.com.\r\n\r\nIf you don't want to receive these emails from sportsYou in the future, you can\r\nmanage notification settings https://www.sportsyou.com/settings/alerts.html or\r\nunsubscribe to all emails https://www.sportsyou.com/unsubscribe/?unsubscribeId=oo-062feac8-7fbe-4152-ade8-a5a43c49bfee."
+    },
+    {
+      "id": "event_1a0b081c922478d4_1",
+      "title": "🚨 VOLUNTEERS NEEDED FOR TONIGHT’S HOME MATCHES",
+      "student": "Jade",
+      "date": "Thu, Sep 17",
+      "time": "Time TBA",
+      "location": "Westlake Campus",
+      "source": "sportsYou",
+      "type": "sports",
+      "description": "🚨 VOLUNTEERS NEEDED FOR TONIGHT’S HOME MATCHES",
+      "emailId": "1a0b081c922478d4",
+      "emailFrom": "Jenny Dodson (via sportsYou)",
+      "rawEmailFrom": "sportsYou",
+      "emailSubject": "Jenny Dodson posted in MS Wildcat Volleyball",
+      "emailDate": "Thu, 17 Sep 2026 17:54:50 +0000",
+      "emailBody": "https://www.sportsyou.com/\r\n\r\nJenny has posted in MS Wildcat Volleyball \r\n\nJenny Dodson\r\n\n🚨 VOLUNTEERS NEEDED FOR TONIGHT’S HOME MATCHES\r\n\r\nWe still have 4 open volunteer spots that need to be filled before this evening:\r\n\r\nC-Team | 4:00–5:30 PM\r\n• 1 Line Judge\r\n\r\nA-Team | 5:00–6:30 PM\r\n• 1 Admissions/Concessions\r\n• 1 Scoreboard Operator\r\n• 1 Line Judge\r\n\r\nIf you’re able to help, please grab a spot in the WLA Volleyball Volunteer HUB as soon as possible. Every filled position helps our home matches run smoothly for the girls, coaches, officials, and visiting families.\r\n\r\nThank you so much for jumping in when we need you most. ❤️🖤🏐\r\n\r\nView Post https://www.sportsyou.com/team/teamPosts.html?id=te-e1d482da-a45e-41c4-a760-b6e40af549f7&postId=po-df04ff87-4660-4355-bdde-df1a5d77a191\r\n\r\nGet all of these features on your mobile device with the sportsYou app!\r\n\r\nhttps://apps.apple.com/us/app/sportsyou/id1186906455https://play.google.com/store/apps/details?id=com.sportsyou.sportsYou\r\n\r\nThis message was sent to hifismith@gmail.com hifismith@gmail.com.\r\n\r\nIf you don't want to receive these emails from sportsYou in the future, you can\r\nmanage notification settings https://www.sportsyou.com/settings/alerts.html or\r\nunsubscribe to all emails https://www.sportsyou.com/unsubscribe/?unsubscribeId=oo-062feac8-7fbe-4152-ade8-a5a43c49bfee.",
+      "acknowledged": false,
+      "acknowledgedAt": null
+    },
+    {
+      "id": "event_1a0b043f5231ac3e_1",
+      "title": "🏐 SPLIT GAME DAY — WLA Volleyball! ❤️🖤",
+      "student": "Jade",
+      "date": "Thu, Sep 17",
+      "time": "Time TBA",
+      "location": "Westlake Campus",
+      "source": "sportsYou",
+      "type": "sports",
+      "description": "🏐 SPLIT GAME DAY — WLA Volleyball! ❤️🖤",
+      "emailId": "1a0b043f5231ac3e",
+      "emailFrom": "Jenny Dodson (via sportsYou)",
+      "rawEmailFrom": "sportsYou",
+      "emailSubject": "Jenny Dodson posted in MS Wildcat Volleyball",
+      "emailDate": "Thu, 17 Sep 2026 16:47:17 +0000",
+      "emailBody": "https://www.sportsyou.com/\r\n\r\nJenny has posted in MS Wildcat Volleyball \r\n\nJenny Dodson\r\n\n🏐 SPLIT GAME DAY — WLA Volleyball! ❤️🖤\r\n\r\nWe’ve got teams competing in two locations today:\r\n\r\nHOME vs. Berean\r\n• C-Team — 4:30 PM\r\n• A-Team — 5:30 PM\r\n📍 Hosted at WLA\r\n\r\nAWAY @ Faith Academy\r\n• B-Team — 4:00 PM\r\n• Varsity — 5:00 PM\r\n📍 12177 Hwy 36, Bellville, TX 77418\r\n\r\nTransportation Reminder\r\n\r\n🚌 B-Team will ride the WLA bus to Faith Academy.\r\n\r\n🚗 Varsity families will need to coordinate transportation for Varsity players.\r\nPlease make sure all Varsity players arrive at Faith Academy no later than 4:30 PM.\r\n\r\nView Post https://www.sportsyou.com/team/teamPosts.html?id=te-e1d482da-a45e-41c4-a760-b6e40af549f7&postId=po-e553ada1-5e98-43e4-aaa3-50c0016b3da6\r\n\r\nGet all of these features on your mobile device with the sportsYou app!\r\n\r\nhttps://apps.apple.com/us/app/sportsyou/id1186906455https://play.google.com/store/apps/details?id=com.sportsyou.sportsYou\r\n\r\nThis message was sent to hifismith@gmail.com hifismith@gmail.com.\r\n\r\nIf you don't want to receive these emails from sportsYou in the future, you can\r\nmanage notification settings https://www.sportsyou.com/settings/alerts.html or\r\nunsubscribe to all emails https://www.sportsyou.com/unsubscribe/?unsubscribeId=oo-062feac8-7fbe-4152-ade8-a5a43c49bfee.",
+      "acknowledged": false,
+      "acknowledgedAt": null
     }
   ],
   "deletedEventKeys": [],
@@ -398,8 +473,8 @@
         "currentTerm": "1st Quarter",
         "sectionId": 90500778,
         "markingPeriodId": 16912,
-        "overdueCount": 3,
-        "upcomingCount": 3
+        "overdueCount": 2,
+        "upcomingCount": 2
       },
       {
         "id": 90500787,
@@ -431,7 +506,7 @@
         "sectionId": 90500801,
         "markingPeriodId": 16912,
         "overdueCount": 2,
-        "upcomingCount": 4
+        "upcomingCount": 2
       },
       {
         "id": 90500807,
@@ -661,26 +736,13 @@
       }
     ]
   },
-  "missingAssignments": [
-    {
-      "id": "bb_missing_10663539_5662183",
-      "title": "HW #5 Solving Systems of Equations by Graphing and Substitution",
-      "course": "Algebra II A - 1 (R1)",
-      "teacher": "Dianna DesJardins",
-      "student": "Ben",
-      "dueDate": "09/15",
-      "comment": "anticipated absence, reminded Ben assignments need to be picked up in advance of an anticipated absence. He can also print from Blackbaud",
-      "maxPoints": 100,
-      "type": "Other",
-      "isMissing": true
-    }
-  ],
-  "lastSyncedAt": "2026-09-16T22:27:59.591Z",
+  "missingAssignments": [],
+  "lastSyncedAt": "2026-09-18T00:12:48.857Z",
   "lastSyncStats": {
-    "totalProcessed": 50,
-    "matchedEmails": 50,
-    "tasksFound": 12,
-    "eventsFound": 32
+    "totalProcessed": 9,
+    "matchedEmails": 8,
+    "tasksFound": 2,
+    "eventsFound": 2
   },
-  "updatedAt": "2026-09-16T22:54:45.068Z"
+  "updatedAt": "2026-09-18T00:20:44.353Z"
 }
